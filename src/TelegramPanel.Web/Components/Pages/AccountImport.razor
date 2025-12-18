@@ -1,0 +1,193 @@
+@page "/accounts/import"
+@inject ISessionImporter SessionImporter
+@inject ISnackbar Snackbar
+
+<PageTitle>导入账号 - Telegram Panel</PageTitle>
+
+<MudText Typo="Typo.h4" Class="mb-4">导入账号</MudText>
+
+<MudGrid>
+    <MudItem xs="12" md="6">
+        <MudCard>
+            <MudCardHeader>
+                <MudText Typo="Typo.h6">Session 文件导入</MudText>
+            </MudCardHeader>
+            <MudCardContent>
+                <MudTextField @bind-Value="apiId" Label="API ID" Variant="Variant.Outlined" Required="true" />
+                <MudTextField @bind-Value="apiHash" Label="API Hash" Variant="Variant.Outlined" Required="true" Class="mt-3" />
+
+                <MudFileUpload T="IReadOnlyList<IBrowserFile>" FilesChanged="OnFilesChanged" Accept=".session" MaximumFileCount="100">
+                    <ActivatorContent>
+                        <MudButton Variant="Variant.Filled" Color="Color.Primary" StartIcon="@Icons.Material.Filled.CloudUpload" Class="mt-4">
+                            选择 Session 文件
+                        </MudButton>
+                    </ActivatorContent>
+                </MudFileUpload>
+
+                @if (selectedFiles.Any())
+                {
+                    <MudText Typo="Typo.body2" Class="mt-3">已选择 @selectedFiles.Count 个文件</MudText>
+                    <MudList Dense="true">
+                        @foreach (var file in selectedFiles)
+                        {
+                            <MudListItem Icon="@Icons.Material.Filled.Description">@file.Name</MudListItem>
+                        }
+                    </MudList>
+                }
+
+                <MudButton Variant="Variant.Filled" Color="Color.Success" FullWidth="true"
+                           Disabled="@(!selectedFiles.Any() || importing)" Class="mt-4"
+                           OnClick="ImportSessionFiles">
+                    @if (importing)
+                    {
+                        <MudProgressCircular Size="Size.Small" Indeterminate="true" Class="mr-2" />
+                        <span>导入中...</span>
+                    }
+                    else
+                    {
+                        <span>开始导入</span>
+                    }
+                </MudButton>
+            </MudCardContent>
+        </MudCard>
+    </MudItem>
+
+    <MudItem xs="12" md="6">
+        <MudCard>
+            <MudCardHeader>
+                <MudText Typo="Typo.h6">StringSession 导入</MudText>
+            </MudCardHeader>
+            <MudCardContent>
+                <MudTextField @bind-Value="stringApiId" Label="API ID" Variant="Variant.Outlined" Required="true" />
+                <MudTextField @bind-Value="stringApiHash" Label="API Hash" Variant="Variant.Outlined" Required="true" Class="mt-3" />
+                <MudTextField @bind-Value="sessionString" Label="Session String (Base64)" Variant="Variant.Outlined"
+                              Lines="5" Required="true" Class="mt-3" />
+
+                <MudButton Variant="Variant.Filled" Color="Color.Success" FullWidth="true"
+                           Disabled="@(string.IsNullOrEmpty(sessionString) || importingString)" Class="mt-4"
+                           OnClick="ImportStringSession">
+                    @if (importingString)
+                    {
+                        <MudProgressCircular Size="Size.Small" Indeterminate="true" Class="mr-2" />
+                        <span>导入中...</span>
+                    }
+                    else
+                    {
+                        <span>导入 StringSession</span>
+                    }
+                </MudButton>
+            </MudCardContent>
+        </MudCard>
+    </MudItem>
+</MudGrid>
+
+@if (importResults.Any())
+{
+    <MudCard Class="mt-4">
+        <MudCardHeader>
+            <MudText Typo="Typo.h6">导入结果</MudText>
+        </MudCardHeader>
+        <MudCardContent>
+            <MudTable Items="@importResults" Hover="true">
+                <HeaderContent>
+                    <MudTh>手机号</MudTh>
+                    <MudTh>用户ID</MudTh>
+                    <MudTh>用户名</MudTh>
+                    <MudTh>状态</MudTh>
+                    <MudTh>消息</MudTh>
+                </HeaderContent>
+                <RowTemplate>
+                    <MudTd DataLabel="手机号">@(context.Phone ?? "-")</MudTd>
+                    <MudTd DataLabel="用户ID">@(context.UserId?.ToString() ?? "-")</MudTd>
+                    <MudTd DataLabel="用户名">@(context.Username ?? "-")</MudTd>
+                    <MudTd DataLabel="状态">
+                        <MudChip Size="Size.Small" Color="@(context.Success ? Color.Success : Color.Error)">
+                            @(context.Success ? "成功" : "失败")
+                        </MudChip>
+                    </MudTd>
+                    <MudTd DataLabel="消息">@(context.Message ?? "-")</MudTd>
+                </RowTemplate>
+            </MudTable>
+        </MudCardContent>
+    </MudCard>
+}
+
+@code {
+    private string apiId = "";
+    private string apiHash = "";
+    private List<IBrowserFile> selectedFiles = new();
+    private bool importing = false;
+
+    private string stringApiId = "";
+    private string stringApiHash = "";
+    private string sessionString = "";
+    private bool importingString = false;
+
+    private List<ImportResult> importResults = new();
+
+    private void OnFilesChanged(IReadOnlyList<IBrowserFile> files)
+    {
+        selectedFiles = files.ToList();
+    }
+
+    private async Task ImportSessionFiles()
+    {
+        if (!int.TryParse(apiId, out int parsedApiId))
+        {
+            Snackbar.Add("API ID 格式错误", Severity.Error);
+            return;
+        }
+
+        importing = true;
+        importResults.Clear();
+
+        try
+        {
+            // TODO: 实现文件上传和导入逻辑
+            Snackbar.Add("Session 文件导入功能开发中", Severity.Warning);
+        }
+        catch (Exception ex)
+        {
+            Snackbar.Add($"导入失败：{ex.Message}", Severity.Error);
+        }
+        finally
+        {
+            importing = false;
+        }
+    }
+
+    private async Task ImportStringSession()
+    {
+        if (!int.TryParse(stringApiId, out int parsedApiId))
+        {
+            Snackbar.Add("API ID 格式错误", Severity.Error);
+            return;
+        }
+
+        importingString = true;
+
+        try
+        {
+            var result = await SessionImporter.ImportFromStringSessionAsync(sessionString, parsedApiId, stringApiHash);
+            importResults.Add(result);
+
+            if (result.Success)
+            {
+                Snackbar.Add($"导入成功：{result.Phone}", Severity.Success);
+                sessionString = "";
+            }
+            else
+            {
+                Snackbar.Add($"导入失败：{result.Message}", Severity.Error);
+            }
+        }
+        catch (Exception ex)
+        {
+            Snackbar.Add($"导入失败：{ex.Message}", Severity.Error);
+        }
+        finally
+        {
+            importingString = false;
+        }
+    }
+}
