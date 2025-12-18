@@ -1,0 +1,124 @@
+@page "/channels/create"
+@inject IChannelService ChannelService
+@inject ISnackbar Snackbar
+@inject NavigationManager Navigation
+
+<PageTitle>创建频道 - Telegram Panel</PageTitle>
+
+<MudText Typo="Typo.h4" Class="mb-4">创建频道</MudText>
+
+<MudGrid>
+    <MudItem xs="12" md="8" Class="mx-auto">
+        <MudCard>
+            <MudCardContent>
+                <MudSelect @bind-Value="selectedAccountId" Label="选择账号" Variant="Variant.Outlined" Required="true">
+                    <MudSelectItem Value="0">-- 请选择账号 --</MudSelectItem>
+                    <MudSelectItem Value="1">账号1 (+86xxxxxxxx)</MudSelectItem>
+                    <MudSelectItem Value="2">账号2 (+86yyyyyyyy)</MudSelectItem>
+                </MudSelect>
+
+                <MudTextField @bind-Value="channelTitle" Label="频道名称" Variant="Variant.Outlined" Required="true" Class="mt-4"
+                              HelperText="最多255个字符" MaxLength="255" />
+
+                <MudTextField @bind-Value="channelAbout" Label="频道简介" Variant="Variant.Outlined" Lines="3" Class="mt-4"
+                              HelperText="最多255个字符" MaxLength="255" />
+
+                <MudSwitch @bind-Value="isPublic" Label="设为公开频道" Color="Color.Primary" Class="mt-4" />
+
+                @if (isPublic)
+                {
+                    <MudTextField @bind-Value="username" Label="频道用户名" Variant="Variant.Outlined" Class="mt-3"
+                                  Adornment="Adornment.Start" AdornmentText="@" Required="true"
+                                  HelperText="5-32个字符，只能包含a-z、0-9和下划线" />
+                }
+
+                <MudDivider Class="my-4" />
+
+                <MudText Typo="Typo.h6" Class="mb-3">可选设置</MudText>
+
+                <MudSwitch @bind-Value="enableComments" Label="启用评论" Color="Color.Primary" />
+                <MudSwitch @bind-Value="enableReactions" Label="启用表情回应" Color="Color.Primary" Class="mt-2" />
+                <MudSwitch @bind-Value="signMessages" Label="消息签名" Color="Color.Primary" Class="mt-2"
+                           HelperText="显示发送者身份" />
+            </MudCardContent>
+            <MudCardActions>
+                <MudButton Variant="Variant.Text" Color="Color.Default" OnClick="Cancel">取消</MudButton>
+                <MudSpacer />
+                <MudButton Variant="Variant.Filled" Color="Color.Primary"
+                           Disabled="@(selectedAccountId == 0 || string.IsNullOrEmpty(channelTitle) || creating)"
+                           OnClick="CreateChannel">
+                    @if (creating)
+                    {
+                        <MudProgressCircular Size="Size.Small" Indeterminate="true" Class="mr-2" />
+                        <span>创建中...</span>
+                    }
+                    else
+                    {
+                        <span>创建频道</span>
+                    }
+                </MudButton>
+            </MudCardActions>
+        </MudCard>
+    </MudItem>
+</MudGrid>
+
+@code {
+    private int selectedAccountId = 0;
+    private string channelTitle = "";
+    private string channelAbout = "";
+    private bool isPublic = false;
+    private string username = "";
+    private bool enableComments = true;
+    private bool enableReactions = true;
+    private bool signMessages = false;
+    private bool creating = false;
+
+    private async Task CreateChannel()
+    {
+        if (selectedAccountId == 0)
+        {
+            Snackbar.Add("请选择账号", Severity.Error);
+            return;
+        }
+
+        if (string.IsNullOrEmpty(channelTitle))
+        {
+            Snackbar.Add("请输入频道名称", Severity.Error);
+            return;
+        }
+
+        if (isPublic && string.IsNullOrEmpty(username))
+        {
+            Snackbar.Add("公开频道需要设置用户名", Severity.Error);
+            return;
+        }
+
+        creating = true;
+
+        try
+        {
+            var channelInfo = await ChannelService.CreateChannelAsync(selectedAccountId, channelTitle, channelAbout, isPublic);
+
+            if (isPublic && !string.IsNullOrEmpty(username))
+            {
+                await ChannelService.SetChannelVisibilityAsync(selectedAccountId, channelInfo.TelegramId, true, username);
+            }
+
+            Snackbar.Add($"频道 \"{channelTitle}\" 创建成功", Severity.Success);
+            Navigation.NavigateTo("/channels");
+        }
+        catch (Exception ex)
+        {
+            Snackbar.Add($"创建失败：{ex.Message}", Severity.Error);
+        }
+        finally
+        {
+            creating = false;
+        }
+    }
+
+    private void Cancel()
+    {
+        Navigation.NavigateTo("/channels");
+    }
+}
