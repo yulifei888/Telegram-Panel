@@ -1,0 +1,14 @@
+using TelegramPanel.Data.Entities;
+
+namespace TelegramPanel.Data.Repositories;
+
+/// <summary>
+/// 账号仓储接口
+/// </summary>
+public interface IAccountRepository : IRepository<Account>
+{
+    Task<Account?> GetByPhoneAsync(string phone);
+    Task<Account?> GetByUserIdAsync(long userId);
+    Task<IEnumerable<Account>> GetByCategoryAsync(int categoryId);
+    Task<IEnumerable<Account>> GetActiveAccountsAsync();
+}

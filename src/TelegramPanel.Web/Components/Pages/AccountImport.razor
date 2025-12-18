@@ -1,5 +1,5 @@
 @page "/accounts/import"
-@inject ISessionImporter SessionImporter
+@inject AccountImportService AccountImportService
 @inject ISnackbar Snackbar
 
 <PageTitle>导入账号 - Telegram Panel</PageTitle>
@@ -143,8 +143,29 @@
 
         try
         {
-            // TODO: 实现文件上传和导入逻辑
-            Snackbar.Add("Session 文件导入功能开发中", Severity.Warning);
+            var results = await AccountImportService.ImportFromBrowserFilesAsync(
+                selectedFiles,
+                parsedApiId,
+                apiHash
+            );
+
+            importResults.AddRange(results);
+
+            var successCount = results.Count(r => r.Success);
+            var failureCount = results.Count - successCount;
+
+            if (successCount > 0)
+            {
+                Snackbar.Add($"成功导入 {successCount} 个账号", Severity.Success);
+            }
+
+            if (failureCount > 0)
+            {
+                Snackbar.Add($"{failureCount} 个账号导入失败", Severity.Warning);
+            }
+
+            // 清空已选文件
+            selectedFiles.Clear();
         }
         catch (Exception ex)
         {
@@ -168,7 +189,12 @@
 
         try
         {
-            var result = await SessionImporter.ImportFromStringSessionAsync(sessionString, parsedApiId, stringApiHash);
+            var result = await AccountImportService.ImportFromStringSessionAsync(
+                sessionString,
+                parsedApiId,
+                stringApiHash
+            );
+
             importResults.Add(result);
 
             if (result.Success)

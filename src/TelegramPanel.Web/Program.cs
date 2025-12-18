@@ -1,6 +1,7 @@
 using MudBlazor.Services;
 using Serilog;
 using TelegramPanel.Core;
+using TelegramPanel.Data;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -21,12 +22,13 @@ builder.Services.AddRazorComponents()
 // MudBlazor
 builder.Services.AddMudServices();
 
+// 数据库上下文
+var connectionString = builder.Configuration.GetConnectionString("DefaultConnection")
+    ?? "Data Source=telegram-panel.db";
+builder.Services.AddTelegramPanelData(connectionString);
+
 // Telegram Panel 核心服务
 builder.Services.AddTelegramPanelCore();
-
-// TODO: 添加数据库上下文
-// builder.Services.AddDbContext<AppDbContext>(options =>
-//     options.UseSqlite(builder.Configuration.GetConnectionString("DefaultConnection")));
 
 // TODO: 添加 Hangfire
 // builder.Services.AddHangfire(config => config.UseInMemoryStorage());
