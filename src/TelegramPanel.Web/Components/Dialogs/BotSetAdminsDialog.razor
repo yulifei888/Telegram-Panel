@@ -1,0 +1,154 @@
+@namespace TelegramPanel.Web.Components.Dialogs
+@inject TelegramPanel.Core.Services.Telegram.BotTelegramService BotTelegram
+@inject ISnackbar Snackbar
+
+<MudDialog>
+    <DialogContent>
+        <MudStack Spacing="2">
+            <MudAlert Severity="Severity.Info" Variant="Variant.Outlined" Dense="true">
+                请输入要设置为管理员的 Telegram 用户 ID（不是手机号/用户名）。机器人需要在目标频道具备“添加管理员”权限。
+            </MudAlert>
+
+            <MudNumericField T="long?" @bind-Value="userId" Label="用户 ID" Variant="Variant.Outlined" Min="1" Required="true" />
+
+            <MudText Typo="Typo.subtitle2" Class="mt-2">权限</MudText>
+            <MudGrid>
+                <MudItem xs="12" sm="6">
+                    <MudCheckBox @bind-Value="rights.ManageChat" Label="管理频道" />
+                </MudItem>
+                <MudItem xs="12" sm="6">
+                    <MudCheckBox @bind-Value="rights.InviteUsers" Label="邀请用户" />
+                </MudItem>
+                <MudItem xs="12" sm="6">
+                    <MudCheckBox @bind-Value="rights.PostMessages" Label="发布消息" />
+                </MudItem>
+                <MudItem xs="12" sm="6">
+                    <MudCheckBox @bind-Value="rights.EditMessages" Label="编辑消息" />
+                </MudItem>
+                <MudItem xs="12" sm="6">
+                    <MudCheckBox @bind-Value="rights.DeleteMessages" Label="删除消息" />
+                </MudItem>
+                <MudItem xs="12" sm="6">
+                    <MudCheckBox @bind-Value="rights.PinMessages" Label="置顶消息" />
+                </MudItem>
+                <MudItem xs="12" sm="6">
+                    <MudCheckBox @bind-Value="rights.RestrictMembers" Label="封禁成员" />
+                </MudItem>
+                <MudItem xs="12" sm="6">
+                    <MudCheckBox @bind-Value="rights.PromoteMembers" Label="添加管理员" />
+                </MudItem>
+            </MudGrid>
+
+            <MudText Typo="Typo.caption" Color="Color.Secondary">
+                将对已选频道批量执行 promoteChatMember；失败的频道会被跳过（你可以在日志中查看原因）。
+            </MudText>
+        </MudStack>
+    </DialogContent>
+    <DialogActions>
+        <MudButton Variant="Variant.Text" Color="Color.Default" OnClick="Cancel" Disabled="@saving">取消</MudButton>
+        <MudButton Variant="Variant.Filled" Color="Color.Primary" OnClick="Save" Disabled="@saving">
+            @if (saving)
+            {
+                <MudProgressCircular Size="Size.Small" Indeterminate="true" Class="mr-2" />
+                <span>执行中...</span>
+            }
+            else
+            {
+                <span>设置管理员</span>
+            }
+        </MudButton>
+    </DialogActions>
+</MudDialog>
+
+@code
+{
+    [CascadingParameter] private MudDialogInstance MudDialog { get; set; } = default!;
+    [Parameter] public int BotId { get; set; }
+    [Parameter] public IReadOnlyList<long> ChannelTelegramIds { get; set; } = Array.Empty<long>();
+
+    private long? userId;
+    private bool saving;
+
+    private RightsModel rights = new();
+
+    protected override void OnInitialized()
+    {
+        // 默认给出一个“常用”权限组合，减少操作成本
+        rights.ManageChat = true;
+        rights.InviteUsers = true;
+    }
+
+    private async Task Save()
+    {
+        if (saving)
+            return;
+
+        if (BotId <= 0)
+        {
+            Snackbar.Add("BotId 无效", Severity.Error);
+            return;
+        }
+
+        if (ChannelTelegramIds.Count == 0)
+        {
+            Snackbar.Add("请先选择频道", Severity.Warning);
+            return;
+        }
+
+        if (userId is not > 0)
+        {
+            Snackbar.Add("请输入用户 ID", Severity.Warning);
+            return;
+        }
+
+        saving = true;
+        try
+        {
+            var ok = await BotTelegram.PromoteChatMemberAsync(
+                botId: BotId,
+                channelTelegramIds: ChannelTelegramIds,
+                userId: userId.Value,
+                rights: new TelegramPanel.Core.Services.Telegram.BotTelegramService.BotAdminRights(
+                    ManageChat: rights.ManageChat,
+                    PostMessages: rights.PostMessages,
+                    EditMessages: rights.EditMessages,
+                    DeleteMessages: rights.DeleteMessages,
+                    InviteUsers: rights.InviteUsers,
+                    RestrictMembers: rights.RestrictMembers,
+                    PinMessages: rights.PinMessages,
+                    PromoteMembers: rights.PromoteMembers
+                ),
+                cancellationToken: CancellationToken.None
+            );
+
+            Snackbar.Add($"已设置管理员：成功 {ok}/{ChannelTelegramIds.Distinct().Count()} 个频道", ok > 0 ? Severity.Success : Severity.Warning);
+            MudDialog.Close(DialogResult.Ok(ok));
+        }
+        catch (Exception ex)
+        {
+            Snackbar.Add($"设置失败：{ex.Message}", Severity.Error);
+        }
+        finally
+        {
+            saving = false;
+        }
+    }
+
+    private void Cancel()
+    {
+        MudDialog.Cancel();
+    }
+
+    private sealed class RightsModel
+    {
+        public bool ManageChat { get; set; }
+        public bool PostMessages { get; set; }
+        public bool EditMessages { get; set; }
+        public bool DeleteMessages { get; set; }
+        public bool InviteUsers { get; set; }
+        public bool RestrictMembers { get; set; }
+        public bool PinMessages { get; set; }
+        public bool PromoteMembers { get; set; }
+    }
+}
+

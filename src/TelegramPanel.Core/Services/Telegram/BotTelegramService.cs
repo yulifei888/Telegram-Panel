@@ -294,6 +294,50 @@ public class BotTelegramService
         return true;
     }
 
+    public async Task<int> PromoteChatMemberAsync(int botId, IReadOnlyList<long> channelTelegramIds, long userId, BotAdminRights rights, CancellationToken cancellationToken)
+    {
+        var bot = await _botManagement.GetBotAsync(botId)
+            ?? throw new InvalidOperationException($"机器人不存在：{botId}");
+
+        if (!bot.IsActive)
+            throw new InvalidOperationException("该机器人已停用");
+
+        if (userId <= 0)
+            throw new ArgumentException("userId 无效", nameof(userId));
+
+        var ok = 0;
+        foreach (var chatId in channelTelegramIds.Distinct())
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            try
+            {
+                var args = new Dictionary<string, string?>
+                {
+                    ["chat_id"] = chatId.ToString(),
+                    ["user_id"] = userId.ToString(),
+                    ["can_manage_chat"] = rights.ManageChat ? "true" : "false",
+                    ["can_post_messages"] = rights.PostMessages ? "true" : "false",
+                    ["can_edit_messages"] = rights.EditMessages ? "true" : "false",
+                    ["can_delete_messages"] = rights.DeleteMessages ? "true" : "false",
+                    ["can_invite_users"] = rights.InviteUsers ? "true" : "false",
+                    ["can_restrict_members"] = rights.RestrictMembers ? "true" : "false",
+                    ["can_pin_messages"] = rights.PinMessages ? "true" : "false",
+                    ["can_promote_members"] = rights.PromoteMembers ? "true" : "false"
+                };
+
+                await _api.CallAsync(bot.Token, "promoteChatMember", args, cancellationToken);
+                ok++;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "PromoteChatMember failed for bot {BotId} chat {ChatId} user {UserId}", botId, chatId, userId);
+            }
+        }
+
+        return ok;
+    }
+
     public async Task<IReadOnlyDictionary<long, string>> ExportInviteLinksAsync(int botId, IReadOnlyList<long> channelTelegramIds, CancellationToken cancellationToken)
     {
         var map = new Dictionary<long, string>();
@@ -359,4 +403,15 @@ public class BotTelegramService
             }
         }
     }
+
+    public sealed record BotAdminRights(
+        bool ManageChat,
+        bool PostMessages,
+        bool EditMessages,
+        bool DeleteMessages,
+        bool InviteUsers,
+        bool RestrictMembers,
+        bool PinMessages,
+        bool PromoteMembers
+    );
 }

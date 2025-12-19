@@ -56,6 +56,11 @@
                     导出邀请（已选）
                 </MudButton>
 
+                <MudButton Variant="Variant.Outlined" Color="Color.Primary" StartIcon="@Icons.Material.Filled.AdminPanelSettings" Class="ml-2"
+                           Disabled="@(loading || selectedBotId <= 0 || selected.Count == 0)" OnClick="OpenSetAdmins">
+                    设置管理员（已选）
+                </MudButton>
+
                 <MudButton Variant="Variant.Filled" Color="Color.Primary" StartIcon="@Icons.Material.Filled.Refresh"
                            Disabled="@(loading || selectedBotId <= 0)" OnClick="LoadBotData" Class="ml-2">
                     刷新
@@ -369,6 +374,32 @@
         var url = $"/downloads/bots/{selectedBotId}/invites.txt?ids={Uri.EscapeDataString(ids)}";
         Navigation.NavigateTo(url, forceLoad: true);
         await Task.CompletedTask;
+    }
+
+    private async Task OpenSetAdmins()
+    {
+        if (selectedBotId <= 0)
+            return;
+
+        if (selected.Count == 0)
+        {
+            Snackbar.Add("请先选择频道", Severity.Info);
+            return;
+        }
+
+        var parameters = new DialogParameters
+        {
+            ["BotId"] = selectedBotId,
+            ["ChannelTelegramIds"] = selected.Select(x => x.TelegramId).Distinct().ToList()
+        };
+        var options = new DialogOptions { CloseOnEscapeKey = true, MaxWidth = MaxWidth.Small, FullWidth = true };
+        var dialog = DialogService.Show<BotSetAdminsDialog>("批量设置管理员", parameters, options);
+        var result = await dialog.Result;
+        if (!result.Canceled)
+        {
+            // 管理员设置后不影响本地数据，但用户可能期望刷新一下
+            await LoadBotData();
+        }
     }
 
     private async Task ShowDetailsAsync(BotChannel channel)
