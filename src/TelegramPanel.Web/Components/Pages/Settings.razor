@@ -245,7 +245,8 @@
                             IsBroadcast = channelInfo.IsBroadcast,
                             MemberCount = channelInfo.MemberCount,
                             About = channelInfo.About,
-                            CreatorAccountId = account.Id
+                            CreatorAccountId = account.Id,
+                            CreatedAt = channelInfo.CreatedAt
                         };
                         await ChannelManagement.CreateOrUpdateChannelAsync(channel);
                         totalChannelsSynced++;

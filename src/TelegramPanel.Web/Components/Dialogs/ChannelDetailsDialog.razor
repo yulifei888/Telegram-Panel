@@ -1,0 +1,230 @@
+@namespace TelegramPanel.Web.Components.Dialogs
+@inject ChannelManagementService ChannelManagement
+@inject AccountManagementService AccountManagement
+@inject IChannelService ChannelService
+@inject ISnackbar Snackbar
+@inject IDialogService DialogService
+@using TelegramPanel.Data.Entities
+
+<MudDialog>
+    <DialogContent>
+        @if (loading)
+        {
+            <MudProgressLinear Indeterminate="true" />
+        }
+        else if (channel == null)
+        {
+            <MudAlert Severity="Severity.Error" Variant="Variant.Outlined">未找到频道数据</MudAlert>
+        }
+        else
+        {
+            <MudStack Spacing="2">
+                <MudText Typo="Typo.h6">@channel.Title</MudText>
+
+                <MudGrid>
+                    <MudItem xs="12" md="6">
+                        <MudText Typo="Typo.body2"><strong>TelegramId：</strong>@channel.TelegramId</MudText>
+                        <MudText Typo="Typo.body2"><strong>用户名：</strong>@(string.IsNullOrWhiteSpace(channel.Username) ? "（私密）" : "@" + channel.Username)</MudText>
+                        <MudText Typo="Typo.body2"><strong>成员数：</strong>@channel.MemberCount</MudText>
+                    </MudItem>
+                    <MudItem xs="12" md="6">
+                        <MudText Typo="Typo.body2"><strong>创建者：</strong>@creatorDisplay</MudText>
+                        <MudText Typo="Typo.body2"><strong>创建时间：</strong>@(channel.CreatedAt?.ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss") ?? "（未知）")</MudText>
+                        <MudText Typo="Typo.body2"><strong>最后同步：</strong>@channel.SyncedAt.ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss")</MudText>
+                    </MudItem>
+                </MudGrid>
+
+                @if (!string.IsNullOrWhiteSpace(channel.About))
+                {
+                    <MudText Typo="Typo.body2"><strong>简介：</strong></MudText>
+                    <MudPaper Class="pa-3" Elevation="0" Style="background: rgba(0,0,0,0.03);">
+                        <MudText Typo="Typo.body2" Style="white-space: pre-wrap;">@channel.About</MudText>
+                    </MudPaper>
+                }
+
+                <MudDivider />
+
+                <MudStack Row="true" AlignItems="AlignItems.Center" Spacing="2">
+                    <MudText Typo="Typo.h6">管理员</MudText>
+                    <MudSpacer />
+                    <MudButton Variant="Variant.Outlined" Color="Color.Primary" StartIcon="@Icons.Material.Filled.Refresh"
+                               Disabled="@adminsLoading" OnClick="LoadAdmins">
+                        刷新
+                    </MudButton>
+                </MudStack>
+
+                @if (adminsLoading)
+                {
+                    <MudProgressLinear Indeterminate="true" />
+                }
+                else if (admins.Count == 0)
+                {
+                    <MudText Typo="Typo.body2" Color="Color.Secondary">暂无管理员数据（或无权限获取）</MudText>
+                }
+                else
+                {
+                    <MudTable Items="@admins" Dense="true" Hover="true" Breakpoint="Breakpoint.Sm">
+                        <HeaderContent>
+                            <MudTh>身份</MudTh>
+                            <MudTh>昵称</MudTh>
+                            <MudTh>用户名</MudTh>
+                            <MudTh>头衔</MudTh>
+                        </HeaderContent>
+                        <RowTemplate>
+                            <MudTd DataLabel="身份">
+                                <MudChip T="string" Size="Size.Small" Color="@(context.IsCreator ? Color.Success : Color.Default)">
+                                    @(context.IsCreator ? "创建者" : "管理员")
+                                </MudChip>
+                            </MudTd>
+                            <MudTd DataLabel="昵称">@context.DisplayName</MudTd>
+                            <MudTd DataLabel="用户名">@(!string.IsNullOrWhiteSpace(context.Username) ? "@" + context.Username : "-")</MudTd>
+                            <MudTd DataLabel="头衔">@(string.IsNullOrWhiteSpace(context.Rank) ? "-" : context.Rank)</MudTd>
+                        </RowTemplate>
+                    </MudTable>
+                }
+
+                <MudDivider />
+
+                <MudText Typo="Typo.h6">踢出成员</MudText>
+                <MudAlert Severity="Severity.Info" Variant="Variant.Outlined" Dense="true">
+                    输入 @@用户名 执行踢出；“非永久”会使用短时间封禁达到踢出效果，随后自动解除，方便对方重新加入。
+                </MudAlert>
+                <MudStack Row="true" Spacing="2" AlignItems="AlignItems.End">
+                    <MudTextField @bind-Value="kickUsername" Label="用户名" Variant="Variant.Outlined" Placeholder="例如：someuser"
+                                  Immediate="true" Style="min-width: 260px;" />
+                    <MudSwitch @bind-Value="kickPermanent" Color="Color.Error" Label="永久封禁" />
+                    <MudButton Variant="Variant.Filled" Color="Color.Error" StartIcon="@Icons.Material.Filled.PersonRemove"
+                               Disabled="@kickLoading" OnClick="KickUser">
+                        @if (kickLoading)
+                        {
+                            <MudProgressCircular Size="Size.Small" Indeterminate="true" Class="mr-2" />
+                            <span>处理中...</span>
+                        }
+                        else
+                        {
+                            <span>踢出</span>
+                        }
+                    </MudButton>
+                </MudStack>
+            </MudStack>
+        }
+    </DialogContent>
+    <DialogActions>
+        @if (channel != null)
+        {
+            <MudButton Variant="Variant.Text" Color="Color.Primary" OnClick="OpenEdit">编辑频道</MudButton>
+        }
+        <MudButton Variant="Variant.Text" Color="Color.Default" OnClick="Close">关闭</MudButton>
+    </DialogActions>
+</MudDialog>
+
+@code
+{
+    [CascadingParameter] private MudDialogInstance MudDialog { get; set; } = default!;
+    [Parameter] public int ChannelDbId { get; set; }
+
+    private bool loading = true;
+    private Channel? channel;
+    private string creatorDisplay = "-";
+
+    private bool adminsLoading;
+    private List<ChannelAdminInfo> admins = new();
+
+    private string kickUsername = "";
+    private bool kickPermanent;
+    private bool kickLoading;
+
+    protected override async Task OnInitializedAsync()
+    {
+        await LoadChannel();
+        await LoadAdmins();
+    }
+
+    private async Task LoadChannel()
+    {
+        loading = true;
+        try
+        {
+            channel = await ChannelManagement.GetChannelAsync(ChannelDbId);
+            if (channel == null)
+                return;
+
+            var creator = await AccountManagement.GetAccountAsync(channel.CreatorAccountId);
+            creatorDisplay = creator == null
+                ? $"账号 {channel.CreatorAccountId}"
+                : $"{creator.Phone}（{creator.Nickname ?? creator.Username ?? creator.UserId.ToString()}）";
+        }
+        catch (Exception ex)
+        {
+            Snackbar.Add($"加载频道失败：{ex.Message}", Severity.Error);
+        }
+        finally
+        {
+            loading = false;
+        }
+    }
+
+    private async Task LoadAdmins()
+    {
+        if (channel == null)
+            return;
+
+        adminsLoading = true;
+        try
+        {
+            admins = await ChannelService.GetAdminsAsync(channel.CreatorAccountId, channel.TelegramId);
+        }
+        catch (Exception ex)
+        {
+            admins.Clear();
+            Snackbar.Add($"加载管理员失败：{ex.Message}", Severity.Error);
+        }
+        finally
+        {
+            adminsLoading = false;
+        }
+    }
+
+    private async Task KickUser()
+    {
+        if (channel == null)
+            return;
+
+        kickLoading = true;
+        try
+        {
+            await ChannelService.KickUserAsync(channel.CreatorAccountId, channel.TelegramId, kickUsername, kickPermanent);
+            Snackbar.Add("已执行踢出操作", Severity.Success);
+            kickUsername = "";
+        }
+        catch (Exception ex)
+        {
+            Snackbar.Add($"踢出失败：{ex.Message}", Severity.Error);
+        }
+        finally
+        {
+            kickLoading = false;
+        }
+    }
+
+    private async Task OpenEdit()
+    {
+        if (channel == null)
+            return;
+
+        var parameters = new DialogParameters { ["ChannelDbId"] = ChannelDbId };
+        var options = new DialogOptions { CloseOnEscapeKey = true, MaxWidth = MaxWidth.Medium, FullWidth = true };
+        var dialog = DialogService.Show<ChannelEditDialog>("编辑频道", parameters, options);
+        var result = await dialog.Result;
+        if (!result.Canceled)
+        {
+            await LoadChannel();
+            await LoadAdmins();
+        }
+    }
+
+    private void Close()
+    {
+        MudDialog.Close();
+    }
+}

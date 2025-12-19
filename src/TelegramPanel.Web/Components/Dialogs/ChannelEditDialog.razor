@@ -1,0 +1,136 @@
+@namespace TelegramPanel.Web.Components.Dialogs
+@inject ChannelManagementService ChannelManagement
+@inject IChannelService ChannelService
+@inject ISnackbar Snackbar
+@using TelegramPanel.Data.Entities
+
+<MudDialog>
+    <DialogContent>
+        @if (loading)
+        {
+            <MudProgressLinear Indeterminate="true" />
+        }
+        else if (channel == null)
+        {
+            <MudAlert Severity="Severity.Error" Variant="Variant.Outlined">未找到频道数据</MudAlert>
+        }
+        else
+        {
+            <MudStack Spacing="2">
+                <MudTextField @bind-Value="title" Label="频道标题" Variant="Variant.Outlined" Required="true" />
+                <MudTextField @bind-Value="about" Label="频道简介" Variant="Variant.Outlined" Lines="4" />
+
+                <MudSwitch @bind-Value="isPublic" Label="公开频道" Color="Color.Primary" />
+                @if (isPublic)
+                {
+                    <MudTextField @bind-Value="username" Label="用户名（t.me/xxx）" Variant="Variant.Outlined"
+                                  HelperText="只能包含字母/数字/下划线，且必须唯一" />
+                }
+
+                <MudSwitch @bind-Value="forwardingAllowed" Label="允许转发/保存内容" Color="Color.Primary"
+                           HelperText="关闭后为“保护内容”，禁止转发/保存（Telegram 官方功能）" />
+            </MudStack>
+        }
+    </DialogContent>
+    <DialogActions>
+        <MudButton Variant="Variant.Text" Color="Color.Default" Disabled="@saving" OnClick="Cancel">取消</MudButton>
+        <MudButton Variant="Variant.Filled" Color="Color.Primary" Disabled="@(!CanSave || saving)" OnClick="Save">
+            @if (saving)
+            {
+                <MudProgressCircular Size="Size.Small" Indeterminate="true" Class="mr-2" />
+                <span>保存中...</span>
+            }
+            else
+            {
+                <span>保存</span>
+            }
+        </MudButton>
+    </DialogActions>
+</MudDialog>
+
+@code
+{
+    [CascadingParameter] private MudDialogInstance MudDialog { get; set; } = default!;
+    [Parameter] public int ChannelDbId { get; set; }
+
+    private bool loading = true;
+    private bool saving;
+    private Channel? channel;
+
+    private string title = "";
+    private string? about;
+    private bool isPublic;
+    private string username = "";
+    private bool forwardingAllowed = true;
+
+    private bool CanSave => channel != null && !string.IsNullOrWhiteSpace(title) && (!isPublic || !string.IsNullOrWhiteSpace(username));
+
+    protected override async Task OnInitializedAsync()
+    {
+        await LoadChannel();
+    }
+
+    private async Task LoadChannel()
+    {
+        loading = true;
+        try
+        {
+            channel = await ChannelManagement.GetChannelAsync(ChannelDbId);
+            if (channel == null)
+                return;
+
+            title = channel.Title;
+            about = channel.About;
+            isPublic = !string.IsNullOrWhiteSpace(channel.Username);
+            username = channel.Username ?? "";
+        }
+        catch (Exception ex)
+        {
+            Snackbar.Add($"加载频道失败：{ex.Message}", Severity.Error);
+        }
+        finally
+        {
+            loading = false;
+        }
+    }
+
+    private async Task Save()
+    {
+        if (channel == null)
+            return;
+
+        saving = true;
+        try
+        {
+            var newTitle = title.Trim();
+            var newAbout = string.IsNullOrWhiteSpace(about) ? null : about.Trim();
+            var newUsername = string.IsNullOrWhiteSpace(username) ? null : username.Trim().TrimStart('@');
+
+            await ChannelService.UpdateChannelInfoAsync(channel.CreatorAccountId, channel.TelegramId, newTitle, newAbout);
+            await ChannelService.SetChannelVisibilityAsync(channel.CreatorAccountId, channel.TelegramId, isPublic, newUsername);
+            await ChannelService.SetForwardingAllowedAsync(channel.CreatorAccountId, channel.TelegramId, forwardingAllowed);
+
+            channel.Title = newTitle;
+            channel.About = newAbout;
+            channel.Username = isPublic ? newUsername : null;
+
+            await ChannelManagement.UpdateChannelAsync(channel);
+
+            Snackbar.Add("保存成功", Severity.Success);
+            MudDialog.Close(DialogResult.Ok(true));
+        }
+        catch (Exception ex)
+        {
+            Snackbar.Add($"保存失败：{ex.Message}", Severity.Error);
+        }
+        finally
+        {
+            saving = false;
+        }
+    }
+
+    private void Cancel()
+    {
+        MudDialog.Cancel();
+    }
+}

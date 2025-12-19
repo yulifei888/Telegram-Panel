@@ -4,6 +4,7 @@
 @inject ISnackbar Snackbar
 @inject IDialogService DialogService
 @inject NavigationManager Navigation
+@using TelegramPanel.Web.Components.Dialogs
 @using TelegramPanel.Data.Entities
 
 <PageTitle>频道列表 - Telegram Panel</PageTitle>
@@ -82,8 +83,9 @@
                 <MudTd DataLabel="最后同步">@context.SyncedAt.ToString("yyyy-MM-dd HH:mm")</MudTd>
                 <MudTd DataLabel="操作">
                     <MudMenu Icon="@Icons.Material.Filled.MoreVert" Size="Size.Small">
-                        <MudMenuItem Icon="@Icons.Material.Filled.Info" OnClick="@(() => ShowDetails(context))">查看详情</MudMenuItem>
-                        <MudMenuItem Icon="@Icons.Material.Filled.Edit" OnClick="@(() => EditChannel(context))">编辑频道</MudMenuItem>
+                        <MudMenuItem Icon="@Icons.Material.Filled.Info" OnClick="@(async () => await ShowDetails(context))">查看详情</MudMenuItem>
+                        <MudMenuItem Icon="@Icons.Material.Filled.Edit" OnClick="@(async () => await EditChannel(context))">编辑频道</MudMenuItem>
+                        <MudMenuItem Icon="@Icons.Material.Filled.PersonRemove" OnClick="@(async () => await KickUser(context))">踢人</MudMenuItem>
                         <MudMenuItem Icon="@Icons.Material.Filled.PersonAdd" OnClick="@(() => InviteUsers(context))">邀请用户</MudMenuItem>
                         <MudMenuItem Icon="@Icons.Material.Filled.Link" OnClick="@(() => CopyLink(context))">复制链接</MudMenuItem>
                         <MudDivider />
@@ -169,14 +171,28 @@
         return false;
     }
 
-    private void ShowDetails(Channel channel)
+    private async Task ShowDetails(Channel channel)
     {
-        Snackbar.Add($"查看频道详情：{channel.Title}", Severity.Info);
+        var parameters = new DialogParameters { ["ChannelDbId"] = channel.Id };
+        var options = new DialogOptions { CloseOnEscapeKey = true, MaxWidth = MaxWidth.Large, FullWidth = true };
+        DialogService.Show<ChannelDetailsDialog>("频道详情", parameters, options);
+        await Task.CompletedTask;
     }
 
-    private void EditChannel(Channel channel)
+    private async Task EditChannel(Channel channel)
     {
-        Snackbar.Add($"编辑频道：{channel.Title}", Severity.Info);
+        var parameters = new DialogParameters { ["ChannelDbId"] = channel.Id };
+        var options = new DialogOptions { CloseOnEscapeKey = true, MaxWidth = MaxWidth.Medium, FullWidth = true };
+        var dialog = DialogService.Show<ChannelEditDialog>("编辑频道", parameters, options);
+        var result = await dialog.Result;
+        if (!result.Canceled)
+            await LoadChannels();
+    }
+
+    private async Task KickUser(Channel channel)
+    {
+        // 复用详情弹窗里的“踢人”能力，减少重复 UI
+        await ShowDetails(channel);
     }
 
     private void InviteUsers(Channel channel)
