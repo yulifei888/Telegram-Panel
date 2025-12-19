@@ -45,6 +45,10 @@
                            Disabled="@(loading || selectedAccounts.Count == 0)" OnClick="DeleteSelectedAccounts" Class="ml-2">
                     删除已选
                 </MudButton>
+                <MudButton Variant="Variant.Outlined" Color="Color.Warning" StartIcon="@Icons.Material.Filled.Password"
+                           Disabled="@(loading || selectedAccounts.Count == 0)" OnClick="OpenBatchChangeTwoFactorPassword" Class="ml-2">
+                    修改二级密码（已选）
+                </MudButton>
                 <MudButton Variant="Variant.Outlined" Color="Color.Info" StartIcon="@Icons.Material.Filled.Sync"
                            Disabled="@loading" OnClick="BatchRefreshTelegramStatus" Class="ml-2">
                     批量刷新状态
@@ -119,6 +123,8 @@
                                    Disabled="@loading" OnClick="@(() => OpenSystemInbox(context))" Title="系统通知（验证码）" />
                     <MudIconButton Icon="@Icons.Material.Filled.Devices" Size="Size.Small" Color="Color.Info"
                                    Disabled="@loading" OnClick="@(() => OpenDevices(context))" Title="在线设备" />
+                    <MudIconButton Icon="@Icons.Material.Filled.Password" Size="Size.Small" Color="Color.Warning"
+                                   Disabled="@loading" OnClick="@(() => OpenChangeTwoFactorPassword(context))" Title="修改二级密码" />
                     <MudIconButton Icon="@(context.IsActive ? Icons.Material.Filled.Stop : Icons.Material.Filled.PlayArrow)"
                                    Size="Size.Small" Color="@(context.IsActive ? Color.Warning : Color.Success)"
                                    OnClick="@(() => ToggleActive(context))"
@@ -226,6 +232,41 @@
         var (channels, groups) = await AccountManagement.GetAccountStatisticsAsync(account.Id);
         var message = $"账号详情：\n手机号：{account.Phone}\n用户名：{account.Username ?? "无"}\n用户ID：{account.UserId}\n分类：{account.Category?.Name ?? "未分类"}\n创建的频道：{channels} 个\n创建的群组：{groups} 个\n创建时间：{account.CreatedAt:yyyy-MM-dd HH:mm}\n最后数据同步：{account.LastSyncAt:yyyy-MM-dd HH:mm}\nSession路径：{account.SessionPath}";
         await DialogService.ShowMessageBox("账号详情", message, "关闭");
+    }
+
+    private async Task OpenChangeTwoFactorPassword(Account account)
+    {
+        if (loading)
+            return;
+
+        var parameters = new DialogParameters
+        {
+            ["AccountIds"] = new List<int> { account.Id }
+        };
+        var options = new DialogOptions { CloseOnEscapeKey = true, MaxWidth = MaxWidth.Small, FullWidth = true };
+        DialogService.Show<TelegramPanel.Web.Components.Dialogs.ChangeTwoFactorPasswordDialog>("修改二级密码", parameters, options);
+        await Task.CompletedTask;
+    }
+
+    private async Task OpenBatchChangeTwoFactorPassword()
+    {
+        if (loading)
+            return;
+
+        var ids = selectedAccounts.Select(a => a.Id).Distinct().ToList();
+        if (ids.Count == 0)
+        {
+            Snackbar.Add("请先选择账号", Severity.Info);
+            return;
+        }
+
+        var parameters = new DialogParameters
+        {
+            ["AccountIds"] = ids
+        };
+        var options = new DialogOptions { CloseOnEscapeKey = true, MaxWidth = MaxWidth.Small, FullWidth = true };
+        DialogService.Show<TelegramPanel.Web.Components.Dialogs.ChangeTwoFactorPasswordDialog>("批量修改二级密码", parameters, options);
+        await Task.CompletedTask;
     }
 
     private static string BuildTelegramStatusTitle(TelegramAccountStatusResult s)

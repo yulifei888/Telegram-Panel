@@ -267,6 +267,65 @@ public class AccountTelegramToolsService
             .ToList();
     }
 
+    /// <summary>
+    /// 修改 Telegram 两步验证（二级密码）。
+    /// </summary>
+    public async Task<(bool Success, string? Error)> ChangeTwoFactorPasswordAsync(
+        int accountId,
+        string? currentPassword,
+        string newPassword,
+        string? hint = null,
+        CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            if (string.IsNullOrWhiteSpace(newPassword))
+                return (false, "新二级密码不能为空");
+
+            currentPassword = (currentPassword ?? string.Empty).Trim();
+            newPassword = newPassword.Trim();
+            hint = (hint ?? string.Empty).Trim();
+
+            var client = await GetOrCreateConnectedClientAsync(accountId, cancellationToken);
+            cancellationToken.ThrowIfCancellationRequested();
+
+            // 参考 WTelegramClient 官方示例：Account_UpdatePasswordSettings 需要 SRP 校验值（旧密码）与新密码 settings
+            var accountPwd = await client.Account_GetPassword();
+            cancellationToken.ThrowIfCancellationRequested();
+
+            // 若账号已开启两步验证但未提供旧密码，则直接提示
+            TL.InputCheckPasswordSRP? oldCheck = null;
+            if (accountPwd.current_algo != null)
+            {
+                if (string.IsNullOrWhiteSpace(currentPassword))
+                    return (false, "该账号已开启两步验证，请填写原二级密码");
+
+                oldCheck = await WTelegram.Client.InputCheckPassword(accountPwd, currentPassword);
+            }
+
+            // 让 InputCheckPassword 生成 new_password_hash（需要将 current_algo 置空）
+            accountPwd.current_algo = null;
+            var newPasswordHash = await WTelegram.Client.InputCheckPassword(accountPwd, newPassword);
+
+            var settings = new TL.Account_PasswordInputSettings
+            {
+                flags = TL.Account_PasswordInputSettings.Flags.has_new_algo,
+                new_algo = accountPwd.new_algo,
+                new_password_hash = newPasswordHash?.A,
+                hint = hint
+            };
+
+            await client.Account_UpdatePasswordSettings(oldCheck, settings);
+            return (true, null);
+        }
+        catch (Exception ex)
+        {
+            var (summary, details) = MapTelegramException(ex);
+            var msg = string.IsNullOrWhiteSpace(details) ? summary : $"{summary}：{details}";
+            return (false, msg);
+        }
+    }
+
     public async Task<bool> KickAuthorizationAsync(int accountId, long authorizationHash)
     {
         var client = await GetOrCreateConnectedClientAsync(accountId);
