@@ -3,6 +3,7 @@ using Microsoft.EntityFrameworkCore;
 using Serilog;
 using TelegramPanel.Core;
 using TelegramPanel.Core.Services;
+using TelegramPanel.Core.Services.Telegram;
 using TelegramPanel.Data;
 using TelegramPanel.Web.Services;
 
@@ -302,6 +303,57 @@ app.MapGet("/downloads/accounts.zip", async (
     var zipBytes = await exporter.BuildAccountsZipAsync(accounts, cancellationToken);
     var fileName = $"telegram-panel-accounts-{DateTime.UtcNow:yyyyMMdd-HHmmss}.zip";
     return Results.File(zipBytes, "application/zip", fileName);
+}).DisableAntiforgery();
+
+// 下载：导出 Bot 邀请链接（文本）
+app.MapGet("/downloads/bots/{botId:int}/invites.txt", async (
+    HttpContext http,
+    int botId,
+    BotManagementService botManagement,
+    BotTelegramService botTelegram,
+    CancellationToken cancellationToken) =>
+{
+    var bot = await botManagement.GetBotAsync(botId)
+        ?? throw new InvalidOperationException($"机器人不存在：{botId}");
+
+    var idsRaw = http.Request.Query["ids"].ToString();
+    IReadOnlyList<long> telegramIds;
+    if (string.IsNullOrWhiteSpace(idsRaw))
+    {
+        telegramIds = (await botManagement.GetChannelsAsync(botId)).Select(x => x.TelegramId).ToList();
+    }
+    else
+    {
+        telegramIds = idsRaw
+            .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .Select(s => long.TryParse(s, out var x) ? x : 0)
+            .Where(x => x > 0)
+            .Distinct()
+            .ToList();
+    }
+
+    var links = await botTelegram.ExportInviteLinksAsync(botId, telegramIds, cancellationToken);
+
+    var lines = new List<string>
+    {
+        $"# Bot: {bot.Name}",
+        $"# ExportedAtUtc: {DateTime.UtcNow:O}",
+        "# Format: <TelegramId>\\t<Link>",
+        ""
+    };
+
+    foreach (var id in telegramIds)
+    {
+        if (links.TryGetValue(id, out var link))
+            lines.Add($"{id}\t{link}");
+        else
+            lines.Add($"{id}\t(无法生成/不可见/无权限)");
+    }
+
+    var text = string.Join(Environment.NewLine, lines);
+    var bytes = System.Text.Encoding.UTF8.GetBytes(text);
+    var fileName = $"telegram-panel-bot-invites-{botId}-{DateTime.UtcNow:yyyyMMdd-HHmmss}.txt";
+    return Results.File(bytes, "text/plain; charset=utf-8", fileName);
 }).DisableAntiforgery();
 
 // TODO: Hangfire Dashboard

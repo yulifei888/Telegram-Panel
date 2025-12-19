@@ -1,0 +1,169 @@
+@page "/bots"
+@inject BotManagementService BotManagement
+@inject ISnackbar Snackbar
+@inject IDialogService DialogService
+@inject NavigationManager Navigation
+@using TelegramPanel.Data.Entities
+
+<PageTitle>机器人管理 - Telegram Panel</PageTitle>
+
+<MudText Typo="Typo.h4" Class="mb-4">机器人管理</MudText>
+
+<MudGrid>
+    <MudItem xs="12" md="6">
+        <MudCard>
+            <MudCardContent>
+                <MudText Typo="Typo.h6" Class="mb-2">新增机器人</MudText>
+                <MudTextField @bind-Value="newName" Label="名称" Variant="Variant.Outlined" Required="true" />
+                <MudTextField @bind-Value="newToken" Label="Bot Token" Variant="Variant.Outlined" Required="true" Class="mt-3" />
+                <MudTextField @bind-Value="newUsername" Label="用户名（可选）" Variant="Variant.Outlined" Placeholder="bot_username" Class="mt-3" />
+                <MudButton Variant="Variant.Filled" Color="Color.Primary" Disabled="@loading" Class="mt-3"
+                           OnClick="@(async (MouseEventArgs _) => await CreateBotAsync())">
+                    添加
+                </MudButton>
+            </MudCardContent>
+        </MudCard>
+    </MudItem>
+
+    <MudItem xs="12" md="12">
+        <MudCard Class="mt-4">
+            <MudCardContent>
+                <MudTable Items="@bots" Hover="true" Breakpoint="Breakpoint.Sm" Loading="@loading">
+                    <ToolBarContent>
+                        <MudText Typo="Typo.h6">机器人 (@bots.Count)</MudText>
+                        <MudSpacer />
+                        <MudButton Variant="Variant.Filled" Color="Color.Primary" StartIcon="@Icons.Material.Filled.Refresh"
+                                   Disabled="@loading" OnClick="LoadBots">
+                            刷新
+                        </MudButton>
+                    </ToolBarContent>
+                    <HeaderContent>
+                        <MudTh>名称</MudTh>
+                        <MudTh>用户名</MudTh>
+                        <MudTh>频道数</MudTh>
+                        <MudTh>分类数</MudTh>
+                        <MudTh>最后同步</MudTh>
+                        <MudTh>状态</MudTh>
+                        <MudTh>操作</MudTh>
+                    </HeaderContent>
+                    <RowTemplate>
+                        <MudTd DataLabel="名称">@context.Name</MudTd>
+                        <MudTd DataLabel="用户名">@(!string.IsNullOrWhiteSpace(context.Username) ? $"@{context.Username}" : "-")</MudTd>
+                        <MudTd DataLabel="频道数">@context.Channels.Count</MudTd>
+                        <MudTd DataLabel="分类数">@context.Categories.Count</MudTd>
+                        <MudTd DataLabel="最后同步">@((context.LastSyncAt.HasValue ? context.LastSyncAt.Value.ToString("yyyy-MM-dd HH:mm") : "-"))</MudTd>
+                        <MudTd DataLabel="状态">
+                            <MudChip T="string" Size="Size.Small" Color="@(context.IsActive ? Color.Success : Color.Default)">
+                                @(context.IsActive ? "启用" : "停用")
+                            </MudChip>
+                        </MudTd>
+                        <MudTd DataLabel="操作">
+                                <MudMenu Icon="@Icons.Material.Filled.MoreVert" Size="Size.Small">
+                                    <MudMenuItem Icon="@Icons.Material.Filled.List"
+                                             OnClick="@(() => Navigation.NavigateTo($"/bots/{context.Id}/channels"))">
+                                    频道列表
+                                </MudMenuItem>
+                                <MudDivider />
+                                <MudMenuItem Icon="@Icons.Material.Filled.Delete" IconColor="Color.Error"
+                                             OnClick="@(async () => await DeleteBotAsync(context))">
+                                    删除
+                                </MudMenuItem>
+                            </MudMenu>
+                        </MudTd>
+                    </RowTemplate>
+                    <NoRecordsContent>
+                        <MudText>暂无机器人</MudText>
+                    </NoRecordsContent>
+                </MudTable>
+            </MudCardContent>
+        </MudCard>
+    </MudItem>
+</MudGrid>
+
+@code {
+    private bool loading = true;
+    private List<Bot> bots = new();
+
+    private string newName = "";
+    private string newToken = "";
+    private string newUsername = "";
+
+    protected override async Task OnInitializedAsync()
+    {
+        await LoadBots();
+    }
+
+    private async Task LoadBots()
+    {
+        loading = true;
+        try
+        {
+            var list = await BotManagement.GetAllBotsAsync();
+            bots = list.ToList();
+        }
+        catch (Exception ex)
+        {
+            Snackbar.Add($"加载失败：{ex.Message}", Severity.Error);
+        }
+        finally
+        {
+            loading = false;
+        }
+    }
+
+    private async Task CreateBotAsync()
+    {
+        if (loading) return;
+        if (string.IsNullOrWhiteSpace(newName) || string.IsNullOrWhiteSpace(newToken))
+        {
+            Snackbar.Add("请填写名称和 Token", Severity.Warning);
+            return;
+        }
+
+        loading = true;
+        try
+        {
+            await BotManagement.CreateBotAsync(newName, newToken, newUsername);
+            newName = "";
+            newToken = "";
+            newUsername = "";
+            await LoadBots();
+            Snackbar.Add("机器人已创建", Severity.Success);
+        }
+        catch (Exception ex)
+        {
+            Snackbar.Add($"创建失败：{ex.Message}", Severity.Error);
+        }
+        finally
+        {
+            loading = false;
+        }
+    }
+
+    private async Task DeleteBotAsync(Bot bot)
+    {
+        bool? result = await DialogService.ShowMessageBox(
+            "确认删除",
+            $"确定要删除机器人 {bot.Name} 吗？该机器人加入的频道与分类也会一并删除。",
+            yesText: "删除", cancelText: "取消");
+
+        if (result != true)
+            return;
+
+        loading = true;
+        try
+        {
+            await BotManagement.DeleteBotAsync(bot.Id);
+            await LoadBots();
+            Snackbar.Add("删除成功", Severity.Success);
+        }
+        catch (Exception ex)
+        {
+            Snackbar.Add($"删除失败：{ex.Message}", Severity.Error);
+        }
+        finally
+        {
+            loading = false;
+        }
+    }
+}

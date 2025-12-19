@@ -21,6 +21,7 @@ public static class ServiceCollectionExtensions
         services.AddScoped<IGroupService, GroupService>();
         services.AddScoped<ISessionImporter, SessionImporter>();
         services.AddScoped<AccountTelegramToolsService>();
+        services.AddScoped<BotTelegramService>();
 
         // 注册账号导入协调服务
         services.AddScoped<AccountImportService>();
@@ -32,6 +33,7 @@ public static class ServiceCollectionExtensions
         services.AddScoped<ChannelGroupManagementService>();
         services.AddScoped<GroupManagementService>();
         services.AddScoped<BatchTaskManagementService>();
+        services.AddScoped<BotManagementService>();
 
         return services;
     }

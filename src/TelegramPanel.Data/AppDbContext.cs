@@ -20,6 +20,9 @@ public class AppDbContext : DbContext
     public DbSet<ChannelGroup> ChannelGroups => Set<ChannelGroup>();
     public DbSet<Group> Groups => Set<Group>();
     public DbSet<BatchTask> BatchTasks => Set<BatchTask>();
+    public DbSet<Bot> Bots => Set<Bot>();
+    public DbSet<BotChannel> BotChannels => Set<BotChannel>();
+    public DbSet<BotChannelCategory> BotChannelCategories => Set<BotChannelCategory>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
@@ -136,6 +139,56 @@ public class AppDbContext : DbContext
 
             entity.HasIndex(e => e.Status);
             entity.HasIndex(e => e.CreatedAt);
+        });
+
+        // Bot配置
+        modelBuilder.Entity<Bot>(entity =>
+        {
+            entity.HasKey(e => e.Id);
+            entity.Property(e => e.Name).IsRequired().HasMaxLength(100);
+            entity.Property(e => e.Token).IsRequired().HasMaxLength(200);
+            entity.Property(e => e.Username).HasMaxLength(100);
+
+            entity.HasIndex(e => e.Name).IsUnique();
+            entity.HasIndex(e => e.Username);
+        });
+
+        // BotChannelCategory配置
+        modelBuilder.Entity<BotChannelCategory>(entity =>
+        {
+            entity.HasKey(e => e.Id);
+            entity.Property(e => e.Name).IsRequired().HasMaxLength(100);
+            entity.Property(e => e.Description).HasMaxLength(500);
+
+            entity.HasIndex(e => new { e.BotId, e.Name }).IsUnique();
+
+            entity.HasOne(e => e.Bot)
+                .WithMany(b => b.Categories)
+                .HasForeignKey(e => e.BotId)
+                .OnDelete(DeleteBehavior.Cascade);
+        });
+
+        // BotChannel配置
+        modelBuilder.Entity<BotChannel>(entity =>
+        {
+            entity.HasKey(e => e.Id);
+            entity.Property(e => e.Title).IsRequired().HasMaxLength(200);
+            entity.Property(e => e.Username).HasMaxLength(100);
+            entity.Property(e => e.About).HasMaxLength(1000);
+
+            entity.HasIndex(e => new { e.BotId, e.TelegramId }).IsUnique();
+            entity.HasIndex(e => e.Username);
+            entity.HasIndex(e => e.CategoryId);
+
+            entity.HasOne(e => e.Bot)
+                .WithMany(b => b.Channels)
+                .HasForeignKey(e => e.BotId)
+                .OnDelete(DeleteBehavior.Cascade);
+
+            entity.HasOne(e => e.Category)
+                .WithMany(c => c.Channels)
+                .HasForeignKey(e => e.CategoryId)
+                .OnDelete(DeleteBehavior.SetNull);
         });
     }
 }
