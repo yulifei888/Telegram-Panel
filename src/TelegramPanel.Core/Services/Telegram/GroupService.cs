@@ -272,7 +272,7 @@ public class GroupService : IGroupService
         var absoluteSessionPath = Path.GetFullPath(account.SessionPath);
         if (System.IO.File.Exists(absoluteSessionPath) && LooksLikeSqliteSession(absoluteSessionPath))
         {
-            var ok = await SessionDataConverter.TryConvertSqliteSessionFromJsonAsync(
+            var converted = await SessionDataConverter.TryConvertSqliteSessionFromJsonAsync(
                 phone: account.Phone,
                 apiId: account.ApiId,
                 apiHash: account.ApiHash,
@@ -280,12 +280,12 @@ public class GroupService : IGroupService
                 logger: _logger
             );
 
-            if (!ok)
+            if (!converted.Ok)
             {
                 throw new InvalidOperationException(
                     $"该账号的 Session 文件为 SQLite 格式：{account.SessionPath}，本项目无法直接复用。" +
                     "已尝试从本地 json（例如 sessions/<手机号>.json 或 session数据/<手机号>/*.json）读取 session_string 自动转换但失败；" +
-                    "请到【账号-手机号登录】重新登录生成新的 sessions/*.session 后再操作。");
+                    $"原因：{converted.Reason}。请到【账号-手机号登录】重新登录生成新的 sessions/*.session 后再操作。");
             }
         }
 

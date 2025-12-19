@@ -705,7 +705,7 @@ public class AccountTelegramToolsService
         {
             cancellationToken.ThrowIfCancellationRequested();
 
-            var ok = await SessionDataConverter.TryConvertSqliteSessionFromJsonAsync(
+            var converted = await SessionDataConverter.TryConvertSqliteSessionFromJsonAsync(
                 phone: account.Phone,
                 apiId: account.ApiId,
                 apiHash: account.ApiHash,
@@ -713,11 +713,11 @@ public class AccountTelegramToolsService
                 logger: _logger
             );
 
-            if (!ok)
+            if (!converted.Ok)
             {
                 throw new InvalidOperationException(
                     $"该账号的 Session 文件为 SQLite 格式：{account.SessionPath}，无法自动转换为可用 session。" +
-                    "建议：重新导入包含 session_string 的 json，或到【账号-手机号登录】重新登录生成新的 sessions/*.session。");
+                    $"原因：{converted.Reason}。建议：重新导入包含 session_string 的 json，或到【账号-手机号登录】重新登录生成新的 sessions/*.session。");
             }
         }
 

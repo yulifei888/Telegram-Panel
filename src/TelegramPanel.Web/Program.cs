@@ -10,6 +10,197 @@ using TelegramPanel.Core.Services;
 using TelegramPanel.Core.Services.Telegram;
 using TelegramPanel.Data;
 using TelegramPanel.Web.Services;
+using Microsoft.Extensions.Logging;
+
+// 诊断：对某个目录下的 *.json/*.session 做一次“可转换/可校验”检查（不写数据库）
+// 用法：dotnet run --project src/TelegramPanel.Web -- --diag-session-dir "D:/path/to/dir"
+if (args.Length >= 2 && string.Equals(args[0], "--diag-session-dir", StringComparison.OrdinalIgnoreCase))
+{
+    var dir = args[1];
+    if (!Directory.Exists(dir))
+    {
+        Console.Error.WriteLine($"目录不存在：{dir}");
+        return;
+    }
+
+    using var loggerFactory = Microsoft.Extensions.Logging.LoggerFactory.Create(b =>
+    {
+        b.AddSimpleConsole(o =>
+        {
+            o.SingleLine = true;
+            o.TimestampFormat = "HH:mm:ss ";
+        });
+        b.SetMinimumLevel(Microsoft.Extensions.Logging.LogLevel.Information);
+    });
+    var logger = loggerFactory.CreateLogger("SessionDiag");
+
+    var jsonFiles = Directory.EnumerateFiles(dir, "*.json", SearchOption.TopDirectoryOnly)
+        .OrderBy(p => p, StringComparer.OrdinalIgnoreCase)
+        .ToList();
+
+    if (jsonFiles.Count == 0)
+    {
+        Console.Error.WriteLine("目录内未找到任何 .json 文件");
+        return;
+    }
+
+    var tempOutDir = Path.Combine(Path.GetTempPath(), "telegram-panel-diag-sessions");
+    Directory.CreateDirectory(tempOutDir);
+
+    foreach (var jsonPath in jsonFiles)
+    {
+        try
+        {
+            var json = await File.ReadAllTextAsync(jsonPath);
+            using var doc = System.Text.Json.JsonDocument.Parse(json);
+            var root = doc.RootElement;
+
+            if (!TryGetInt(root, out var apiId, "api_id", "app_id"))
+            {
+                Console.WriteLine($"[FAIL] {Path.GetFileName(jsonPath)}: 缺少 api_id/app_id");
+                continue;
+            }
+
+            if (!TryGetString(root, out var apiHash, "api_hash", "app_hash") || string.IsNullOrWhiteSpace(apiHash))
+            {
+                Console.WriteLine($"[FAIL] {Path.GetFileName(jsonPath)}: 缺少 api_hash/app_hash");
+                continue;
+            }
+
+            if (!TryGetString(root, out var phone, "phone") || string.IsNullOrWhiteSpace(phone))
+            {
+                Console.WriteLine($"[FAIL] {Path.GetFileName(jsonPath)}: 缺少 phone");
+                continue;
+            }
+
+            _ = TryGetLong(root, out var userId, "user_id", "uid");
+            _ = TryGetString(root, out var sessionString, "session_string", "sessionString");
+
+            phone = phone.Trim();
+            apiHash = apiHash.Trim();
+            sessionString = string.IsNullOrWhiteSpace(sessionString) ? null : sessionString.Trim();
+
+            var baseName = Path.GetFileNameWithoutExtension(jsonPath);
+            var sessionPath = Path.Combine(dir, $"{baseName}.session");
+            if (!File.Exists(sessionPath))
+                sessionPath = Directory.EnumerateFiles(dir, "*.session", SearchOption.TopDirectoryOnly).FirstOrDefault() ?? string.Empty;
+
+            if (string.IsNullOrWhiteSpace(sessionPath) || !File.Exists(sessionPath))
+            {
+                Console.WriteLine($"[FAIL] {phone}: 未找到 .session 文件（json={Path.GetFileName(jsonPath)}）");
+                continue;
+            }
+
+            var targetSessionPath = Path.Combine(tempOutDir, $"{phone}.session");
+
+            TelegramPanel.Core.Services.Telegram.SessionDataConverter.SessionConvertResult converted;
+            if (TelegramPanel.Core.Services.Telegram.SessionDataConverter.LooksLikeSqliteSession(sessionPath))
+            {
+                if (!string.IsNullOrWhiteSpace(sessionString))
+                {
+                    converted = await TelegramPanel.Core.Services.Telegram.SessionDataConverter.TryCreateWTelegramSessionFromSessionStringAsync(
+                        sessionString: sessionString,
+                        apiId: apiId,
+                        apiHash: apiHash,
+                        targetSessionPath: targetSessionPath,
+                        phone: phone,
+                        userId: userId,
+                        logger: logger);
+                }
+                else
+                {
+                    converted = await TelegramPanel.Core.Services.Telegram.SessionDataConverter.TryCreateWTelegramSessionFromTelethonSqliteFileAsync(
+                        sqliteSessionPath: sessionPath,
+                        apiId: apiId,
+                        apiHash: apiHash,
+                        targetSessionPath: targetSessionPath,
+                        phone: phone,
+                        userId: userId,
+                        logger: logger);
+                }
+            }
+            else
+            {
+                File.Copy(sessionPath, targetSessionPath, overwrite: true);
+                converted = TelegramPanel.Core.Services.Telegram.SessionDataConverter.SessionConvertResult.Success();
+            }
+
+            if (converted.Ok)
+                Console.WriteLine($"[OK] {phone}: 可用（输出={targetSessionPath}）");
+            else
+                Console.WriteLine($"[FAIL] {phone}: {converted.Reason}");
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"[FAIL] {Path.GetFileName(jsonPath)}: {ex.GetType().Name}: {ex.Message}");
+        }
+    }
+
+    return;
+
+    static bool TryGetInt(System.Text.Json.JsonElement root, out int value, params string[] names)
+    {
+        foreach (var name in names)
+        {
+            if (root.TryGetProperty(name, out var prop))
+            {
+                if (prop.ValueKind == System.Text.Json.JsonValueKind.Number && prop.TryGetInt32(out var i))
+                {
+                    value = i;
+                    return true;
+                }
+
+                if (prop.ValueKind == System.Text.Json.JsonValueKind.String && int.TryParse(prop.GetString(), out var isv))
+                {
+                    value = isv;
+                    return true;
+                }
+            }
+        }
+
+        value = 0;
+        return false;
+    }
+
+    static bool TryGetLong(System.Text.Json.JsonElement root, out long? value, params string[] names)
+    {
+        foreach (var name in names)
+        {
+            if (root.TryGetProperty(name, out var prop))
+            {
+                if (prop.ValueKind == System.Text.Json.JsonValueKind.Number && prop.TryGetInt64(out var l))
+                {
+                    value = l;
+                    return true;
+                }
+
+                if (prop.ValueKind == System.Text.Json.JsonValueKind.String && long.TryParse(prop.GetString(), out var ls))
+                {
+                    value = ls;
+                    return true;
+                }
+            }
+        }
+
+        value = null;
+        return false;
+    }
+
+    static bool TryGetString(System.Text.Json.JsonElement root, out string? value, params string[] names)
+    {
+        foreach (var name in names)
+        {
+            if (root.TryGetProperty(name, out var prop) && prop.ValueKind == System.Text.Json.JsonValueKind.String)
+            {
+                value = prop.GetString();
+                return true;
+            }
+        }
+
+        value = null;
+        return false;
+    }
+}
 
 var builder = WebApplication.CreateBuilder(args);
 

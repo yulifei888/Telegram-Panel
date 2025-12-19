@@ -332,18 +332,18 @@ public class AccountImportService
             using var doc = System.Text.Json.JsonDocument.Parse(json);
             var root = doc.RootElement;
 
-            if (!TryGetInt(root, out var apiId, "api_id", "app_id"))
+            if (!TryGetInt(root, out var apiId, "api_id", "app_id", "apiId", "appId"))
                 return new ImportResult(false, null, null, null, null, $"json 缺少 api_id: {jsonPath}");
 
-            if (!TryGetString(root, out var apiHash, "api_hash", "app_hash") || string.IsNullOrWhiteSpace(apiHash))
+            if (!TryGetString(root, out var apiHash, "api_hash", "app_hash", "apiHash", "appHash") || string.IsNullOrWhiteSpace(apiHash))
                 return new ImportResult(false, null, null, null, null, $"json 缺少 api_hash: {jsonPath}");
 
-            if (!TryGetString(root, out var phone, "phone") || string.IsNullOrWhiteSpace(phone))
+            if (!TryGetString(root, out var phone, "phone", "phone_number", "phoneNumber") || string.IsNullOrWhiteSpace(phone))
                 return new ImportResult(false, null, null, null, null, $"json 缺少 phone: {jsonPath}");
 
             phone = phone.Trim();
 
-            _ = TryGetLong(root, out var userId, "user_id", "uid");
+            _ = TryGetLong(root, out var userId, "user_id", "uid", "userId");
             _ = TryGetString(root, out var username, "username");
             username = string.IsNullOrWhiteSpace(username) ? null : username.Trim();
             _ = TryGetString(root, out var firstName, "first_name", "firstName");
@@ -374,11 +374,11 @@ public class AccountImportService
             // 优先尝试使用 json 里的 session_string（映射到 WTelegram 的 session_key）来生成可用 session 文件。
             if (LooksLikeSqliteSession(sessionCandidate))
             {
-                bool ok;
+                SessionDataConverter.SessionConvertResult converted;
                 if (string.IsNullOrWhiteSpace(sessionKey))
                 {
                     // 没有 session_string 也不阻挡：直接从 sqlite 里取 dc/auth_key 转换为 WTelegram session
-                    ok = await SessionDataConverter.TryCreateWTelegramSessionFromTelethonSqliteFileAsync(
+                    converted = await SessionDataConverter.TryCreateWTelegramSessionFromTelethonSqliteFileAsync(
                         sqliteSessionPath: sessionCandidate,
                         apiId: apiId,
                         apiHash: apiHash.Trim(),
@@ -389,7 +389,7 @@ public class AccountImportService
                 }
                 else
                 {
-                    ok = await SessionDataConverter.TryCreateWTelegramSessionFromSessionStringAsync(
+                    converted = await SessionDataConverter.TryCreateWTelegramSessionFromSessionStringAsync(
                         sessionString: sessionKey,
                         apiId: apiId,
                         apiHash: apiHash.Trim(),
@@ -399,9 +399,11 @@ public class AccountImportService
                         logger: _logger);
                 }
 
-                if (!ok)
+                if (!converted.Ok)
                 {
-                    return new ImportResult(false, phone, userId, username, null, "该 .session 为 SQLite 格式，且无法自动转换为可用 session（请重新登录生成新 session）");
+                    var reason = converted.Reason ?? "未知原因";
+                    return new ImportResult(false, phone, userId, username, null,
+                        $"该 .session 为 SQLite 格式，但转换/校验失败：{reason}（通常表示账号已掉线/被登出/会话失效，需要重新登录生成新 session）");
                 }
             }
             else
