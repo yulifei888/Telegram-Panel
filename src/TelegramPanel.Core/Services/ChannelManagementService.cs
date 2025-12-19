@@ -62,6 +62,9 @@ public class ChannelManagementService
 
     public async Task<Channel> CreateOrUpdateChannelAsync(Channel channel)
     {
+        if (channel.TelegramId <= 0)
+            throw new ArgumentException("TelegramId 必须为正数", nameof(channel));
+
         var existing = await _channelRepository.GetByTelegramIdAsync(channel.TelegramId);
         if (existing != null)
         {
@@ -72,7 +75,8 @@ public class ChannelManagementService
             existing.MemberCount = channel.MemberCount;
             existing.About = channel.About;
             existing.AccessHash = channel.AccessHash;
-            existing.GroupId = channel.GroupId;
+            if (channel.GroupId.HasValue)
+                existing.GroupId = channel.GroupId;
             if (existing.CreatorAccountId == null && channel.CreatorAccountId != null)
                 existing.CreatorAccountId = channel.CreatorAccountId;
             if (channel.CreatedAt.HasValue)
@@ -82,12 +86,50 @@ public class ChannelManagementService
             await _channelRepository.UpdateAsync(existing);
             return existing;
         }
-        else
+
+        // 兼容历史数据：曾出现 TelegramId=0 的“占位频道”记录（例如早期创建后未正确落库 TelegramId）
+        // 同步时若能精确匹配到占位记录，则更新它而不是插入新记录，避免列表重复。
+        if (channel.CreatorAccountId.HasValue && channel.CreatorAccountId.Value > 0)
         {
-            // 创建新频道
-            channel.SyncedAt = DateTime.UtcNow;
-            return await _channelRepository.AddAsync(channel);
+            var creatorId = channel.CreatorAccountId.Value;
+            var candidates = (await _channelRepository.FindAsync(c =>
+                    c.TelegramId == 0
+                    && c.CreatorAccountId == creatorId
+                    && (
+                        (!string.IsNullOrWhiteSpace(channel.Username) && c.Username == channel.Username)
+                        || c.Title == channel.Title
+                    )))
+                .OrderByDescending(c => c.SyncedAt)
+                .ToList();
+
+            var legacy = candidates.FirstOrDefault();
+            if (legacy != null)
+            {
+                // 清理多余的占位重复记录（无 TelegramId 的记录不具备业务价值）
+                foreach (var extra in candidates.Skip(1))
+                    await _channelRepository.DeleteAsync(extra);
+
+                legacy.TelegramId = channel.TelegramId;
+                legacy.AccessHash = channel.AccessHash;
+                legacy.Title = channel.Title;
+                legacy.Username = channel.Username;
+                legacy.IsBroadcast = channel.IsBroadcast;
+                legacy.MemberCount = channel.MemberCount;
+                legacy.About = channel.About;
+                if (channel.GroupId.HasValue)
+                    legacy.GroupId = channel.GroupId;
+                if (channel.CreatedAt.HasValue)
+                    legacy.CreatedAt = channel.CreatedAt;
+                legacy.SyncedAt = DateTime.UtcNow;
+
+                await _channelRepository.UpdateAsync(legacy);
+                return legacy;
+            }
         }
+
+        // 创建新频道
+        channel.SyncedAt = DateTime.UtcNow;
+        return await _channelRepository.AddAsync(channel);
     }
 
     public async Task UpdateChannelAsync(Channel channel)
