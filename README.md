@@ -2,6 +2,11 @@
 
 > 基于 WTelegramClient 的 Telegram 多账户管理面板，支持批量账号管理、频道统计与操作。
 
+## 社区
+
+- TG 频道：https://t.me/zhanzhangck
+- 站长交流群：https://t.me/vpsbbq
+
 ## 项目概述
 
 ### 核心功能
