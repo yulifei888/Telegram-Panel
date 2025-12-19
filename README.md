@@ -23,10 +23,12 @@
 <details>
 <summary>点击展开/收起截图</summary>
 
-<img src="screenshot/Dashboard.png" width="900" />
-<img src="screenshot/account.png" width="900" />
-<img src="screenshot/Create channel.png" width="900" />
-<img src="screenshot/Import account.png" width="900" />
+| | | |
+|---|---|---|
+| <img src="screenshot/Dashboard.png" width="300" /> | <img src="screenshot/account.png" width="300" /> | <img src="screenshot/equipment.png" width="300" /> |
+| <img src="screenshot/Import account.png" width="300" /> | <img src="screenshot/Login with mobile phone number.png" width="300" /> | <img src="screenshot/System notification.png" width="300" /> |
+| <img src="screenshot/Create channel.png" width="300" /> | <img src="screenshot/Invite users in batches.png" width="300" /> | <img src="screenshot/Set up administrators in batches.png" width="300" /> |
+| <img src="screenshot/BOT management channel.png" width="300" /> |  |  |
 
 </details>
 
