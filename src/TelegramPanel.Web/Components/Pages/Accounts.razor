@@ -535,9 +535,13 @@
     {
         try
         {
-            await AccountManagement.SetAccountActiveStatusAsync(account.Id, !account.IsActive);
-            account.IsActive = !account.IsActive;
-            Snackbar.Add($"账号已{(account.IsActive ? "启用" : "停用")}", Severity.Success);
+            var newIsActive = !account.IsActive;
+            await AccountManagement.SetAccountActiveStatusAsync(account.Id, newIsActive);
+
+            // 注意：Account 实体可能被同一个 DbContext 跟踪，SetAccountActiveStatusAsync 内部已更新该实例。
+            // 这里用 newIsActive 赋值/提示，避免出现“又反转一次”的提示错误。
+            account.IsActive = newIsActive;
+            Snackbar.Add($"账号已{(newIsActive ? "启用" : "停用")}", Severity.Success);
         }
         catch (Exception ex)
         {
