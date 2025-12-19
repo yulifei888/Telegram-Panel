@@ -103,7 +103,6 @@
                         <MudMenuItem Icon="@Icons.Material.Filled.PersonRemove" OnClick="@(async () => await KickUser(context))">踢人</MudMenuItem>
                         <MudMenuItem Icon="@Icons.Material.Filled.PersonAdd" OnClick="@(() => InviteUsers(context))">邀请用户</MudMenuItem>
                         <MudMenuItem Icon="@Icons.Material.Filled.Link" OnClick="@(async () => await CopyLinkAsync(context))">复制链接</MudMenuItem>
-                        <MudMenuItem Icon="@Icons.Material.Filled.Key" OnClick="@(async () => await CopyInviteAsync(context))">复制邀请链接</MudMenuItem>
                         <MudDivider />
                         <MudMenuItem Icon="@Icons.Material.Filled.Delete" IconColor="Color.Error" OnClick="@(() => DeleteChannel(context.Id))">删除频道</MudMenuItem>
                     </MudMenu>
@@ -303,27 +302,6 @@
         catch (Exception ex)
         {
             Snackbar.Add($"复制失败：{ex.Message}", Severity.Error);
-        }
-    }
-
-    private async Task CopyInviteAsync(Channel channel)
-    {
-        try
-        {
-            var executeAccountId = channel.CreatorAccountId ?? filterAccount;
-            if (executeAccountId <= 0)
-            {
-                Snackbar.Add("无法导出邀请链接：请先选择账号或确保频道有创建账号", Severity.Warning);
-                return;
-            }
-
-            var link = await ChannelService.ExportJoinLinkAsync(executeAccountId, channel.TelegramId);
-            await JS.InvokeVoidAsync("telegramPanel.copyText", link);
-            Snackbar.Add("已复制邀请链接", Severity.Success);
-        }
-        catch (Exception ex)
-        {
-            Snackbar.Add($"获取邀请失败：{ex.Message}", Severity.Error);
         }
     }
 
