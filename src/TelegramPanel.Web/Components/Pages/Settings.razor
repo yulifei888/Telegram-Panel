@@ -71,12 +71,24 @@
                 <MudText Typo="Typo.h6">数据同步</MudText>
             </MudCardHeader>
             <MudCardContent>
-                <MudSwitch @bind-Value="autoSync" Label="自动同步频道/群组信息" Color="Color.Primary" />
+                <MudAlert Severity="Severity.Info" Variant="Variant.Outlined" Dense="true" Class="mb-3">
+                    <MudText Typo="Typo.body2">
+                        <strong>同步说明：</strong>将每个活跃账号“创建的频道 + 创建的群组”拉取并写入本地数据库，用于频道/群组列表展示，以及批量任务自动选择执行账号。
+                        <br />
+                        <strong>不包含：</strong>Telegram 状态检测（冻结/封号等）与验证码收取。
+                    </MudText>
+                </MudAlert>
+
+                <MudSwitch @bind-Value="autoSync" Label="自动同步频道/群组数据（后台）" Color="Color.Primary" />
                 @if (autoSync)
                 {
                     <MudNumericField @bind-Value="syncInterval" Label="同步间隔 (小时)" Variant="Variant.Outlined" Class="mt-3"
                                      Min="1" Max="24" />
                 }
+                <MudButton Variant="Variant.Outlined" Color="Color.Primary" FullWidth="true" Class="mt-3"
+                           OnClick="@(async (MouseEventArgs _) => await SaveSyncConfig())">
+                    保存同步设置
+                </MudButton>
                 <MudButton Variant="Variant.Outlined" Color="Color.Info" FullWidth="true" Class="mt-4"
                            OnClick="@(async (MouseEventArgs _) => await SyncNow())">
                     立即同步
@@ -146,6 +158,8 @@
         // 从配置文件加载默认设置
         apiId = Configuration["Telegram:ApiId"] ?? "";
         apiHash = Configuration["Telegram:ApiHash"] ?? "";
+        autoSync = Configuration.GetValue("Sync:AutoSyncEnabled", false);
+        syncInterval = Configuration.GetValue("Sync:IntervalHours", 6);
     }
 
     private async Task SaveApiConfig()
@@ -162,28 +176,14 @@
             return;
         }
 
-        var localSettings = new
-        {
-            Telegram = new
-            {
-                ApiId = parsedApiId,
-                ApiHash = apiHash.Trim()
-            }
-        };
-
         try
         {
             var localConfigPath = LocalConfigPath;
-            var json = System.Text.Json.JsonSerializer.Serialize(
-                localSettings,
-                new System.Text.Json.JsonSerializerOptions { WriteIndented = true }
-            );
-
-            await System.IO.File.WriteAllTextAsync(
-                localConfigPath,
-                json,
-                new System.Text.UTF8Encoding(encoderShouldEmitUTF8Identifier: false)
-            );
+            var root = await LoadOrCreateLocalConfigAsync();
+            var telegram = EnsureObject(root, "Telegram");
+            telegram["ApiId"] = parsedApiId;
+            telegram["ApiHash"] = apiHash.Trim();
+            await SaveLocalConfigAsync(root);
 
             // 配置变更后清理客户端缓存，确保后续操作使用新 ApiId/ApiHash
             await TelegramClientPool.RemoveAllClientsAsync();
@@ -196,6 +196,65 @@
         {
             Snackbar.Add($"保存失败：{ex.Message}（路径：{LocalConfigPath}）", Severity.Error);
         }
+    }
+
+    private async Task SaveSyncConfig()
+    {
+        if (autoSync && (syncInterval < 1 || syncInterval > 24))
+        {
+            Snackbar.Add("同步间隔范围应为 1-24 小时", Severity.Error);
+            return;
+        }
+
+        try
+        {
+            var root = await LoadOrCreateLocalConfigAsync();
+            var sync = EnsureObject(root, "Sync");
+            sync["AutoSyncEnabled"] = autoSync;
+            sync["IntervalHours"] = syncInterval;
+            await SaveLocalConfigAsync(root);
+
+            Snackbar.Add("同步设置已保存（重启/自动重载后生效）", Severity.Success);
+            StateHasChanged();
+        }
+        catch (Exception ex)
+        {
+            Snackbar.Add($"保存失败：{ex.Message}（路径：{LocalConfigPath}）", Severity.Error);
+        }
+    }
+
+    private async Task<System.Text.Json.Nodes.JsonObject> LoadOrCreateLocalConfigAsync()
+    {
+        var path = LocalConfigPath;
+        if (!System.IO.File.Exists(path))
+            return new System.Text.Json.Nodes.JsonObject();
+
+        var json = await System.IO.File.ReadAllTextAsync(path);
+        if (string.IsNullOrWhiteSpace(json))
+            return new System.Text.Json.Nodes.JsonObject();
+
+        return System.Text.Json.Nodes.JsonNode.Parse(json)?.AsObject()
+               ?? new System.Text.Json.Nodes.JsonObject();
+    }
+
+    private async Task SaveLocalConfigAsync(System.Text.Json.Nodes.JsonObject root)
+    {
+        var json = root.ToJsonString(new System.Text.Json.JsonSerializerOptions { WriteIndented = true });
+        await System.IO.File.WriteAllTextAsync(
+            LocalConfigPath,
+            json,
+            new System.Text.UTF8Encoding(encoderShouldEmitUTF8Identifier: false)
+        );
+    }
+
+    private static System.Text.Json.Nodes.JsonObject EnsureObject(System.Text.Json.Nodes.JsonObject root, string key)
+    {
+        if (root[key] is System.Text.Json.Nodes.JsonObject obj)
+            return obj;
+
+        var created = new System.Text.Json.Nodes.JsonObject();
+        root[key] = created;
+        return created;
     }
 
     private Task SaveBatchConfig()

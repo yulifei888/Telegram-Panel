@@ -34,11 +34,11 @@
                 </MudSelect>
                 <MudButton Variant="Variant.Outlined" Color="Color.Info" StartIcon="@Icons.Material.Filled.Sync" Class="mr-2"
                            Disabled="@(loading || filterAccount <= 0)" OnClick="SyncCurrentAccountChannels">
-                    同步当前账号
+                    同步当前账号数据
                 </MudButton>
                 <MudButton Variant="Variant.Outlined" Color="Color.Info" StartIcon="@Icons.Material.Filled.Sync" Class="mr-2"
                            Disabled="@loading" OnClick="SyncAllAccountsChannels">
-                    同步全部账号
+                    同步全部账号数据
                 </MudButton>
                 <MudTextField @bind-Value="searchString" Placeholder="搜索频道..." Adornment="Adornment.Start"
                               AdornmentIcon="@Icons.Material.Filled.Search" IconSize="Size.Medium" Class="mt-0" />
