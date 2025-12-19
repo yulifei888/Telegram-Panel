@@ -1,418 +1,108 @@
-# Telegram Panel - 多账户管理系统
+# Telegram Panel - 多账户管理面板
 
-> 基于 WTelegramClient 的 Telegram 多账户管理面板，支持批量账号管理、频道统计与操作。
+基于 **WTelegramClient** 的 Telegram 多账户管理面板（.NET 8 / Blazor Server），用于批量管理账号、统计与管理频道/群组、执行批量任务。
 
 ## 社区
 
 - TG 频道：https://t.me/zhanzhangck
 - 站长交流群：https://t.me/vpsbbq
 
-## 项目概述
+## 功能亮点
 
-### 核心功能
+- **账号管理**：Session/压缩包导入、手机号登录（验证码/2FA）、分类、批量删除
+- **频道/群组**：按账号维度管理、筛选、分类；支持查看详情/编辑/设置管理员/导出链接
+- **同步**：一键同步账号“创建的频道/群组”到本地数据库（用于列表展示与批量操作）
+- **批量任务**：批量邀请、批量设置管理员等支持后台静默执行（刷新页面不影响）
 
-- **账号管理**
-  - 批量上传 session 协议号
-  - 手机号 + 密码 + 验证码直接登录
-  - 账号分类管理
-  - 账号状态监控（在线/封禁/受限）
+> “同步”到底同步什么：见 `docs/sync.md`
 
-- **频道管理**
-  - 统计账号**创建的**频道（非加入的）
-  - 按账号筛选频道
-  - 按公开/私密筛选
-  - 频道分组保存
-  - 批量邀请用户/Bot
-  - 批量设置管理员
+## 截图
 
-- **群组管理**
-  - 统计账号创建的群组
-  - 群组分类与筛选
+> 仓库自带后台截图：`screenshot/`
 
-- **批量操作**
-  - 一键创建频道
-  - 设置频道公开/私密
-  - 批量邀请成员
-  - 批量设置管理员权限
+<details>
+<summary>点击展开/收起截图</summary>
 
-## 技术架构
+<img src="screenshot/Dashboard.png" width="900" />
+<img src="screenshot/account.png" width="900" />
+<img src="screenshot/Create channel.png" width="900" />
+<img src="screenshot/Import account.png" width="900" />
 
-```
-┌─────────────────────────────────────────────────────────────┐
-│                    前端 (Blazor Server)                      │
-│  ┌──────────┐ ┌──────────┐ ┌──────────┐ ┌──────────┐       │
-│  │ 账号管理  │ │ 频道管理  │ │ 群组管理  │ │ 任务中心  │       │
-│  └──────────┘ └──────────┘ └──────────┘ └──────────┘       │
-└────────────────────────┬────────────────────────────────────┘
-                         │ SignalR (实时通信)
-┌────────────────────────┴────────────────────────────────────┐
-│                   ASP.NET Core 8.0                           │
-│  ┌─────────────┐ ┌─────────────┐ ┌─────────────┐           │
-│  │ AccountSvc  │ │ ChannelSvc  │ │  TaskSvc    │           │
-│  └─────────────┘ └─────────────┘ └─────────────┘           │
-└────────────────────────┬────────────────────────────────────┘
-                         │
-┌────────────────────────┴────────────────────────────────────┐
-│              WTelegramClient 多实例管理                       │
-│  ┌─────────────────────────────────────────────────────┐    │
-│  │  ClientPool: Dictionary<int, Client>                │    │
-│  │  ┌────────┐ ┌────────┐ ┌────────┐                  │    │
-│  │  │Client1 │ │Client2 │ │Client3 │ ...              │    │
-│  │  └────────┘ └────────┘ └────────┘                  │    │
-│  └─────────────────────────────────────────────────────┘    │
-└────────────────────────┬────────────────────────────────────┘
-                         │
-┌────────────────────────┴────────────────────────────────────┐
-│  SQLite/PostgreSQL  │  Redis (可选)  │  Hangfire (后台任务)  │
-└─────────────────────────────────────────────────────────────┘
-```
+</details>
 
-## 技术栈
+## 🐳 Docker 一键部署（推荐）
 
-| 组件 | 技术选型 | 版本 |
-|------|---------|------|
-| 运行时 | .NET | 8.0 |
-| Web框架 | ASP.NET Core | 8.0 |
-| 前端 | Blazor Server | 8.0 |
-| UI组件 | MudBlazor | 7.x |
-| Telegram库 | WTelegramClient | 4.x |
-| ORM | Entity Framework Core | 8.0 |
-| 数据库 | SQLite (开发) / PostgreSQL (生产) | - |
-| 后台任务 | Hangfire | 1.8.x |
-| 日志 | Serilog | 3.x |
+面向小白：**`git clone` → `docker compose up` → 浏览器打开 → 登录改密码 → 配置 ApiId/ApiHash**。
 
-## 项目结构
+### 0) 环境要求
 
-```
-TelegramPanel/
-├── src/
-│   ├── TelegramPanel.Web/              # Web应用 (Blazor Server)
-│   │   ├── Components/                  # Blazor组件
-│   │   │   ├── Layout/                  # 布局组件
-│   │   │   ├── Pages/                   # 页面组件
-│   │   │   │   ├── Accounts/            # 账号管理页面
-│   │   │   │   ├── Channels/            # 频道管理页面
-│   │   │   │   ├── Groups/              # 群组管理页面
-│   │   │   │   └── Tasks/               # 任务中心页面
-│   │   │   └── Shared/                  # 共享组件
-│   │   ├── wwwroot/                     # 静态资源
-│   │   └── Program.cs
-│   │
-│   ├── TelegramPanel.Core/             # 核心业务逻辑
-│   │   ├── Services/
-│   │   │   ├── Telegram/
-│   │   │   │   ├── TelegramClientPool.cs       # 客户端池管理
-│   │   │   │   ├── AccountService.cs           # 账号服务
-│   │   │   │   ├── ChannelService.cs           # 频道服务
-│   │   │   │   ├── GroupService.cs             # 群组服务
-│   │   │   │   └── SessionImporter.cs          # Session导入
-│   │   │   └── Tasks/
-│   │   │       ├── BatchInviteTask.cs          # 批量邀请任务
-│   │   │       └── SyncDataTask.cs             # 数据同步任务
-│   │   ├── Models/
-│   │   │   ├── AccountInfo.cs
-│   │   │   ├── ChannelInfo.cs
-│   │   │   ├── GroupInfo.cs
-│   │   │   └── TaskResult.cs
-│   │   └── Interfaces/
-│   │       ├── ITelegramClientPool.cs
-│   │       ├── IAccountService.cs
-│   │       └── IChannelService.cs
-│   │
-│   └── TelegramPanel.Data/             # 数据访问层
-│       ├── Entities/
-│       │   ├── Account.cs
-│       │   ├── AccountCategory.cs
-│       │   ├── Channel.cs
-│       │   ├── ChannelGroup.cs
-│       │   ├── Group.cs
-│       │   └── BatchTask.cs
-│       ├── Repositories/
-│       ├── Configurations/              # EF Core配置
-│       └── AppDbContext.cs
-│
-├── tests/
-│   ├── TelegramPanel.Core.Tests/
-│   └── TelegramPanel.Web.Tests/
-│
-├── docs/                                # 文档
-│   ├── API.md
-│   └── DEPLOYMENT.md
-│
-├── sessions/                            # Session文件存储 (gitignore)
-├── docker-compose.yml
-├── TelegramPanel.sln
-└── README.md
-```
+- Docker（Windows 推荐 Docker Desktop + WSL2；Linux 直接装 Docker Engine）
 
-## 数据库设计
-
-### 核心表结构
-
-```sql
--- 账号分类
-CREATE TABLE AccountCategories (
-    Id INTEGER PRIMARY KEY AUTOINCREMENT,
-    Name NVARCHAR(100) NOT NULL,
-    Color NVARCHAR(20),
-    Description NVARCHAR(500),
-    CreatedAt DATETIME DEFAULT CURRENT_TIMESTAMP
-);
-
--- 账号表
-CREATE TABLE Accounts (
-    Id INTEGER PRIMARY KEY AUTOINCREMENT,
-    Phone NVARCHAR(20) UNIQUE,
-    TelegramUserId BIGINT,
-    Username NVARCHAR(100),
-    FirstName NVARCHAR(100),
-    LastName NVARCHAR(100),
-    SessionPath NVARCHAR(500),           -- Session文件路径
-    ApiId INTEGER NOT NULL,
-    ApiHash NVARCHAR(64) NOT NULL,
-    CategoryId INTEGER REFERENCES AccountCategories(Id),
-    Status NVARCHAR(20) DEFAULT 'active', -- active/banned/limited/offline
-    ProxyConfig NVARCHAR(500),           -- 代理配置JSON
-    LastSyncAt DATETIME,
-    LastActiveAt DATETIME,
-    CreatedAt DATETIME DEFAULT CURRENT_TIMESTAMP
-);
-
--- 频道分组
-CREATE TABLE ChannelGroups (
-    Id INTEGER PRIMARY KEY AUTOINCREMENT,
-    Name NVARCHAR(100) NOT NULL,
-    Description NVARCHAR(500),
-    Color NVARCHAR(20),
-    CreatedAt DATETIME DEFAULT CURRENT_TIMESTAMP
-);
-
--- 频道表 (只存储账号创建的频道)
-CREATE TABLE Channels (
-    Id INTEGER PRIMARY KEY AUTOINCREMENT,
-    TelegramId BIGINT UNIQUE NOT NULL,
-    AccessHash BIGINT,
-    Title NVARCHAR(255),
-    Username NVARCHAR(100),              -- NULL表示私密频道
-    IsPublic BIT DEFAULT 0,
-    IsBroadcast BIT DEFAULT 1,           -- 1=频道, 0=超级群组
-    CreatorAccountId INTEGER REFERENCES Accounts(Id),
-    GroupId INTEGER REFERENCES ChannelGroups(Id),
-    MemberCount INTEGER DEFAULT 0,
-    About NVARCHAR(1000),
-    TelegramCreatedAt DATETIME,
-    SyncedAt DATETIME DEFAULT CURRENT_TIMESTAMP
-);
-
--- 群组表 (只存储账号创建的群组)
-CREATE TABLE Groups (
-    Id INTEGER PRIMARY KEY AUTOINCREMENT,
-    TelegramId BIGINT UNIQUE NOT NULL,
-    AccessHash BIGINT,
-    Title NVARCHAR(255),
-    Username NVARCHAR(100),
-    CreatorAccountId INTEGER REFERENCES Accounts(Id),
-    MemberCount INTEGER DEFAULT 0,
-    SyncedAt DATETIME DEFAULT CURRENT_TIMESTAMP
-);
-
--- 批量任务表
-CREATE TABLE BatchTasks (
-    Id INTEGER PRIMARY KEY AUTOINCREMENT,
-    Type NVARCHAR(50) NOT NULL,          -- invite_users/set_admins/create_channel/sync_data
-    Name NVARCHAR(200),
-    Payload TEXT,                         -- JSON格式的任务参数
-    Status NVARCHAR(20) DEFAULT 'pending', -- pending/running/completed/failed/cancelled
-    Progress INTEGER DEFAULT 0,
-    Total INTEGER DEFAULT 0,
-    ResultSummary TEXT,                   -- JSON格式的结果摘要
-    AccountId INTEGER REFERENCES Accounts(Id),
-    ErrorMessage NVARCHAR(2000),
-    CreatedAt DATETIME DEFAULT CURRENT_TIMESTAMP,
-    StartedAt DATETIME,
-    CompletedAt DATETIME
-);
-
--- 任务日志表
-CREATE TABLE TaskLogs (
-    Id INTEGER PRIMARY KEY AUTOINCREMENT,
-    TaskId INTEGER REFERENCES BatchTasks(Id),
-    Level NVARCHAR(20),                   -- info/warning/error
-    Message NVARCHAR(2000),
-    Details TEXT,
-    CreatedAt DATETIME DEFAULT CURRENT_TIMESTAMP
-);
-```
-
-## 核心API设计
-
-### 账号管理
-
-| 方法 | 路径 | 描述 |
-|------|------|------|
-| GET | /api/accounts | 获取账号列表 |
-| GET | /api/accounts/{id} | 获取账号详情 |
-| POST | /api/accounts/login | 手机号登录（发送验证码） |
-| POST | /api/accounts/verify | 提交验证码 |
-| POST | /api/accounts/import | 批量导入Session |
-| DELETE | /api/accounts/{id} | 删除账号 |
-| PUT | /api/accounts/{id}/category | 修改账号分类 |
-| POST | /api/accounts/{id}/sync | 同步账号数据 |
-
-### 频道管理
-
-| 方法 | 路径 | 描述 |
-|------|------|------|
-| GET | /api/channels | 获取频道列表（支持筛选） |
-| GET | /api/channels/{id} | 获取频道详情 |
-| POST | /api/channels | 创建新频道 |
-| PUT | /api/channels/{id}/visibility | 设置公开/私密 |
-| POST | /api/channels/{id}/invite | 邀请用户/Bot |
-| POST | /api/channels/{id}/admins | 设置管理员 |
-| PUT | /api/channels/{id}/group | 设置频道分组 |
-| POST | /api/channels/batch-invite | 批量邀请 |
-
-### 任务管理
-
-| 方法 | 路径 | 描述 |
-|------|------|------|
-| GET | /api/tasks | 获取任务列表 |
-| GET | /api/tasks/{id} | 获取任务详情 |
-| POST | /api/tasks/{id}/cancel | 取消任务 |
-| POST | /api/tasks/{id}/retry | 重试失败任务 |
-
-## 快速开始
-
-### 环境要求
-
-- .NET 8.0 SDK
-- Visual Studio 2022 / VS Code / Rider
-- SQLite (开发环境) 或 PostgreSQL (生产环境)
-
-### 获取 Telegram API 凭据
-
-1. 访问 https://my.telegram.org/apps
-2. 登录您的 Telegram 账号
-3. 创建新应用，获取 `api_id` 和 `api_hash`
-
-### 本地运行
+### 1) 启动
 
 ```bash
-# 克隆项目
-git clone https://github.com/xxx/TelegramPanel.git
-cd TelegramPanel
-
-# 还原依赖
-dotnet restore
-
-# 配置 appsettings.json
-# 设置 Telegram:ApiId 和 Telegram:ApiHash
-
-# 运行迁移
-dotnet ef database update -p src/TelegramPanel.Data -s src/TelegramPanel.Web
-
-# 启动应用
-dotnet run --project src/TelegramPanel.Web
-```
-
-访问 https://localhost:5001
-
-### Docker 部署
-
-```bash
+git clone <你的仓库地址>
+cd Telegram-Panel
 docker compose up -d --build
 ```
 
 启动后访问：`http://localhost:5000`
 
-#### 持久化数据目录
+### 2) 默认后台账号（首次登录）
 
-默认通过 `docker-compose.yml` 把宿主机目录 `./docker-data` 挂载到容器 `/data`：
+- 用户名：`admin`
+- 密码：`admin123`
+
+登录后到「修改密码」页面改掉即可。
+
+### 3) 必做配置：Telegram API 凭据
+
+到 https://my.telegram.org/apps 获取 `api_id` / `api_hash`，然后在面板「系统设置」里保存。
+
+### 4) 数据持久化（别乱删）
+
+容器内所有持久化数据统一挂载到宿主机 `./docker-data`：
 
 - 数据库：`./docker-data/telegram-panel.db`
 - Sessions：`./docker-data/sessions/`
-- 系统设置本地覆盖（UI 保存 ApiId/ApiHash/同步开关等）：`./docker-data/appsettings.local.json`
-- 后台登录密码文件：`./docker-data/admin_auth.json`
+- 系统设置本地覆盖：`./docker-data/appsettings.local.json`
+- 后台登录凭据文件：`./docker-data/admin_auth.json`
 
-#### 常用环境变量（可选）
+### 5) 更新升级（git pull + 重新构建）
 
-在 `docker-compose.yml` 的 `environment` 中可调整：
+```bash
+git pull
+docker compose up -d --build
+```
 
-- `ConnectionStrings__DefaultConnection`：SQLite 路径（建议保持 `/data/telegram-panel.db`）
-- `Telegram__SessionsPath`：session 目录（建议保持 `/data/sessions`）
-- `AdminAuth__CredentialsPath`：后台密码文件（建议保持 `/data/admin_auth.json`）
-- `Sync__AutoSyncEnabled`：账号频道/群组数据自动同步（默认关闭）
-- `Telegram__BotAutoSyncEnabled`：Bot 频道自动同步轮询（默认关闭）
+## 🌐 反向代理一条龙（可选）
 
-## 配置说明
+Blazor Server 需要 WebSocket（`/_blazor`），反代必须支持 `Upgrade`。
 
-### appsettings.json
+Nginx 示例（完整说明见 `docs/reverse-proxy.md`）：
 
-```json
-{
-  "ConnectionStrings": {
-    "DefaultConnection": "Data Source=telegram_panel.db"
-  },
-  "Telegram": {
-    "ApiId": 12345678,
-    "ApiHash": "your_api_hash_here",
-    "SessionsPath": "sessions",
-    "DefaultDelay": 2000,
-    "MaxRetries": 3
-  },
-  "Hangfire": {
-    "DashboardPath": "/hangfire"
-  },
-  "Serilog": {
-    "MinimumLevel": "Information"
-  }
+```nginx
+location / {
+  proxy_pass http://127.0.0.1:5000;
+  proxy_http_version 1.1;
+  proxy_set_header Upgrade $http_upgrade;
+  proxy_set_header Connection "Upgrade";
+  proxy_set_header Host $host;
 }
 ```
 
-## 风控注意事项
+## 本地开发运行（可选）
 
-| 风险点 | 建议措施 |
-|--------|---------|
-| 频繁操作 | 每次操作间隔 2-5 秒，使用随机延迟 |
-| 批量邀请 | 单次最多 200 人，分批执行 |
-| 新账号限制 | 新号前几天不要大量操作 |
-| IP 问题 | 建议使用代理池，每个账号绑定固定代理 |
+```bash
+dotnet run --project src/TelegramPanel.Web
+```
 
-## 开发计划
+## 详细文档
 
-### Phase 1 - 基础框架 (Week 1)
-- [x] 项目结构搭建
-- [ ] 数据库设计与迁移
-- [ ] WTelegramClient 集成
-- [ ] 基础 UI 框架
-
-### Phase 2 - 账号管理 (Week 2)
-- [ ] Session 文件导入
-- [ ] 手机号验证码登录
-- [ ] 账号分类管理
-- [ ] 账号状态监控
-
-### Phase 3 - 数据同步 (Week 3)
-- [ ] 同步创建的频道
-- [ ] 同步创建的群组
-- [ ] 频道筛选与分组
-
-### Phase 4 - 批量操作 (Week 4)
-- [ ] 创建频道
-- [ ] 批量邀请用户
-- [ ] 设置管理员
-- [ ] 任务队列与进度
-
-### Phase 5 - 优化完善 (Week 5)
-- [ ] 错误处理与重试
-- [ ] 日志与监控
-- [ ] 性能优化
-- [ ] 文档完善
-
-## License
-
-MIT License
-
-## 贡献
-
-欢迎提交 Issue 和 Pull Request！
+- `docs/README.md`（索引）
+- `docs/import.md`（压缩包批量导入结构）
+- `docs/sync.md`（同步说明 + 自动同步）
+- `docs/reverse-proxy.md`（Nginx/Caddy 反代，含 WebSocket）
+- `docs/api.md`（接口速查）
+- `docs/database.md`（数据库/表结构说明）
+- `docs/advanced.md`（配置项/数据目录/后台任务等）

@@ -7,4 +7,6 @@
 - `docs/import.md`：压缩包批量导入账号结构（推荐）
 - `docs/sync.md`：同步功能说明（同步什么/为什么要同步/自动同步）
 - `docs/reverse-proxy.md`：反向代理示例（Nginx/Caddy，含 WebSocket）
+- `docs/api.md`：接口速查（面向二次开发）
+- `docs/database.md`：数据库与主要表结构（面向排障/扩展）
 - `docs/advanced.md`：架构/配置项/环境变量/数据持久化位置等
