@@ -41,6 +41,11 @@ public interface IChannelService
     /// 批量设置管理员
     /// </summary>
     Task<List<SetAdminResult>> BatchSetAdminsAsync(int accountId, long channelId, List<AdminRequest> requests);
+
+    /// <summary>
+    /// 设置是否允许转发（关闭后为“保护内容”，禁止转发/保存）
+    /// </summary>
+    Task<bool> SetForwardingAllowedAsync(int accountId, long channelId, bool allowed);
 }
 
 /// <summary>

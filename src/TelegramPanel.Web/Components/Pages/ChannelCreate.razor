@@ -2,6 +2,7 @@
 @inject IChannelService ChannelService
 @inject AccountManagementService AccountManagement
 @inject ChannelManagementService ChannelManagement
+@inject ChannelGroupManagementService ChannelGroupManagement
 @inject ISnackbar Snackbar
 @inject NavigationManager Navigation
 @using TelegramPanel.Data.Entities
@@ -19,6 +20,14 @@
                     @foreach (var account in accounts)
                     {
                         <MudSelectItem Value="@account.Id">@account.Phone (@account.Username)</MudSelectItem>
+                    }
+                </MudSelect>
+
+                <MudSelect @bind-Value="selectedGroupId" Label="频道分组" Variant="Variant.Outlined" Class="mt-4">
+                    <MudSelectItem Value="0">未分组</MudSelectItem>
+                    @foreach (var group in channelGroups)
+                    {
+                        <MudSelectItem Value="@group.Id">@group.Name</MudSelectItem>
                     }
                 </MudSelect>
 
@@ -41,17 +50,16 @@
 
                 <MudText Typo="Typo.h6" Class="mb-3">可选设置</MudText>
 
-                <MudSwitch @bind-Value="enableComments" Label="启用评论" Color="Color.Primary" />
-                <MudSwitch @bind-Value="enableReactions" Label="启用表情回应" Color="Color.Primary" Class="mt-2" />
-                <MudSwitch @bind-Value="signMessages" Label="消息签名" Color="Color.Primary" Class="mt-2"
-                           HelperText="显示发送者身份" />
+                <MudSwitch @bind-Value="allowForwarding" Label="允许转发" Color="Color.Primary"
+                           HelperText="关闭后为“保护内容”，禁止转发/保存（等同 Telegram 的内容保护）" />
             </MudCardContent>
             <MudCardActions>
-                <MudButton Variant="Variant.Text" Color="Color.Default" OnClick="Cancel">取消</MudButton>
+                <MudButton Variant="Variant.Text" Color="Color.Default"
+                           OnClick="@(async (MouseEventArgs _) => await Cancel())">取消</MudButton>
                 <MudSpacer />
                 <MudButton Variant="Variant.Filled" Color="Color.Primary"
                            Disabled="@(selectedAccountId == 0 || string.IsNullOrEmpty(channelTitle) || creating)"
-                           OnClick="CreateChannel">
+                           OnClick="@(async (MouseEventArgs _) => await CreateChannel())">
                     @if (creating)
                     {
                         <MudProgressCircular Size="Size.Small" Indeterminate="true" Class="mr-2" />
@@ -69,19 +77,20 @@
 
 @code {
     private List<Account> accounts = new();
+    private List<ChannelGroup> channelGroups = new();
     private int selectedAccountId = 0;
+    private int selectedGroupId = 0;
     private string channelTitle = "";
     private string channelAbout = "";
     private bool isPublic = false;
     private string username = "";
-    private bool enableComments = true;
-    private bool enableReactions = true;
-    private bool signMessages = false;
+    private bool allowForwarding = true;
     private bool creating = false;
 
     protected override async Task OnInitializedAsync()
     {
         await LoadAccounts();
+        await LoadGroups();
     }
 
     private async Task LoadAccounts()
@@ -94,6 +103,19 @@
         catch (Exception ex)
         {
             Snackbar.Add($"加载账号列表失败：{ex.Message}", Severity.Error);
+        }
+    }
+
+    private async Task LoadGroups()
+    {
+        try
+        {
+            var groups = await ChannelGroupManagement.GetAllGroupsAsync();
+            channelGroups = groups.ToList();
+        }
+        catch (Exception ex)
+        {
+            Snackbar.Add($"加载频道分组失败：{ex.Message}", Severity.Error);
         }
     }
 
@@ -130,6 +152,12 @@
                 await ChannelService.SetChannelVisibilityAsync(selectedAccountId, channelInfo.TelegramId, true, username);
             }
 
+            // 是否允许转发（关闭=保护内容）
+            if (!allowForwarding)
+            {
+                await ChannelService.SetForwardingAllowedAsync(selectedAccountId, channelInfo.TelegramId, allowed: false);
+            }
+
             // 保存到数据库
             var channel = new Channel
             {
@@ -141,6 +169,7 @@
                 MemberCount = channelInfo.MemberCount,
                 About = channelAbout,
                 CreatorAccountId = selectedAccountId,
+                GroupId = selectedGroupId > 0 ? selectedGroupId : null,
                 CreatedAt = DateTime.UtcNow,
                 SyncedAt = DateTime.UtcNow
             };
@@ -160,8 +189,9 @@
         }
     }
 
-    private void Cancel()
+    private Task Cancel()
     {
         Navigation.NavigateTo("/channels");
+        return Task.CompletedTask;
     }
 }

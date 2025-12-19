@@ -221,6 +221,17 @@ public class ChannelService : IChannelService
         return results;
     }
 
+    public async Task<bool> SetForwardingAllowedAsync(int accountId, long channelId, bool allowed)
+    {
+        var client = await GetOrCreateConnectedClientAsync(accountId);
+        var channel = await GetChannelByIdAsync(client, channelId)
+            ?? throw new InvalidOperationException($"Channel {channelId} not found");
+
+        // messages.toggleNoForwards: true 表示“保护内容”（禁止转发/保存）
+        await client.Messages_ToggleNoForwards(channel, !allowed);
+        return true;
+    }
+
     #region Private Methods
 
     private async Task<Channel?> GetChannelByIdAsync(Client client, long channelId)
