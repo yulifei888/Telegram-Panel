@@ -12,8 +12,8 @@ public class Bot
     public bool IsActive { get; set; } = true;
     public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
     public DateTime? LastSyncAt { get; set; }
+    public long? LastUpdateId { get; set; }
 
     public ICollection<BotChannelCategory> Categories { get; set; } = new List<BotChannelCategory>();
     public ICollection<BotChannel> Channels { get; set; } = new List<BotChannel>();
 }
-

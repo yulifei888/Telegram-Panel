@@ -35,12 +35,13 @@ public class BotAutoSyncBackgroundService : BackgroundService
             return;
         }
 
-        var minutes = _configuration.GetValue("Telegram:BotAutoSyncIntervalMinutes", 5);
-        if (minutes < 1) minutes = 1;
-        if (minutes > 60) minutes = 60;
-        var interval = TimeSpan.FromMinutes(minutes);
+        // 秒级轮询（近似“监听”效果）；可通过配置调整
+        var seconds = _configuration.GetValue("Telegram:BotAutoSyncIntervalSeconds", 5);
+        if (seconds < 2) seconds = 2;
+        if (seconds > 60) seconds = 60;
+        var interval = TimeSpan.FromSeconds(seconds);
 
-        _logger.LogInformation("Bot auto sync started, interval {IntervalMinutes} minutes", minutes);
+        _logger.LogInformation("Bot auto sync started, interval {IntervalSeconds} seconds", seconds);
 
         // 延迟一点，避免与启动时 DB 迁移抢资源
         await Task.Delay(TimeSpan.FromSeconds(5), stoppingToken);
@@ -89,4 +90,3 @@ public class BotAutoSyncBackgroundService : BackgroundService
         }
     }
 }
-

@@ -61,6 +61,7 @@ builder.Services.AddTelegramPanelCore();
 builder.Services.AddScoped<AccountExportService>();
 builder.Services.AddScoped<DataSyncService>();
 builder.Services.AddHostedService<BotAutoSyncBackgroundService>();
+builder.Services.AddHttpClient<TelegramBotApiClient>();
 
 // TODO: 添加 Hangfire
 // builder.Services.AddHangfire(config => config.UseInMemoryStorage());

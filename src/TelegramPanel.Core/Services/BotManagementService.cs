@@ -126,7 +126,7 @@ public class BotManagementService
     {
         if (channel.BotId <= 0)
             throw new ArgumentException("BotId 无效", nameof(channel));
-        if (channel.TelegramId <= 0)
+        if (channel.TelegramId == 0)
             throw new ArgumentException("TelegramId 无效", nameof(channel));
 
         var existing = await _botChannelRepository.GetByTelegramIdAsync(channel.BotId, channel.TelegramId);
@@ -150,6 +150,15 @@ public class BotManagementService
         return await _botChannelRepository.AddAsync(channel);
     }
 
+    public async Task DeleteChannelByTelegramIdAsync(int botId, long telegramId)
+    {
+        var existing = await _botChannelRepository.GetByTelegramIdAsync(botId, telegramId);
+        if (existing == null)
+            return;
+
+        await _botChannelRepository.DeleteAsync(existing);
+    }
+
     public async Task SetChannelCategoryAsync(int botChannelId, int? categoryId)
     {
         var ch = await _botChannelRepository.GetByIdAsync(botChannelId);
@@ -160,4 +169,3 @@ public class BotManagementService
         await _botChannelRepository.UpdateAsync(ch);
     }
 }
-

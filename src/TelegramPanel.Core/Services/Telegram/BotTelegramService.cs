@@ -1,28 +1,34 @@
-using Microsoft.Extensions.Configuration;
+using System.Text.Json;
 using Microsoft.Extensions.Logging;
 using TelegramPanel.Core.Services;
 using TelegramPanel.Data.Entities;
-using TL;
-using WTelegram;
 
 namespace TelegramPanel.Core.Services.Telegram;
 
+/// <summary>
+/// Bot 相关能力（双轨）：
+/// - 主轨：Telegram Bot API（不依赖 ApiId/ApiHash），用于“秒级新增频道/导出邀请链接”
+/// - 兜底：保留手动同步入口（本实现同样走 Bot API pull updates）
+/// </summary>
 public class BotTelegramService
 {
     private readonly BotManagementService _botManagement;
-    private readonly IConfiguration _configuration;
+    private readonly TelegramBotApiClient _api;
     private readonly ILogger<BotTelegramService> _logger;
 
     public BotTelegramService(
         BotManagementService botManagement,
-        IConfiguration configuration,
+        TelegramBotApiClient api,
         ILogger<BotTelegramService> logger)
     {
         _botManagement = botManagement;
-        _configuration = configuration;
+        _api = api;
         _logger = logger;
     }
 
+    /// <summary>
+    /// 拉取 Bot API updates 并把 bot 新加入的频道写入数据库（同时确认 offset）。
+    /// </summary>
     public async Task<int> SyncBotChannelsAsync(int botId, CancellationToken cancellationToken)
     {
         var bot = await _botManagement.GetBotAsync(botId)
@@ -31,239 +37,161 @@ public class BotTelegramService
         if (!bot.IsActive)
             throw new InvalidOperationException("该机器人已停用");
 
-        if (!TryGetTelegramApi(out var apiId, out var apiHash))
-            throw new InvalidOperationException("请先在【系统设置】中配置全局 Telegram API（ApiId/ApiHash）");
+        var token = bot.Token;
+        var offset = bot.LastUpdateId.HasValue ? bot.LastUpdateId.Value + 1 : (long?)null;
 
-        await using var client = CreateBotClient(bot, apiId, apiHash);
-        await EnsureBotLoginAsync(client, bot.Token);
+        var allowedUpdates = JsonSerializer.Serialize(new[] { "my_chat_member" });
+        var result = await _api.CallAsync(token, "getUpdates", new Dictionary<string, string?>
+        {
+            ["offset"] = offset?.ToString(),
+            ["timeout"] = "0",
+            ["limit"] = "100",
+            ["allowed_updates"] = allowedUpdates
+        }, cancellationToken);
 
-        var dialogs = await client.Messages_GetAllDialogs();
-        var synced = 0;
+        if (result.ValueKind != JsonValueKind.Array)
+            return 0;
 
-        foreach (var (_, chat) in dialogs.chats)
+        var applied = 0;
+        long? maxUpdateId = null;
+
+        foreach (var update in result.EnumerateArray())
         {
             cancellationToken.ThrowIfCancellationRequested();
 
-            if (chat is not TL.Channel channel || !channel.IsActive)
+            if (update.ValueKind != JsonValueKind.Object)
                 continue;
 
-            var memberCount = TryReadInt(channel, 0, "participants_count", "ParticipantsCount", "participantsCount");
-            string? about = null;
-            try
+            if (update.TryGetProperty("update_id", out var updateIdEl) && updateIdEl.TryGetInt64(out var updateId))
             {
-                var full = await client.Channels_GetFullChannel(channel);
-                memberCount = full.full_chat.ParticipantsCount;
-                about = (full.full_chat as ChannelFull)?.about;
-            }
-            catch (Exception ex)
-            {
-                _logger.LogDebug(ex, "Failed to get full channel info for bot {BotId} channel {ChannelId}", botId, channel.id);
+                maxUpdateId = maxUpdateId.HasValue ? Math.Max(maxUpdateId.Value, updateId) : updateId;
             }
 
+            // 只处理 my_chat_member：Bot 被加入/移除/升降权
+            if (!update.TryGetProperty("my_chat_member", out var myChatMember))
+                continue;
+
+            if (!TryParseChatMemberUpdate(myChatMember, out var chat, out var status))
+                continue;
+
+            // channel/supergroup 才纳入列表
+            if (chat.Type is not ("channel" or "supergroup"))
+                continue;
+
+            if (status is "left" or "kicked")
+            {
+                await _botManagement.DeleteChannelByTelegramIdAsync(bot.Id, chat.Id);
+                applied++;
+                continue;
+            }
+
+            // member/administrator/creator -> upsert
             await _botManagement.UpsertChannelAsync(new BotChannel
             {
                 BotId = bot.Id,
-                TelegramId = channel.id,
-                AccessHash = channel.access_hash,
-                Title = channel.title,
-                Username = channel.MainUsername,
-                IsBroadcast = channel.IsChannel,
-                MemberCount = memberCount,
-                About = about,
-                CreatedAt = channel.date
+                TelegramId = chat.Id,
+                Title = string.IsNullOrWhiteSpace(chat.Title) ? $"频道 {chat.Id}" : chat.Title,
+                Username = string.IsNullOrWhiteSpace(chat.Username) ? null : chat.Username.Trim().TrimStart('@'),
+                IsBroadcast = chat.Type == "channel",
+                MemberCount = 0,
+                About = null,
+                AccessHash = null,
+                CreatedAt = null
             });
 
-            synced++;
+            applied++;
         }
 
+        if (maxUpdateId.HasValue)
+            bot.LastUpdateId = maxUpdateId.Value;
         bot.LastSyncAt = DateTime.UtcNow;
         await _botManagement.UpdateBotAsync(bot);
 
-        return synced;
+        return applied;
     }
 
-    public async Task<string> GetPublicLinkAsync(int botId, long channelTelegramId, CancellationToken cancellationToken)
-    {
-        cancellationToken.ThrowIfCancellationRequested();
-
-        var bot = await _botManagement.GetBotAsync(botId)
-            ?? throw new InvalidOperationException($"机器人不存在：{botId}");
-
-        if (!TryGetTelegramApi(out var apiId, out var apiHash))
-            throw new InvalidOperationException("请先在【系统设置】中配置全局 Telegram API（ApiId/ApiHash）");
-
-        await using var client = CreateBotClient(bot, apiId, apiHash);
-        await EnsureBotLoginAsync(client, bot.Token);
-
-        var channel = await FindChannelAsync(client, channelTelegramId);
-        if (channel == null)
-            throw new InvalidOperationException($"频道不存在或机器人不可见：{channelTelegramId}");
-
-        if (!string.IsNullOrWhiteSpace(channel.MainUsername))
-            return $"https://t.me/{channel.MainUsername}";
-
-        throw new InvalidOperationException("该频道没有公开用户名");
-    }
-
+    /// <summary>
+    /// 导出加入链接：公开频道返回 t.me 链接；否则创建邀请链接。
+    /// </summary>
     public async Task<string> ExportInviteLinkAsync(int botId, long channelTelegramId, CancellationToken cancellationToken)
     {
-        cancellationToken.ThrowIfCancellationRequested();
-
         var bot = await _botManagement.GetBotAsync(botId)
             ?? throw new InvalidOperationException($"机器人不存在：{botId}");
 
-        if (!TryGetTelegramApi(out var apiId, out var apiHash))
-            throw new InvalidOperationException("请先在【系统设置】中配置全局 Telegram API（ApiId/ApiHash）");
+        if (!bot.IsActive)
+            throw new InvalidOperationException("该机器人已停用");
 
-        await using var client = CreateBotClient(bot, apiId, apiHash);
-        await EnsureBotLoginAsync(client, bot.Token);
+        // 优先用公开用户名（无需管理员权限）
+        var channels = await _botManagement.GetChannelsAsync(botId);
+        var found = channels.FirstOrDefault(x => x.TelegramId == channelTelegramId);
+        if (found != null && !string.IsNullOrWhiteSpace(found.Username))
+            return $"https://t.me/{found.Username.Trim().TrimStart('@')}";
 
-        var channel = await FindChannelAsync(client, channelTelegramId);
-        if (channel == null)
-            throw new InvalidOperationException($"频道不存在或机器人不可见：{channelTelegramId}");
-
-        if (!string.IsNullOrWhiteSpace(channel.MainUsername))
-            return $"https://t.me/{channel.MainUsername}";
-
-        var invite = await client.Messages_ExportChatInvite(channel);
-        var link = invite switch
+        // 私密/无用户名：需要管理员权限创建邀请链接
+        var result = await _api.CallAsync(bot.Token, "createChatInviteLink", new Dictionary<string, string?>
         {
-            ChatInviteExported e => e.link,
-            _ => null
-        };
+            ["chat_id"] = channelTelegramId.ToString()
+        }, cancellationToken);
 
-        if (string.IsNullOrWhiteSpace(link))
-            throw new InvalidOperationException("无法获取邀请链接（可能无权限）");
+        // result 是 ChatInviteLink 对象
+        if (result.ValueKind == JsonValueKind.Object && result.TryGetProperty("invite_link", out var linkEl))
+        {
+            var link = linkEl.GetString();
+            if (!string.IsNullOrWhiteSpace(link))
+                return link;
+        }
 
-        return link;
+        throw new InvalidOperationException("无法获取邀请链接（可能无权限/被限制）");
     }
 
     public async Task<IReadOnlyDictionary<long, string>> ExportInviteLinksAsync(int botId, IReadOnlyList<long> channelTelegramIds, CancellationToken cancellationToken)
     {
-        if (channelTelegramIds.Count == 0)
-            return new Dictionary<long, string>();
-
-        var bot = await _botManagement.GetBotAsync(botId)
-            ?? throw new InvalidOperationException($"机器人不存在：{botId}");
-
-        if (!TryGetTelegramApi(out var apiId, out var apiHash))
-            throw new InvalidOperationException("请先在【系统设置】中配置全局 Telegram API（ApiId/ApiHash）");
-
-        await using var client = CreateBotClient(bot, apiId, apiHash);
-        await EnsureBotLoginAsync(client, bot.Token);
-
-        var dialogs = await client.Messages_GetAllDialogs();
-        var channels = dialogs.chats.Values.OfType<TL.Channel>().Where(c => c.IsActive).ToDictionary(c => c.id, c => c);
-
         var map = new Dictionary<long, string>();
         foreach (var id in channelTelegramIds.Distinct())
         {
             cancellationToken.ThrowIfCancellationRequested();
-
-            if (!channels.TryGetValue(id, out var ch))
-                continue;
-
-            if (!string.IsNullOrWhiteSpace(ch.MainUsername))
+            try
             {
-                map[id] = $"https://t.me/{ch.MainUsername}";
-                continue;
+                map[id] = await ExportInviteLinkAsync(botId, id, cancellationToken);
             }
-
-            var invite = await client.Messages_ExportChatInvite(ch);
-            var link = invite switch
+            catch (Exception ex)
             {
-                ChatInviteExported e => e.link,
-                _ => null
-            };
-            map[id] = string.IsNullOrWhiteSpace(link) ? "(无法获取邀请链接/无权限)" : link;
+                _logger.LogWarning(ex, "ExportInviteLink failed for bot {BotId} chat {ChatId}", botId, id);
+                map[id] = "(无法生成/不可见/无权限)";
+            }
         }
-
         return map;
     }
 
-    private bool TryGetTelegramApi(out int apiId, out string apiHash)
+    private static bool TryParseChatMemberUpdate(JsonElement myChatMember, out BotApiChat chat, out string status)
     {
-        apiHash = (_configuration["Telegram:ApiHash"] ?? string.Empty).Trim();
-        return int.TryParse(_configuration["Telegram:ApiId"], out apiId)
-               && apiId > 0
-               && !string.IsNullOrWhiteSpace(apiHash);
+        chat = default;
+        status = string.Empty;
+
+        if (myChatMember.ValueKind != JsonValueKind.Object)
+            return false;
+
+        if (!myChatMember.TryGetProperty("chat", out var chatEl) || chatEl.ValueKind != JsonValueKind.Object)
+            return false;
+
+        if (!chatEl.TryGetProperty("id", out var idEl) || !idEl.TryGetInt64(out var chatId))
+            return false;
+
+        var type = chatEl.TryGetProperty("type", out var typeEl) ? typeEl.GetString() : null;
+        var title = chatEl.TryGetProperty("title", out var titleEl) ? titleEl.GetString() : null;
+        var username = chatEl.TryGetProperty("username", out var userEl) ? userEl.GetString() : null;
+
+        if (!myChatMember.TryGetProperty("new_chat_member", out var newMember) || newMember.ValueKind != JsonValueKind.Object)
+            return false;
+
+        if (!newMember.TryGetProperty("status", out var statusEl))
+            return false;
+
+        status = statusEl.GetString() ?? string.Empty;
+        chat = new BotApiChat(chatId, type ?? string.Empty, title, username);
+        return true;
     }
 
-    private Client CreateBotClient(Bot bot, int apiId, string apiHash)
-    {
-        var sessionsPath = _configuration["Telegram:BotSessionsPath"];
-        if (string.IsNullOrWhiteSpace(sessionsPath))
-        {
-            var root = _configuration["Telegram:SessionsPath"] ?? "sessions";
-            sessionsPath = Path.Combine(root, "bots");
-        }
-
-        Directory.CreateDirectory(sessionsPath);
-        var sessionPath = Path.Combine(sessionsPath, $"bot_{bot.Id}.session");
-
-        string Config(string what)
-        {
-            return what switch
-            {
-                "api_id" => apiId.ToString(),
-                "api_hash" => apiHash,
-                "session_pathname" => sessionPath,
-                "session_key" => apiHash,
-                "bot_token" => bot.Token,
-                _ => null!
-            };
-        }
-
-        return new Client(Config);
-    }
-
-    private static async Task EnsureBotLoginAsync(Client client, string token)
-    {
-        token = (token ?? string.Empty).Trim();
-        if (string.IsNullOrWhiteSpace(token))
-            throw new InvalidOperationException("Bot Token 为空");
-
-        await client.ConnectAsync();
-
-        // WTelegram: Bot 登录
-        await client.LoginBotIfNeeded(token);
-
-        if (client.User == null)
-            throw new InvalidOperationException("机器人登录失败");
-    }
-
-    private static async Task<TL.Channel?> FindChannelAsync(Client client, long channelTelegramId)
-    {
-        var dialogs = await client.Messages_GetAllDialogs();
-        return dialogs.chats.Values.OfType<TL.Channel>().FirstOrDefault(c => c.id == channelTelegramId);
-    }
-
-    private static int TryReadInt(object obj, int fallback, params string[] names)
-    {
-        var type = obj.GetType();
-        foreach (var name in names)
-        {
-            var prop = type.GetProperty(name);
-            if (prop != null && prop.CanRead)
-            {
-                var v = prop.GetValue(obj);
-                if (v is int i) return i;
-                if (v is long l) return unchecked((int)l);
-                if (v is short s) return s;
-                if (v is byte by) return by;
-            }
-
-            var field = type.GetField(name);
-            if (field != null)
-            {
-                var v = field.GetValue(obj);
-                if (v is int i) return i;
-                if (v is long l) return unchecked((int)l);
-                if (v is short s) return s;
-                if (v is byte by) return by;
-            }
-        }
-
-        return fallback;
-    }
+    private readonly record struct BotApiChat(long Id, string Type, string? Title, string? Username);
 }
+
