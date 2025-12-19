@@ -31,6 +31,11 @@ public interface ITelegramClientPool
     Task RemoveClientAsync(int accountId);
 
     /// <summary>
+    /// 移除并断开所有客户端连接（用于配置变更后强制重建）
+    /// </summary>
+    Task RemoveAllClientsAsync();
+
+    /// <summary>
     /// 获取所有活跃的客户端数量
     /// </summary>
     int ActiveClientCount { get; }

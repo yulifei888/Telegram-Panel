@@ -5,6 +5,7 @@
 @inject GroupManagementService GroupManagement
 @inject IChannelService ChannelService
 @inject IGroupService GroupService
+@inject ITelegramClientPool TelegramClientPool
 @inject ISnackbar Snackbar
 @inject IDialogService DialogService
 @inject IWebHostEnvironment Environment
@@ -183,8 +184,12 @@
                 new System.Text.UTF8Encoding(encoderShouldEmitUTF8Identifier: false)
             );
 
+            // 配置变更后清理客户端缓存，确保后续操作使用新 ApiId/ApiHash
+            await TelegramClientPool.RemoveAllClientsAsync();
+
             var fileInfo = new System.IO.FileInfo(localConfigPath);
-            Snackbar.Add($"API 配置已保存：{localConfigPath}（{fileInfo.Length} bytes）。若仍提示未配置，请刷新页面或重启应用。", Severity.Success);
+            Snackbar.Add($"API 配置已保存：{localConfigPath}（{fileInfo.Length} bytes）。已清理 Telegram 客户端缓存，后续操作将使用新配置。", Severity.Success);
+            StateHasChanged();
         }
         catch (Exception ex)
         {

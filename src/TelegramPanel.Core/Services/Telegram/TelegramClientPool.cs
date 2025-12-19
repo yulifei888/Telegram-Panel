@@ -1,4 +1,6 @@
 using System.Collections.Concurrent;
+using System.Linq;
+using System.Reflection;
 using Microsoft.Extensions.Logging;
 using TelegramPanel.Core.Interfaces;
 using WTelegram;
@@ -72,6 +74,7 @@ public class TelegramClientPool : ITelegramClientPool, IDisposable
             }
 
             var client = new Client(Config);
+            TryRebindApiIdForLoadedSession(client, apiId);
 
             // 设置日志回调
             client.OnOther += (update) =>
@@ -86,6 +89,15 @@ public class TelegramClientPool : ITelegramClientPool, IDisposable
         finally
         {
             lockObj.Release();
+        }
+    }
+
+    public async Task RemoveAllClientsAsync()
+    {
+        var accountIds = _clients.Keys.ToArray();
+        foreach (var accountId in accountIds)
+        {
+            await RemoveClientAsync(accountId);
         }
     }
 
@@ -158,5 +170,68 @@ public class TelegramClientPool : ITelegramClientPool, IDisposable
         _locks.Clear();
 
         GC.SuppressFinalize(this);
+    }
+
+    private void TryRebindApiIdForLoadedSession(Client client, int desiredApiId)
+    {
+        try
+        {
+            var clientType = typeof(Client);
+            var sessionField = clientType.GetField("_session", BindingFlags.Instance | BindingFlags.NonPublic);
+            var sessionObj = sessionField?.GetValue(client);
+            if (sessionObj == null)
+                return;
+
+            var sessionType = sessionObj.GetType();
+
+            int? currentApiId = null;
+            var apiIdField = sessionType.GetField("ApiId", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
+            if (apiIdField?.FieldType == typeof(int))
+                currentApiId = (int)apiIdField.GetValue(sessionObj)!;
+
+            var apiIdProp = sessionType.GetProperty("ApiId", BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic);
+            if (currentApiId == null && apiIdProp?.PropertyType == typeof(int) && apiIdProp.CanRead)
+                currentApiId = (int)apiIdProp.GetValue(sessionObj)!;
+
+            if (currentApiId.HasValue && currentApiId.Value == desiredApiId)
+                return;
+
+            var updated = false;
+            if (apiIdField?.FieldType == typeof(int))
+            {
+                apiIdField.SetValue(sessionObj, desiredApiId);
+                updated = true;
+            }
+            else if (apiIdProp?.PropertyType == typeof(int) && apiIdProp.CanWrite)
+            {
+                apiIdProp.SetValue(sessionObj, desiredApiId);
+                updated = true;
+            }
+
+            var clientApiIdField = clientType.GetField("_api_id", BindingFlags.Instance | BindingFlags.NonPublic);
+            if (clientApiIdField?.FieldType == typeof(int))
+            {
+                clientApiIdField.SetValue(client, desiredApiId);
+                updated = true;
+            }
+
+            if (!updated)
+                return;
+
+            var save = sessionType.GetMethod("Save", BindingFlags.Instance | BindingFlags.NonPublic);
+            if (save != null)
+            {
+                lock (sessionObj) save.Invoke(sessionObj, null);
+            }
+
+            _logger.LogInformation(
+                "Rebound WTelegram session ApiId from {OldApiId} to {NewApiId} to apply new global Telegram API config",
+                currentApiId,
+                desiredApiId);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogDebug(ex, "Failed to rebind WTelegram session ApiId (ignored)");
+        }
     }
 }
