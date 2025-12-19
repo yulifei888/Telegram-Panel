@@ -41,7 +41,7 @@
 ### 1) 启动
 
 ```bash
-git clone <你的仓库地址>
+git clone https://github.com/moeacgx/Telegram-Panel
 cd Telegram-Panel
 docker compose up -d --build
 ```
