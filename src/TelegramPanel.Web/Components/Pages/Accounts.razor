@@ -47,6 +47,10 @@
                            Disabled="@(loading || selectedAccounts.Count == 0)" OnClick="OpenBatchChangeNickname" Class="ml-2">
                     批量改昵称（已选）
                 </MudButton>
+                <MudButton Variant="Variant.Outlined" Color="Color.Warning" StartIcon="@Icons.Material.Filled.AlternateEmail"
+                           Disabled="@(loading || selectedAccounts.Count == 0)" OnClick="OpenBatchChangeUsername" Class="ml-2">
+                    批量改用户名（已选）
+                </MudButton>
                 <MudButton Variant="Variant.Outlined" Color="Color.Warning" StartIcon="@Icons.Material.Filled.Edit"
                            Disabled="@(loading || selectedAccounts.Count == 0)" OnClick="OpenBatchChangeBio" Class="ml-2">
                     批量改Bio（已选）
@@ -323,6 +327,29 @@
         };
         var options = new DialogOptions { CloseOnEscapeKey = true, MaxWidth = MaxWidth.Medium, FullWidth = true };
         var dialog = DialogService.Show<TelegramPanel.Web.Components.Dialogs.BatchChangeNicknameDialog>("批量修改昵称", parameters, options)!;
+        var result = await dialog.Result;
+        if (result is { Canceled: false })
+            await LoadAccounts();
+    }
+
+    private async Task OpenBatchChangeUsername()
+    {
+        if (loading)
+            return;
+
+        var ids = selectedAccounts.Select(a => a.Id).Distinct().ToList();
+        if (ids.Count == 0)
+        {
+            Snackbar.Add("请先选择账号", Severity.Info);
+            return;
+        }
+
+        var parameters = new DialogParameters
+        {
+            ["AccountIds"] = ids
+        };
+        var options = new DialogOptions { CloseOnEscapeKey = true, MaxWidth = MaxWidth.Medium, FullWidth = true };
+        var dialog = DialogService.Show<TelegramPanel.Web.Components.Dialogs.BatchChangeUsernameDialog>("批量修改用户名", parameters, options)!;
         var result = await dialog.Result;
         if (result is { Canceled: false })
             await LoadAccounts();
