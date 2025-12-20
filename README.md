@@ -69,7 +69,9 @@ docker compose up -d --build
 
 ### 必做配置：Telegram API 凭据
 
-到 https://my.telegram.org/apps 获取 `api_id` / `api_hash`，然后在面板「系统设置」里保存。
+到 https://my.telegram.org/apps **用任意一个 Telegram 账号申请一次** `api_id` / `api_hash`，然后在面板「系统设置」里保存即可。
+
+> 说明：**不需要每个账号都申请**，全站共用这一对 `api_id` / `api_hash` 就能工作。
 
 ### 数据持久化（别乱删）
 
