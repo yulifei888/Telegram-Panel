@@ -31,17 +31,9 @@
                 <MudTextField @bind-Value="searchString" Placeholder="搜索账号..." Adornment="Adornment.Start"
                               AdornmentIcon="@Icons.Material.Filled.Search" IconSize="Size.Medium" Class="mt-0"
                               Immediate="true" />
-                <MudButton Variant="Variant.Outlined" Color="Color.Primary" StartIcon="@Icons.Material.Filled.SelectAll"
-                           Disabled="@loading" OnClick="SelectAllFiltered" Class="ml-2">
-                    全选
-                </MudButton>
-                <MudButton Variant="Variant.Outlined" Color="Color.Primary" StartIcon="@Icons.Material.Filled.Flip"
-                           Disabled="@loading" OnClick="InvertSelection" Class="ml-2">
-                    反选
-                </MudButton>
-                <MudButton Variant="Variant.Outlined" Color="Color.Default" StartIcon="@Icons.Material.Filled.Clear"
-                           Disabled="@(loading || selectedAccounts.Count == 0)" OnClick="ClearSelection" Class="ml-2">
-                    清空选择
+                <MudButton Variant="Variant.Outlined" Color="Color.Primary" StartIcon="@SelectionToggleIcon"
+                           Disabled="@(loading || !filteredAccounts.Any())" OnClick="CycleSelectionToggle" Class="ml-2">
+                    @SelectionToggleText
                 </MudButton>
                 <MudButton Variant="Variant.Outlined" Color="Color.Error" StartIcon="@Icons.Material.Filled.Delete"
                            Disabled="@(loading || selectedAccounts.Count == 0)" OnClick="DeleteSelectedAccounts" Class="ml-2">
@@ -550,6 +542,52 @@
     {
         selectedAccounts.Clear();
         return Task.CompletedTask;
+    }
+
+    private SelectionToggleMode _selectionToggleMode = SelectionToggleMode.SelectAll;
+    private string SelectionToggleText => _selectionToggleMode switch
+    {
+        SelectionToggleMode.SelectAll => "全选",
+        SelectionToggleMode.Invert => "反选",
+        SelectionToggleMode.Clear => "清空选择",
+        _ => "全选"
+    };
+
+    private string SelectionToggleIcon => _selectionToggleMode switch
+    {
+        SelectionToggleMode.SelectAll => Icons.Material.Filled.SelectAll,
+        SelectionToggleMode.Invert => Icons.Material.Filled.Flip,
+        SelectionToggleMode.Clear => Icons.Material.Filled.Clear,
+        _ => Icons.Material.Filled.SelectAll
+    };
+
+    private async Task CycleSelectionToggle()
+    {
+        switch (_selectionToggleMode)
+        {
+            case SelectionToggleMode.SelectAll:
+                await SelectAllFiltered();
+                _selectionToggleMode = SelectionToggleMode.Invert;
+                break;
+            case SelectionToggleMode.Invert:
+                await InvertSelection();
+                _selectionToggleMode = SelectionToggleMode.Clear;
+                break;
+            case SelectionToggleMode.Clear:
+                await ClearSelection();
+                _selectionToggleMode = SelectionToggleMode.SelectAll;
+                break;
+            default:
+                _selectionToggleMode = SelectionToggleMode.SelectAll;
+                break;
+        }
+    }
+
+    private enum SelectionToggleMode
+    {
+        SelectAll = 0,
+        Invert = 1,
+        Clear = 2
     }
 
     private async Task DeleteSelectedAccounts()
