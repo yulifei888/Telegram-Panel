@@ -32,7 +32,7 @@
 
                 <MudSpacer />
 
-                <MudSelect @bind-Value="filterCategoryId" Label="分类" Variant="Variant.Outlined" Dense="true" Class="mr-2" Style="min-width: 160px;"
+                <MudSelect @bind-Value="filterCategoryId" Label="分类" Variant="Variant.Outlined" Dense="true" Style="min-width: 160px;"
                            Disabled="@(selectedBotId <= 0)">
                     <MudSelectItem Value="0">全部分类</MudSelectItem>
                     <MudSelectItem Value="-1">未分类</MudSelectItem>
@@ -41,6 +41,10 @@
                         <MudSelectItem Value="@c.Id">@c.Name</MudSelectItem>
                     }
                 </MudSelect>
+
+                <MudIconButton Icon="@Icons.Material.Filled.Add" Color="Color.Primary" Size="Size.Small"
+                               Title="新建分类" OnClick="OpenCreateCategoryDialog"
+                               Disabled="@(selectedBotId <= 0)" Class="mr-2" />
 
                 <MudTextField @bind-Value="search" Placeholder="搜索频道..." Adornment="Adornment.Start"
                               AdornmentIcon="@Icons.Material.Filled.Search" IconSize="Size.Medium" Class="mt-0"
@@ -122,28 +126,6 @@
     </MudCardContent>
 </MudCard>
 
-@if (selectedBotId > 0)
-{
-    <MudCard Class="mt-4">
-        <MudCardContent>
-            <MudText Typo="Typo.h6" Class="mb-2">新增分类</MudText>
-            <MudGrid>
-                <MudItem xs="12" md="4">
-                    <MudTextField @bind-Value="newCategoryName" Label="分类名称" Variant="Variant.Outlined" Required="true" />
-                </MudItem>
-                <MudItem xs="12" md="6">
-                    <MudTextField @bind-Value="newCategoryDesc" Label="描述（可选）" Variant="Variant.Outlined" />
-                </MudItem>
-                <MudItem xs="12" md="2" Class="d-flex align-end">
-                    <MudButton Variant="Variant.Filled" Color="Color.Primary" Disabled="@loading" OnClick="CreateCategoryAsync">
-                        创建
-                    </MudButton>
-                </MudItem>
-            </MudGrid>
-        </MudCardContent>
-    </MudCard>
-}
-
 @code {
     [SupplyParameterFromQuery(Name = "botId")]
     public int? BotIdQuery { get; set; }
@@ -160,9 +142,6 @@
 
     private int filterCategoryId = 0;
     private string search = "";
-
-    private string newCategoryName = "";
-    private string newCategoryDesc = "";
 
     private IEnumerable<BotChannel> filtered => selectedBotId <= 0
         ? Enumerable.Empty<BotChannel>()
@@ -285,33 +264,23 @@
         }
     }
 
-    private async Task CreateCategoryAsync()
+    private async Task OpenCreateCategoryDialog()
     {
         if (selectedBotId <= 0)
             return;
 
-        if (string.IsNullOrWhiteSpace(newCategoryName))
+        var parameters = new DialogParameters
         {
-            Snackbar.Add("请输入分类名称", Severity.Warning);
-            return;
-        }
+            ["BotId"] = selectedBotId
+        };
+        var options = new DialogOptions { CloseOnEscapeKey = true, MaxWidth = MaxWidth.Small, FullWidth = true };
+        var dialog = DialogService.Show<BotChannelCategoryDialog>("新建分类", parameters, options);
+        var result = await dialog.Result;
 
-        loading = true;
-        try
+        if (!result.Canceled)
         {
-            await BotManagement.CreateCategoryAsync(selectedBotId, newCategoryName, newCategoryDesc);
-            newCategoryName = "";
-            newCategoryDesc = "";
+            // 重新加载分类列表
             await LoadBotData();
-            Snackbar.Add("分类已创建", Severity.Success);
-        }
-        catch (Exception ex)
-        {
-            Snackbar.Add($"创建失败：{ex.Message}", Severity.Error);
-        }
-        finally
-        {
-            loading = false;
         }
     }
 

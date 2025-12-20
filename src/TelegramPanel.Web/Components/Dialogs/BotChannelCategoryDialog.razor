@@ -1,0 +1,97 @@
+@namespace TelegramPanel.Web.Components.Dialogs
+@inject BotManagementService BotManagement
+@inject ISnackbar Snackbar
+@using TelegramPanel.Data.Entities
+
+<MudDialog>
+    <DialogContent>
+        <MudStack Spacing="2">
+            <MudTextField @bind-Value="name" Label="分类名称" Variant="Variant.Outlined" Required="true"
+                          MaxLength="100" Counter="100" />
+            <MudTextField @bind-Value="description" Label="描述（可选）" Variant="Variant.Outlined" Lines="3"
+                          MaxLength="500" Counter="500" />
+        </MudStack>
+    </DialogContent>
+    <DialogActions>
+        <MudButton Variant="Variant.Text" Color="Color.Default" OnClick="Cancel" Disabled="@saving">取消</MudButton>
+        <MudButton Variant="Variant.Filled" Color="Color.Primary" OnClick="Save" Disabled="@saving">
+            @if (saving)
+            {
+                <MudProgressCircular Size="Size.Small" Indeterminate="true" Class="mr-2" />
+                <span>保存中...</span>
+            }
+            else
+            {
+                <span>保存</span>
+            }
+        </MudButton>
+    </DialogActions>
+</MudDialog>
+
+@code
+{
+    [CascadingParameter] private MudDialogInstance MudDialog { get; set; } = default!;
+    [Parameter] public int BotId { get; set; }
+    [Parameter] public BotChannelCategory? Category { get; set; }
+
+    private bool saving;
+    private string name = "";
+    private string description = "";
+
+    protected override void OnInitialized()
+    {
+        // 如果传入了分类，说明是编辑模式
+        if (Category != null)
+        {
+            name = Category.Name ?? "";
+            description = Category.Description ?? "";
+        }
+    }
+
+    private void Cancel()
+    {
+        MudDialog.Cancel();
+    }
+
+    private async Task Save()
+    {
+        if (saving)
+            return;
+
+        name = (name ?? string.Empty).Trim();
+        if (string.IsNullOrWhiteSpace(name))
+        {
+            Snackbar.Add("请输入分类名称", Severity.Warning);
+            return;
+        }
+
+        saving = true;
+        try
+        {
+            if (Category == null)
+            {
+                // 新增模式：使用现有的 CreateCategoryAsync 方法
+                var category = await BotManagement.CreateCategoryAsync(BotId, name, description);
+                Snackbar.Add("分类创建成功", Severity.Success);
+                MudDialog.Close(DialogResult.Ok(category));
+            }
+            else
+            {
+                // 编辑模式：需要更新方法（暂未实现）
+                Category.Name = name;
+                Category.Description = description;
+                // TODO: 需要实现 UpdateCategoryAsync 方法
+                Snackbar.Add("分类更新功能待实现", Severity.Warning);
+                MudDialog.Close(DialogResult.Ok(Category));
+            }
+        }
+        catch (Exception ex)
+        {
+            Snackbar.Add($"保存失败：{ex.Message}", Severity.Error);
+        }
+        finally
+        {
+            saving = false;
+        }
+    }
+}
