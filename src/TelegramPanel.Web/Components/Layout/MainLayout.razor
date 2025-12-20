@@ -26,6 +26,9 @@
     </MudMainContent>
 </MudLayout>
 
+@using TelegramPanel.Web.Services
+@inject UiPreferencesService UiPreferences
+
 @code {
     private bool _drawerOpen = true;
     private bool _isDarkMode = true;
@@ -48,13 +51,21 @@
         }
     };
 
+    protected override async Task OnInitializedAsync()
+    {
+        // 从配置文件读取用户的主题偏好
+        _isDarkMode = await UiPreferences.GetIsDarkModeAsync();
+    }
+
     private void ToggleDrawer()
     {
         _drawerOpen = !_drawerOpen;
     }
 
-    private void ToggleDarkMode()
+    private async Task ToggleDarkMode()
     {
         _isDarkMode = !_isDarkMode;
+        // 保存主题偏好到配置文件
+        await UiPreferences.SetIsDarkModeAsync(_isDarkMode);
     }
 }
