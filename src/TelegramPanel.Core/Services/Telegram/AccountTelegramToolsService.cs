@@ -97,7 +97,7 @@ public class AccountTelegramToolsService
                 {
                     var frozen = new TelegramAccountStatusResult(
                         Ok: false,
-                        Summary: "创建频道受限（冻结）",
+                        Summary: "账号被冻结（创建频道接口受限）",
                         Details: $"创建频道探测：{probe.Message}{Environment.NewLine}{BuildProfileDetails(profile)}",
                         CheckedAtUtc: checkedAt,
                         Profile: profile);
@@ -876,7 +876,7 @@ public class AccountTelegramToolsService
             }
             catch (RpcException ex) when (ex.Code == 420 && string.Equals(ex.Message, "FROZEN_METHOD_INVALID", StringComparison.OrdinalIgnoreCase))
             {
-                return new CreateChannelProbeResult(false, true, "Telegram 返回 FROZEN_METHOD_INVALID（创建频道接口被冻结）");
+                return new CreateChannelProbeResult(false, true, "账号/ApiId 受限：Telegram 返回 FROZEN_METHOD_INVALID（创建频道接口被冻结）");
             }
 
             cancellationToken.ThrowIfCancellationRequested();
@@ -913,7 +913,7 @@ public class AccountTelegramToolsService
         var msg = ex.Message ?? string.Empty;
 
         if (msg.Contains("FROZEN_METHOD_INVALID", StringComparison.OrdinalIgnoreCase))
-            return ("接口被冻结（账号/ApiId 受限）", msg);
+            return ("账号被冻结（FROZEN_METHOD_INVALID）", "Telegram 提示该账号/ApiId 的某些接口被冻结（常见为创建频道接口）。" + Environment.NewLine + msg);
 
         if (msg.Contains("AUTH_KEY_UNREGISTERED", StringComparison.OrdinalIgnoreCase))
             return ("Session 失效（AUTH_KEY_UNREGISTERED）", msg);

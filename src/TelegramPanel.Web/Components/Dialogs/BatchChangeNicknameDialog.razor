@@ -10,14 +10,21 @@
     <DialogContent>
         <MudStack Spacing="2">
             <MudAlert Severity="Severity.Warning" Variant="Variant.Outlined" Dense="true">
-                将对选中的账号批量修改昵称。若“批量昵称”相同，默认会在后面追加手机号后 4 位，方便区分。
+                将对选中的账号批量修改昵称。支持两种模式：单个“批量昵称”（可自动追加手机号后 4 位），或“昵称列表”（按行轮询分配）。
             </MudAlert>
 
             <MudText Typo="Typo.subtitle2">账号数量：@accounts.Count</MudText>
 
             <MudTextField @bind-Value="baseNickname" Label="批量昵称" Variant="Variant.Outlined" Required="true"
-                          HelperText="例如：测试号（将生成：测试号1234 / 测试号5678 ...）" />
-            <MudSwitch @bind-Value="appendPhoneLast4" Label="自动追加手机号后 4 位" Color="Color.Primary" />
+                          HelperText="单昵称模式：例如“测试号”（将生成：测试号1234 / 测试号5678 ...）。若填写了“昵称列表”，则优先使用昵称列表。" />
+            <MudSwitch @bind-Value="appendPhoneLast4" Label="自动追加手机号后 4 位（单昵称模式）" Color="Color.Primary" />
+
+            <MudTextField @bind-Value="nicknameLines" Label="昵称列表（换行分隔）" Variant="Variant.Outlined" Lines="6"
+                          HelperText="每行一个昵称；会按顺序依次分配给已选账号；昵称用完后从头开始轮询。" />
+            <MudSwitch @bind-Value="appendPhoneLast4WhenDuplicate" Label="昵称重复时追加手机号后 4 位（昵称列表模式）" Color="Color.Primary" />
+            <MudText Typo="Typo.caption" Class="mud-text-secondary">
+                例如：昵称列表只有 1 行或轮询后重复时，为避免重复昵称可追加手机号后 4 位。
+            </MudText>
 
             @if (running || results.Count > 0)
             {
@@ -79,6 +86,8 @@
 
     private string baseNickname = "";
     private bool appendPhoneLast4 = true;
+    private string nicknameLines = "";
+    private bool appendPhoneLast4WhenDuplicate = true;
 
     private bool running;
     private int processed;
@@ -107,7 +116,10 @@
             return;
         }
 
-        if (string.IsNullOrWhiteSpace(baseNickname))
+        var nicknameList = ParseNicknameLines(nicknameLines);
+        var useList = nicknameList.Count > 0;
+
+        if (!useList && string.IsNullOrWhiteSpace(baseNickname))
         {
             Snackbar.Add("批量昵称不能为空", Severity.Warning);
             return;
@@ -161,9 +173,21 @@
 
         try
         {
+            var baseUsedCount = new Dictionary<string, int>(StringComparer.Ordinal);
             foreach (var a in accounts)
             {
-                var newNickname = BuildNickname(baseNickname, a.Phone, appendPhoneLast4);
+                var baseName = useList ? nicknameList[processed % nicknameList.Count] : baseNickname;
+
+                var needAppend = appendPhoneLast4;
+                if (useList)
+                {
+                    baseName = (baseName ?? string.Empty).Trim();
+                    baseUsedCount.TryGetValue(baseName, out var used);
+                    baseUsedCount[baseName] = used + 1;
+                    needAppend = appendPhoneLast4WhenDuplicate && used > 0;
+                }
+
+                var newNickname = BuildNickname(baseName, a.Phone, needAppend);
 
                 var (ok, err) = await AccountTelegramTools.UpdateUserProfileAsync(
                     accountId: a.Id,
@@ -224,6 +248,18 @@
         }
 
         return count == 0 ? string.Empty : new string(chars, 0, count);
+    }
+
+    private static List<string> ParseNicknameLines(string? text)
+    {
+        if (string.IsNullOrWhiteSpace(text))
+            return new List<string>();
+
+        return text
+            .Split(new[] { "\r\n", "\n", "\r" }, StringSplitOptions.RemoveEmptyEntries)
+            .Select(x => (x ?? string.Empty).Trim())
+            .Where(x => !string.IsNullOrWhiteSpace(x))
+            .ToList();
     }
 
     private void Cancel() => MudDialog.Close();
