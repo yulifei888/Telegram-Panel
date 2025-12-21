@@ -75,7 +75,6 @@
                 <MudTd DataLabel="操作">
                     <MudMenu Icon="@Icons.Material.Filled.MoreVert" Size="Size.Small">
                         <MudMenuItem Icon="@Icons.Material.Filled.Info" OnClick="@(() => ShowDetails(context))">查看详情</MudMenuItem>
-                        <MudMenuItem Icon="@Icons.Material.Filled.PersonAdd" OnClick="@(() => InviteMembers(context))">邀请成员</MudMenuItem>
                         <MudMenuItem Icon="@Icons.Material.Filled.Link" OnClick="@(async () => await CopyLink(context))">复制链接</MudMenuItem>
                         <MudDivider />
                         <MudMenuItem Icon="@Icons.Material.Filled.Delete" IconColor="Color.Error" OnClick="@(() => DeleteGroup(context.Id))">删除群组</MudMenuItem>
@@ -158,11 +157,6 @@
         var parameters = new DialogParameters { ["GroupDbId"] = group.Id };
         var options = new DialogOptions { CloseOnEscapeKey = true, MaxWidth = MaxWidth.Large, FullWidth = true };
         DialogService.Show<GroupDetailsDialog>("群组详情", parameters, options);
-    }
-
-    private void InviteMembers(Group group)
-    {
-        Navigation.NavigateTo($"/batch/invite?groupId={group.Id}");
     }
 
     private async Task CopyLink(Group group)

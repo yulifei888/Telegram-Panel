@@ -34,28 +34,6 @@ public sealed class TaskCatalogModule : ITelegramPanelModule, IModuleTaskProvide
     {
         yield return new ModuleTaskDefinition
         {
-            Category = "bot",
-            TaskType = BatchTaskTypes.Invite,
-            DisplayName = "批量邀请",
-            Description = "对所选频道批量邀请用户名列表（Bot/执行账号需具备权限）。",
-            Icon = Icons.Material.Filled.PersonAdd,
-            CreateRoute = "/batch/invite",
-            Order = 10
-        };
-
-        yield return new ModuleTaskDefinition
-        {
-            Category = "bot",
-            TaskType = BatchTaskTypes.SetAdmin,
-            DisplayName = "设置管理员",
-            Description = "对所选频道批量设置管理员（Bot/执行账号需具备权限）。",
-            Icon = Icons.Material.Filled.AdminPanelSettings,
-            CreateRoute = "/batch/admins",
-            Order = 20
-        };
-
-        yield return new ModuleTaskDefinition
-        {
             Category = "system",
             TaskType = BatchTaskTypes.ExternalApiKick,
             DisplayName = "外部 API：踢人/封禁",

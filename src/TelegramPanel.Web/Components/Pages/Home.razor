@@ -73,9 +73,6 @@
                 <MudButton Variant="Variant.Filled" Color="Color.Secondary" StartIcon="@Icons.Material.Filled.Add" Href="/channels/create">
                     创建频道
                 </MudButton>
-                <MudButton Variant="Variant.Filled" Color="Color.Tertiary" StartIcon="@Icons.Material.Filled.PersonAdd" Href="/batch/invite">
-                    批量邀请
-                </MudButton>
                 <MudButton Variant="Variant.Filled" Color="Color.Info" StartIcon="@Icons.Material.Filled.Sync"
                            Disabled="@_syncing"
                            OnClick="@(async (MouseEventArgs _) => await SyncAllAccounts())">

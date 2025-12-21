@@ -101,7 +101,6 @@
                         <MudMenuItem Icon="@Icons.Material.Filled.Info" OnClick="@(async () => await ShowDetails(context))">查看详情</MudMenuItem>
                         <MudMenuItem Icon="@Icons.Material.Filled.Edit" OnClick="@(async () => await EditChannel(context))">编辑频道</MudMenuItem>
                         <MudMenuItem Icon="@Icons.Material.Filled.PersonRemove" OnClick="@(async () => await KickUser(context))">踢人</MudMenuItem>
-                        <MudMenuItem Icon="@Icons.Material.Filled.PersonAdd" OnClick="@(() => InviteUsers(context))">邀请用户</MudMenuItem>
                         <MudMenuItem Icon="@Icons.Material.Filled.Link" OnClick="@(async () => await CopyLinkAsync(context))">复制链接</MudMenuItem>
                         <MudDivider />
                         <MudMenuItem Icon="@Icons.Material.Filled.Delete" IconColor="Color.Error" OnClick="@(() => DeleteChannel(context.Id))">删除频道</MudMenuItem>
@@ -276,11 +275,6 @@
     {
         // 复用详情弹窗里的“踢人”能力，减少重复 UI
         await ShowDetails(channel);
-    }
-
-    private void InviteUsers(Channel channel)
-    {
-        Navigation.NavigateTo($"/batch/invite?channelId={channel.Id}");
     }
 
     private async Task CopyLinkAsync(Channel channel)

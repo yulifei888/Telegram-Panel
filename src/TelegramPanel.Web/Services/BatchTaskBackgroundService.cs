@@ -2,8 +2,6 @@ using System.Text.Json;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
-using TelegramPanel.Core.BatchTasks;
-using TelegramPanel.Core.Interfaces;
 using TelegramPanel.Core.Services;
 using TelegramPanel.Data.Entities;
 using TelegramPanel.Modules;
@@ -71,8 +69,6 @@ public sealed class BatchTaskBackgroundService : BackgroundService
     {
         using var scope = _scopeFactory.CreateScope();
         var taskManagement = scope.ServiceProvider.GetRequiredService<BatchTaskManagementService>();
-        var channelManagement = scope.ServiceProvider.GetRequiredService<ChannelManagementService>();
-        var channelService = scope.ServiceProvider.GetRequiredService<IChannelService>();
 
         var pending = (await taskManagement.GetTasksByStatusAsync("pending"))
             .OrderBy(t => t.CreatedAt)
@@ -89,39 +85,28 @@ public sealed class BatchTaskBackgroundService : BackgroundService
 
         try
         {
-            switch (pending.TaskType)
+            // 模块扩展任务：从 DI 中查找对应 TaskType 的执行器
+            var handler = scope.ServiceProvider
+                .GetServices<IModuleTaskHandler>()
+                .FirstOrDefault(h => string.Equals(h.TaskType, pending.TaskType, StringComparison.OrdinalIgnoreCase));
+
+            if (handler == null)
             {
-                case BatchTaskTypes.Invite:
-                    (completed, failed) = await RunInviteAsync(pending, taskManagement, channelManagement, channelService, completed, failed, cancellationToken);
-                    break;
-                case BatchTaskTypes.SetAdmin:
-                    (completed, failed) = await RunSetAdminAsync(pending, taskManagement, channelManagement, channelService, completed, failed, cancellationToken);
-                    break;
-                default:
-                    // 模块扩展任务：从 DI 中查找对应 TaskType 的执行器
-                    var handler = scope.ServiceProvider
-                        .GetServices<IModuleTaskHandler>()
-                        .FirstOrDefault(h => string.Equals(h.TaskType, pending.TaskType, StringComparison.OrdinalIgnoreCase));
+                failed = pending.Total == 0 ? 1 : pending.Total;
+                await taskManagement.UpdateTaskProgressAsync(pending.Id, completed, failed);
+                await taskManagement.CompleteTaskAsync(pending.Id, success: false);
+                _logger.LogWarning("Unsupported batch task type: {TaskType} (task {TaskId})", pending.TaskType, pending.Id);
+                return;
+            }
 
-                    if (handler == null)
-                    {
-                        failed = pending.Total == 0 ? 1 : pending.Total;
-                        await taskManagement.UpdateTaskProgressAsync(pending.Id, completed, failed);
-                        await taskManagement.CompleteTaskAsync(pending.Id, success: false);
-                        _logger.LogWarning("Unsupported batch task type: {TaskType} (task {TaskId})", pending.TaskType, pending.Id);
-                        return;
-                    }
+            var host = new DbBackedModuleTaskExecutionHost(pending, taskManagement, scope.ServiceProvider);
+            await handler.ExecuteAsync(host, cancellationToken);
 
-                    var host = new DbBackedModuleTaskExecutionHost(pending, taskManagement, scope.ServiceProvider);
-                    await handler.ExecuteAsync(host, cancellationToken);
-
-                    var after = await taskManagement.GetTaskAsync(pending.Id);
-                    if (after != null)
-                    {
-                        completed = after.Completed;
-                        failed = after.Failed;
-                    }
-                    break;
+            var after = await taskManagement.GetTaskAsync(pending.Id);
+            if (after != null)
+            {
+                completed = after.Completed;
+                failed = after.Failed;
             }
 
             // 如果任务被用户取消（当前实现：Cancel 会把状态写成 failed），则不覆盖它
@@ -147,140 +132,6 @@ public sealed class BatchTaskBackgroundService : BackgroundService
             }
         }
     }
-
-    private static async Task<(int completed, int failed)> RunInviteAsync(
-        BatchTask task,
-        BatchTaskManagementService taskManagement,
-        ChannelManagementService channelManagement,
-        IChannelService channelService,
-        int completed,
-        int failed,
-        CancellationToken cancellationToken)
-    {
-        if (string.IsNullOrWhiteSpace(task.Config))
-            throw new InvalidOperationException("任务配置为空");
-
-        var cfg = JsonSerializer.Deserialize<InviteTaskConfig>(task.Config);
-        if (cfg == null || cfg.ChannelTelegramIds.Count == 0 || cfg.Usernames.Count == 0)
-            throw new InvalidOperationException("任务配置缺少 ChannelTelegramIds 或 Usernames");
-
-        foreach (var channelTelegramId in cfg.ChannelTelegramIds)
-        {
-            cancellationToken.ThrowIfCancellationRequested();
-
-            var latest = await taskManagement.GetTaskAsync(task.Id);
-            if (latest != null && latest.Status != "running")
-                return (completed, failed);
-
-            var channel = await channelManagement.GetChannelByTelegramIdAsync(channelTelegramId);
-            if (channel == null)
-            {
-                failed += cfg.Usernames.Count;
-                await taskManagement.UpdateTaskProgressAsync(task.Id, completed, failed);
-                continue;
-            }
-
-            var executeAccountId = await channelManagement.ResolveExecuteAccountIdAsync(channel, cfg.PreferredExecuteAccountId > 0 ? cfg.PreferredExecuteAccountId : null);
-            if (executeAccountId is not > 0)
-            {
-                failed += cfg.Usernames.Count;
-                await taskManagement.UpdateTaskProgressAsync(task.Id, completed, failed);
-                continue;
-            }
-
-            List<InviteResult> results;
-            try
-            {
-                results = await channelService.BatchInviteUsersAsync(executeAccountId.Value, channelTelegramId, cfg.Usernames, cfg.DelayMs);
-            }
-            catch (Exception ex)
-            {
-                results = cfg.Usernames.Select(u => new InviteResult(u, false, ex.Message)).ToList();
-            }
-
-            completed += results.Count(r => r.Success);
-            failed += results.Count(r => !r.Success);
-            await taskManagement.UpdateTaskProgressAsync(task.Id, completed, failed);
-        }
-
-        return (completed, failed);
-    }
-
-    private static async Task<(int completed, int failed)> RunSetAdminAsync(
-        BatchTask task,
-        BatchTaskManagementService taskManagement,
-        ChannelManagementService channelManagement,
-        IChannelService channelService,
-        int completed,
-        int failed,
-        CancellationToken cancellationToken)
-    {
-        if (string.IsNullOrWhiteSpace(task.Config))
-            throw new InvalidOperationException("任务配置为空");
-
-        var cfg = JsonSerializer.Deserialize<SetAdminTaskConfig>(task.Config);
-        if (cfg == null || cfg.ChannelTelegramIds.Count == 0 || cfg.Usernames.Count == 0)
-            throw new InvalidOperationException("任务配置缺少 ChannelTelegramIds 或 Usernames");
-
-        var rights = (AdminRights)cfg.Rights;
-        var adminRequests = cfg.Usernames.Select(u => new AdminRequest(u, rights, cfg.Title)).ToList();
-
-        foreach (var channelTelegramId in cfg.ChannelTelegramIds)
-        {
-            cancellationToken.ThrowIfCancellationRequested();
-
-            var latest = await taskManagement.GetTaskAsync(task.Id);
-            if (latest != null && latest.Status != "running")
-                return (completed, failed);
-
-            var channel = await channelManagement.GetChannelByTelegramIdAsync(channelTelegramId);
-            if (channel == null)
-            {
-                failed += cfg.Usernames.Count;
-                await taskManagement.UpdateTaskProgressAsync(task.Id, completed, failed);
-                continue;
-            }
-
-            var executeAccountId = await channelManagement.ResolveExecuteAccountIdAsync(channel, cfg.PreferredExecuteAccountId > 0 ? cfg.PreferredExecuteAccountId : null);
-            if (executeAccountId is not > 0)
-            {
-                failed += cfg.Usernames.Count;
-                await taskManagement.UpdateTaskProgressAsync(task.Id, completed, failed);
-                continue;
-            }
-
-            List<SetAdminResult> results;
-            try
-            {
-                results = await channelService.BatchSetAdminsAsync(executeAccountId.Value, channelTelegramId, adminRequests);
-            }
-            catch (Exception ex)
-            {
-                results = cfg.Usernames.Select(u => new SetAdminResult(u, false, ex.Message)).ToList();
-            }
-
-            completed += results.Count(r => r.Success);
-            failed += results.Count(r => !r.Success);
-            await taskManagement.UpdateTaskProgressAsync(task.Id, completed, failed);
-        }
-
-        return (completed, failed);
-    }
-
-    private sealed record InviteTaskConfig(
-        List<long> ChannelTelegramIds,
-        List<string> Usernames,
-        int DelayMs,
-        int PreferredExecuteAccountId
-    );
-
-    private sealed record SetAdminTaskConfig(
-        List<long> ChannelTelegramIds,
-        List<string> Usernames,
-        int Rights,
-        string Title,
-        int PreferredExecuteAccountId
-    );
 
     private sealed class DbBackedModuleTaskExecutionHost : IModuleTaskExecutionHost
     {
