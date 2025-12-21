@@ -203,6 +203,34 @@ public void ConfigureServices(IServiceCollection services, ModuleHostContext con
 }
 ```
 
+### 示例：批量订阅/加群/退群（用户任务）
+
+该类任务的典型形态是“多账号 × 多链接”的组合执行，并允许在 UI 中切换操作模式：
+
+- `join`：订阅频道 / 加入群组
+- `leave`：取消订阅 / 退群
+
+建议的 `host.Config`（JSON）结构：
+
+```json
+{
+  "Mode": "join",
+  "AccountIds": [1, 2],
+  "Links": [
+    "https://t.me/xxx",
+    "t.me/+hash",
+    "@username",
+    "tg://join?invite=hash"
+  ],
+  "DelayMs": 2000
+}
+```
+
+模块执行器中可直接解析并调用宿主服务（示例）：
+
+- `TelegramPanel.Core.Services.Telegram.AccountTelegramToolsService.JoinChatOrChannelAsync(...)`
+- `TelegramPanel.Core.Services.Telegram.AccountTelegramToolsService.LeaveChatOrChannelAsync(...)`
+
 ### 3) 可选：提供自定义创建器（任务中心内嵌表单）
 
 在 `ModuleTaskDefinition.EditorComponentType` 指定组件类型的 `AssemblyQualifiedName`，并实现组件参数：
@@ -211,6 +239,12 @@ public void ConfigureServices(IServiceCollection services, ModuleHostContext con
 - `DraftChanged`（`EventCallback<ModuleTaskDraft>`）
 
 宿主会用 `DynamicComponent` 渲染该组件，提交时使用 `Draft.Total` / `Draft.Config` 创建任务。
+
+实用建议（针对“多账号/多目标”类任务）：
+
+- 在编辑器里做基础校验：未选择账号、未填写链接时 `CanSubmit=false` 并给出 `ValidationError`
+- `Total` 建议按“账号数 × 链接数”或“账号数 × 用户名数”等可预估的总步数计算，便于任务中心展示进度
+- 支持筛选：例如“账号分类筛选/搜索”，减少用户选择成本
 
 ## 外部 API 扩展（API）
 

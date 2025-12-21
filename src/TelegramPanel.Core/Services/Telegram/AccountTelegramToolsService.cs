@@ -678,6 +678,61 @@ public class AccountTelegramToolsService
         }
     }
 
+    /// <summary>
+    /// 通过链接/用户名退出群组或取消订阅频道（支持 https://t.me/xxx、t.me/+hash、@username、username、tg://join?invite=hash 等）。
+    /// </summary>
+    public async Task<(bool Success, string? Error, string? LeftTitle)> LeaveChatOrChannelAsync(
+        int accountId,
+        string linkOrUsername,
+        CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            var raw = (linkOrUsername ?? string.Empty).Trim();
+            if (string.IsNullOrWhiteSpace(raw))
+                return (false, "链接/用户名为空", null);
+
+            var url = NormalizeTelegramJoinUrl(raw);
+
+            var client = await GetOrCreateConnectedClientAsync(accountId, cancellationToken);
+            cancellationToken.ThrowIfCancellationRequested();
+
+            // 解析目标（不加入）
+            var chat = await client.AnalyzeInviteLink(url, join: false);
+            cancellationToken.ThrowIfCancellationRequested();
+
+            var title = chat switch
+            {
+                TL.Channel c => c.title,
+                TL.Chat c => c.title,
+                _ => null
+            };
+
+            var peer = chat switch
+            {
+                TL.Channel c => c.ToInputPeer(),
+                TL.Chat c => c.ToInputPeer(),
+                _ => null
+            };
+
+            if (peer == null)
+                return (false, "无法解析目标群组/频道", null);
+
+            await client.LeaveChat(peer);
+            return (true, null, title);
+        }
+        catch (RpcException ex) when (ex.Code == 400 && string.Equals(ex.Message, "USER_NOT_PARTICIPANT", StringComparison.OrdinalIgnoreCase))
+        {
+            return (true, null, "未在群组/频道中");
+        }
+        catch (Exception ex)
+        {
+            var (summary, details) = MapTelegramException(ex);
+            var msg = string.IsNullOrWhiteSpace(details) ? summary : $"{summary}：{details}";
+            return (false, msg, null);
+        }
+    }
+
     private static string NormalizeTelegramJoinUrl(string input)
     {
         var s = (input ?? string.Empty).Trim();

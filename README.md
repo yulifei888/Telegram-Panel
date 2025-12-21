@@ -198,6 +198,14 @@ dotnet run --project src/TelegramPanel.Web
 - **外部 API：踢人/封禁**：`POST /api/kick`（配置入口：面板左侧菜单「API 管理」）
 - **模块打包脚本（可选）**：`powershell tools/package-module.ps1 -Project <csproj> -Manifest <manifest.json>`，产物默认输出到 `artifacts/modules/`
 
+已开发的外置模块（需另行获取/购买，可定制开发）：
+
+- 批量邀请（用户）
+- 批量设置管理员（用户）
+- 批量订阅/加群/退群
+
+联系 `@SNINKBOT` 购买（不便宜，主要赚生活费；支持按需定制模块）。
+
 更多说明见：`docs/modules.md`（模块目录结构、manifest、任务/API/UI 扩展点）。
 
 ## 详细文档
