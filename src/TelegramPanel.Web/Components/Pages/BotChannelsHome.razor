@@ -12,98 +12,79 @@
 
 <MudText Typo="Typo.h4" Class="mb-4 tp-page-title">Bot 频道</MudText>
 
+<MudPaper Class="pa-4 mb-4" Elevation="0" Outlined="true">
+    <MudStack Row="true" Spacing="2" AlignItems="AlignItems.Center" Style="flex-wrap: wrap;">
+        <MudSelect T="int" Value="@selectedBotId" ValueChanged="@(async (int id) => await OnSelectedBotChanged(id))" Label="选择机器人"
+                   Variant="Variant.Outlined" Dense="true" Class="tp-input-full-xs"
+                   Style="min-width: 200px; flex: 1; max-width: 400px;">
+            <MudSelectItem Value="0">-- 请选择机器人 --</MudSelectItem>
+            @foreach (var b in bots)
+            {
+                <MudSelectItem Value="@b.Id">@b.Name</MudSelectItem>
+            }
+        </MudSelect>
+
+        <MudSelect @bind-Value="filterCategoryId" @bind-Value:after="OnFiltersChanged" Label="分类" Variant="Variant.Outlined" Dense="true"
+                   Class="tp-input-full-xs"
+                   Style="min-width: 160px; flex: 0 1 200px;" Disabled="@(selectedBotId <= 0)">
+            <MudSelectItem Value="0">全部分类</MudSelectItem>
+            <MudSelectItem Value="-1">未分类</MudSelectItem>
+            @foreach (var c in categories)
+            {
+                <MudSelectItem Value="@c.Id">@c.Name</MudSelectItem>
+            }
+        </MudSelect>
+
+        <MudIconButton Icon="@Icons.Material.Filled.Add" Color="Color.Primary" Size="Size.Small"
+                       Title="新建分类" OnClick="OpenCreateCategoryDialog"
+                       Disabled="@(selectedBotId <= 0)" />
+
+        <MudTextField @bind-Value="search" Placeholder="搜索频道..." Adornment="Adornment.Start"
+                      AdornmentIcon="@Icons.Material.Filled.Search" IconSize="Size.Medium" Class="mt-0 tp-input-full-xs"
+                      Style="min-width: 200px; flex: 1; max-width: 400px;"
+                      Immediate="true" Disabled="@(selectedBotId <= 0)" @bind-Value:after="OnSearchChanged" />
+    </MudStack>
+</MudPaper>
+
+<MudStack Row="true" Spacing="2" AlignItems="AlignItems.Center" Class="mb-2" Style="flex-wrap: wrap;">
+    <MudButton Variant="Variant.Filled" Color="Color.Primary" StartIcon="@Icons.Material.Filled.Refresh"
+               Disabled="@(loading || selectedBotId <= 0)" OnClick="ReloadTable" Size="Size.Small">
+        刷新
+    </MudButton>
+    
+    <MudButton Variant="Variant.Outlined" Color="Color.Primary" StartIcon="@SelectionToggleIcon"
+               Disabled="@(loading || selectedBotId <= 0 || channels.Count == 0)" OnClick="CycleSelectionToggle" Size="Size.Small">
+        @SelectionToggleText
+    </MudButton>
+    
+    <MudButton Variant="Variant.Outlined" Color="Color.Info" StartIcon="@Icons.Material.Filled.Sync"
+               Disabled="@(loading || selectedBotId <= 0)" OnClick="Sync" Size="Size.Small">
+        同步
+    </MudButton>
+
+    <MudMenu Label="批量操作" Variant="Variant.Outlined" Color="Color.Default" StartIcon="@Icons.Material.Filled.MoreHoriz"
+               Size="Size.Small" Disabled="@(loading || selectedBotId <= 0)" Dense="true" EndIcon="@Icons.Material.Filled.KeyboardArrowDown">
+        <MudMenuItem Disabled="@(selected.Count == 0)" OnClick="ExportInvites">导出邀请（已选）</MudMenuItem>
+        <MudMenuItem Disabled="@(selected.Count == 0)" OnClick="OpenSetAdmins">批量设置管理员（已选）</MudMenuItem>
+        <MudMenuItem Disabled="@(selected.Count == 0)" OnClick="OpenBatchSetCategory">批量设置分类（已选）</MudMenuItem>
+        <MudMenuItem Disabled="@(selected.Count == 0)" OnClick="OpenBanMember">踢出用户（已选）</MudMenuItem>
+    </MudMenu>
+
+    @if (selected.Count > 0)
+    {
+        <MudChip T="string" Size="Size.Small" Color="Color.Info" Class="ml-2">已选 @selected.Count</MudChip>
+    }
+    else
+    {
+        <MudText Typo="Typo.caption" Color="Color.Secondary" Class="ml-2">频道 (@totalCount)</MudText>
+    }
+</MudStack>
+
 <MudCard>
     <MudCardContent>
         <MudTable ServerData="LoadChannelsServerData" Hover="true" Breakpoint="Breakpoint.Sm" Loading="@loading"
                   Class="tp-table"
                   MultiSelection="true" @bind-SelectedItems="selected" @ref="_table">
-            <ToolBarContent>
-                <MudStack Spacing="1" Style="width: 100%;">
-                    <MudStack Row="true" AlignItems="AlignItems.Center" Spacing="1" Class="tp-flex-wrap">
-                        <MudSelect T="int" Value="@selectedBotId" ValueChanged="@(async (int id) => await OnSelectedBotChanged(id))" Label="选择机器人"
-                                   Variant="Variant.Outlined" Dense="true" Class="tp-input-full-xs"
-                                   Style="min-width: 260px; flex: 1 1 260px;">
-                            <MudSelectItem Value="0">-- 请选择机器人 --</MudSelectItem>
-                            @foreach (var b in bots)
-                            {
-                                <MudSelectItem Value="@b.Id">@b.Name</MudSelectItem>
-                            }
-                        </MudSelect>
-
-                        <MudText Typo="Typo.h6">
-                            频道 (@totalCount)
-                        </MudText>
-
-                        @if (selected.Count > 0)
-                        {
-                            <MudChip T="string" Size="Size.Small" Color="Color.Info">已选 @selected.Count</MudChip>
-                        }
-
-                        <div class="tp-hide-xs">
-                            <MudSpacer />
-                        </div>
-
-                        <MudSelect @bind-Value="filterCategoryId" @bind-Value:after="OnFiltersChanged" Label="分类" Variant="Variant.Outlined" Dense="true"
-                                   Class="tp-input-full-xs"
-                                   Style="min-width: 160px; flex: 0 1 200px;" Disabled="@(selectedBotId <= 0)">
-                            <MudSelectItem Value="0">全部分类</MudSelectItem>
-                            <MudSelectItem Value="-1">未分类</MudSelectItem>
-                            @foreach (var c in categories)
-                            {
-                                <MudSelectItem Value="@c.Id">@c.Name</MudSelectItem>
-                            }
-                        </MudSelect>
-
-                        <MudIconButton Icon="@Icons.Material.Filled.Add" Color="Color.Primary" Size="Size.Small"
-                                       Title="新建分类" OnClick="OpenCreateCategoryDialog"
-                                       Disabled="@(selectedBotId <= 0)" />
-
-                        <MudTextField @bind-Value="search" Placeholder="搜索频道..." Adornment="Adornment.Start"
-                                      AdornmentIcon="@Icons.Material.Filled.Search" IconSize="Size.Medium" Class="mt-0 tp-input-full-xs"
-                                      Style="min-width: 220px; flex: 1 1 260px;"
-                                      Immediate="true" Disabled="@(selectedBotId <= 0)" @bind-Value:after="OnSearchChanged" />
-
-                        <MudMenu Dense="true" Disabled="@(loading || selectedBotId <= 0)">
-                            <ActivatorContent>
-                                <MudButton Variant="Variant.Outlined" Color="Color.Default" StartIcon="@Icons.Material.Filled.MoreHoriz"
-                                           Class="tp-nowrap"
-                                           Disabled="@(loading || selectedBotId <= 0)" Size="Size.Small">
-                                    批量操作
-                                </MudButton>
-                            </ActivatorContent>
-                            <ChildContent>
-                                <MudMenuItem Disabled="@(selected.Count == 0)" OnClick="ExportInvites">导出邀请（已选）</MudMenuItem>
-                                <MudMenuItem Disabled="@(selected.Count == 0)" OnClick="OpenSetAdmins">批量设置管理员（已选）</MudMenuItem>
-                                <MudMenuItem Disabled="@(selected.Count == 0)" OnClick="OpenBatchSetCategory">批量设置分类（已选）</MudMenuItem>
-                                <MudMenuItem Disabled="@(selected.Count == 0)" OnClick="OpenBanMember">踢出用户（已选）</MudMenuItem>
-                            </ChildContent>
-                        </MudMenu>
-
-                        <MudIconButton Icon="@(_actionsExpanded ? Icons.Material.Filled.ExpandLess : Icons.Material.Filled.ExpandMore)"
-                                       Color="Color.Default"
-                                       Title="@(_actionsExpanded ? "收起操作" : "展开操作")"
-                                       Disabled="@(selectedBotId <= 0)"
-                                       OnClick="@ToggleActions" />
-                    </MudStack>
-
-                    <MudCollapse Expanded="@_actionsExpanded">
-                        <MudStack Row="true" AlignItems="AlignItems.Center" Spacing="1" Style="flex-wrap: wrap; margin-top: 6px;">
-                            <MudButton Variant="Variant.Outlined" Color="Color.Info" StartIcon="@Icons.Material.Filled.Sync"
-                                       Disabled="@(loading || selectedBotId <= 0)" OnClick="Sync" Size="Size.Small">
-                                同步
-                            </MudButton>
-
-                            <MudButton Variant="Variant.Filled" Color="Color.Primary" StartIcon="@Icons.Material.Filled.Refresh"
-                                       Disabled="@(loading || selectedBotId <= 0)" OnClick="ReloadTable" Size="Size.Small">
-                                刷新
-                            </MudButton>
-                        </MudStack>
-                    </MudCollapse>
-
-                    <MudDivider Class="mt-2" />
-                </MudStack>
-            </ToolBarContent>
-
             <HeaderContent>
                 <MudTh>频道名称</MudTh>
                 <MudTh>用户名</MudTh>
@@ -137,12 +118,14 @@
                 </MudTd>
                 <MudTd DataLabel="最后同步"><PanelTime Value="context.SyncedAt" /></MudTd>
                 <MudTd DataLabel="操作">
-                    <MudMenu Icon="@Icons.Material.Filled.MoreVert" Size="Size.Small">
-                        <MudMenuItem Icon="@Icons.Material.Filled.Link" OnClick="@(async () => await CopyLinkAsync(context))">复制链接</MudMenuItem>
-                        <MudDivider />
-                        <MudMenuItem Icon="@Icons.Material.Filled.Info" OnClick="@(async () => await ShowDetailsAsync(context))">查看详情</MudMenuItem>
-                        <MudMenuItem Icon="@Icons.Material.Filled.Edit" OnClick="@(async () => await EditChannelAsync(context))">编辑频道</MudMenuItem>
-                    </MudMenu>
+                    <MudStack Row="true" Spacing="1" AlignItems="AlignItems.Center" Style="flex-wrap: wrap;">
+                        <MudIconButton Icon="@Icons.Material.Filled.Link" Size="Size.Small" Color="Color.Info"
+                                       OnClick="@(async () => await CopyLinkAsync(context))" Title="复制链接" />
+                        <MudIconButton Icon="@Icons.Material.Filled.Info" Size="Size.Small" Color="Color.Default"
+                                       OnClick="@(async () => await ShowDetailsAsync(context))" Title="查看详情" />
+                        <MudIconButton Icon="@Icons.Material.Filled.Edit" Size="Size.Small" Color="Color.Primary"
+                                       OnClick="@(async () => await EditChannelAsync(context))" Title="编辑频道" />
+                    </MudStack>
                 </MudTd>
             </RowTemplate>
             <NoRecordsContent>
@@ -182,6 +165,23 @@
     private string search = "";
     private bool _actionsExpanded = true;
     private CancellationTokenSource? _searchDebounceCts;
+
+    private SelectionToggleMode _selectionToggleMode = SelectionToggleMode.SelectAll;
+    private string SelectionToggleText => _selectionToggleMode switch
+    {
+        SelectionToggleMode.SelectAll => "全选本页",
+        SelectionToggleMode.Invert => "反选本页",
+        SelectionToggleMode.Clear => "清空选择",
+        _ => "全选本页"
+    };
+
+    private string SelectionToggleIcon => _selectionToggleMode switch
+    {
+        SelectionToggleMode.SelectAll => Icons.Material.Filled.SelectAll,
+        SelectionToggleMode.Invert => Icons.Material.Filled.Flip,
+        SelectionToggleMode.Clear => Icons.Material.Filled.Clear,
+        _ => Icons.Material.Filled.SelectAll
+    };
 
     protected override async Task OnInitializedAsync()
     {
@@ -607,5 +607,59 @@
         var result = await dialog.Result;
         if (!result.Canceled)
             await LoadBotData();
+    }
+
+    private Task SelectAllFiltered()
+    {
+        selected = channels.ToHashSet();
+        return Task.CompletedTask;
+    }
+
+    private Task InvertSelection()
+    {
+        var targets = channels.ToList();
+        foreach (var c in targets)
+        {
+            if (selected.Contains(c))
+                selected.Remove(c);
+            else
+                selected.Add(c);
+        }
+        return Task.CompletedTask;
+    }
+
+    private Task ClearSelection()
+    {
+        selected.Clear();
+        return Task.CompletedTask;
+    }
+
+    private async Task CycleSelectionToggle()
+    {
+        switch (_selectionToggleMode)
+        {
+            case SelectionToggleMode.SelectAll:
+                await SelectAllFiltered();
+                _selectionToggleMode = SelectionToggleMode.Invert;
+                break;
+            case SelectionToggleMode.Invert:
+                await InvertSelection();
+                _selectionToggleMode = SelectionToggleMode.Clear;
+                break;
+            case SelectionToggleMode.Clear:
+                await ClearSelection();
+                _selectionToggleMode = SelectionToggleMode.SelectAll;
+                break;
+            default:
+                _selectionToggleMode = SelectionToggleMode.SelectAll;
+                break;
+        }
+    }
+
+    private enum SelectionToggleMode
+    {
+        SelectAll = 0,
+        Invert = 1,
+        Clear = 2
     }
 }

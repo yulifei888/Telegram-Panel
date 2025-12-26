@@ -15,67 +15,66 @@
 
 <MudText Typo="Typo.h4" Class="mb-4">频道列表</MudText>
 
+<MudPaper Class="pa-4 mb-4" Elevation="0" Outlined="true">
+    <MudStack Row="true" Spacing="2" AlignItems="AlignItems.Center" Style="flex-wrap: wrap;">
+        <MudSelect @bind-Value="filterAccount" @bind-Value:after="OnFiltersChanged" Label="筛选账号" Variant="Variant.Outlined" Dense="true" 
+                   Class="tp-input-full-xs" Style="min-width: 200px; flex: 1; max-width: 400px;">
+            <MudSelectItem Value="0">全部账号</MudSelectItem>
+            @foreach (var account in accounts)
+            {
+                <MudSelectItem Value="@account.Id">@FormatAccountLabel(account)</MudSelectItem>
+            }
+        </MudSelect>
+        <MudSelect @bind-Value="filterType" @bind-Value:after="OnFiltersChanged" Label="频道类型" Variant="Variant.Outlined" Dense="true" 
+                   Class="tp-input-full-xs" Style="min-width: 120px; flex: 0 1 150px;">
+            <MudSelectItem Value='@("all")'>全部</MudSelectItem>
+            <MudSelectItem Value='@("public")'>公开</MudSelectItem>
+            <MudSelectItem Value='@("private")'>私密</MudSelectItem>
+        </MudSelect>
+        <MudTextField @bind-Value="searchString" Placeholder="搜索频道..." Adornment="Adornment.Start"
+                      AdornmentIcon="@Icons.Material.Filled.Search" IconSize="Size.Medium" Class="mt-0 tp-input-full-xs"
+                      Style="min-width: 200px; flex: 1; max-width: 400px;"
+                      Immediate="true" @bind-Value:after="OnSearchChanged" />
+    </MudStack>
+</MudPaper>
+
+<MudStack Row="true" Spacing="2" AlignItems="AlignItems.Center" Class="mb-2" Style="flex-wrap: wrap;">
+    <MudButton Variant="Variant.Outlined" Color="Color.Primary" StartIcon="@SelectionToggleIcon"
+               Disabled="@(loading || channels.Count == 0)" OnClick="CycleSelectionToggle" Size="Size.Small">
+        @SelectionToggleText
+    </MudButton>
+
+    <MudButton Variant="Variant.Outlined" Color="Color.Info" StartIcon="@Icons.Material.Filled.Sync"
+               Disabled="@(loading || filterAccount <= 0)" OnClick="SyncCurrentAccountChannels" Size="Size.Small">
+        同步当前
+    </MudButton>
+    <MudButton Variant="Variant.Outlined" Color="Color.Info" StartIcon="@Icons.Material.Filled.Sync"
+               Disabled="@loading" OnClick="SyncAllAccountsChannels" Size="Size.Small">
+        同步全部
+    </MudButton>
+
+    <MudMenu Label="批量操作" Variant="Variant.Outlined" Color="Color.Default" StartIcon="@Icons.Material.Filled.MoreHoriz"
+               Size="Size.Small" Disabled="@loading" Dense="true" EndIcon="@Icons.Material.Filled.KeyboardArrowDown">
+        <MudMenuItem Disabled="@(selectedChannels.Count == 0)" OnClick="OpenBatchInviteSelected">批量邀请（已选）</MudMenuItem>
+        <MudMenuItem Disabled="@(selectedChannels.Count == 0)" OnClick="OpenBatchSetAdminsSelected">批量设置管理员（已选）</MudMenuItem>
+        <MudMenuItem Disabled="@(selectedChannels.Count == 0)" OnClick="OpenBatchSetGroupSelected">批量修改分组（已选）</MudMenuItem>
+    </MudMenu>
+
+    @if (selectedChannels.Count > 0)
+    {
+        <MudChip T="string" Size="Size.Small" Color="Color.Info" Class="ml-2">已选 @selectedChannels.Count</MudChip>
+    }
+    else
+    {
+        <MudText Typo="Typo.caption" Color="Color.Secondary" Class="ml-2">频道 (@totalCount)</MudText>
+    }
+</MudStack>
+
 <MudCard>
     <MudCardContent>
         <MudTable ServerData="LoadChannelsServerData" Hover="true" Breakpoint="Breakpoint.Sm" Loading="@loading"
+                  Class="tp-table"
                   MultiSelection="true" @bind-SelectedItems="selectedChannels" @ref="_table">
-            <ToolBarContent>
-                <MudStack Spacing="1">
-                    <MudStack Row="true" AlignItems="AlignItems.Center" Spacing="2" Style="flex-wrap: wrap;">
-                        <MudText Typo="Typo.h6">频道 (@totalCount)</MudText>
-                        @if (selectedChannels.Count > 0)
-                        {
-                            <MudChip T="string" Size="Size.Small" Color="Color.Info">已选 @selectedChannels.Count</MudChip>
-                        }
-                        <MudSpacer />
-                        <MudTextField @bind-Value="searchString" Placeholder="搜索频道..." Adornment="Adornment.Start"
-                                      AdornmentIcon="@Icons.Material.Filled.Search" IconSize="Size.Medium" Class="mt-0"
-                                      Immediate="true" @bind-Value:after="OnSearchChanged" />
-                    </MudStack>
-
-                    <MudStack Row="true" AlignItems="AlignItems.Center" Spacing="1" Style="flex-wrap: wrap;">
-                        <MudSelect @bind-Value="filterAccount" @bind-Value:after="OnFiltersChanged" Label="筛选账号" Variant="Variant.Outlined" Dense="true" Class="mr-2" Style="min-width: 220px;">
-                            <MudSelectItem Value="0">全部账号</MudSelectItem>
-                            @foreach (var account in accounts)
-                            {
-                                <MudSelectItem Value="@account.Id">@FormatAccountLabel(account)</MudSelectItem>
-                            }
-                        </MudSelect>
-                        <MudSelect @bind-Value="filterType" @bind-Value:after="OnFiltersChanged" Label="频道类型" Variant="Variant.Outlined" Dense="true" Class="mr-2" Style="min-width: 120px;">
-                            <MudSelectItem Value='@("all")'>全部</MudSelectItem>
-                            <MudSelectItem Value='@("public")'>公开</MudSelectItem>
-                            <MudSelectItem Value='@("private")'>私密</MudSelectItem>
-                        </MudSelect>
-                        <MudButton Variant="Variant.Outlined" Color="Color.Info" StartIcon="@Icons.Material.Filled.Sync"
-                                   Disabled="@(loading || filterAccount <= 0)" OnClick="SyncCurrentAccountChannels" Size="Size.Small">
-                            同步当前账号数据
-                        </MudButton>
-                        <MudButton Variant="Variant.Outlined" Color="Color.Info" StartIcon="@Icons.Material.Filled.Sync"
-                                   Disabled="@loading" OnClick="SyncAllAccountsChannels" Size="Size.Small">
-                            同步全部账号数据
-                        </MudButton>
-
-                        <MudButton Variant="Variant.Outlined" Color="Color.Primary" StartIcon="@SelectionToggleIcon"
-                                   Disabled="@(loading || channels.Count == 0)" OnClick="CycleSelectionToggle" Size="Size.Small">
-                            @SelectionToggleText
-                        </MudButton>
-
-                        <MudMenu Dense="true" Disabled="@loading">
-                            <ActivatorContent>
-                                <MudButton Variant="Variant.Outlined" Color="Color.Default" StartIcon="@Icons.Material.Filled.MoreHoriz"
-                                           Disabled="@loading" Size="Size.Small">
-                                    批量操作
-                                </MudButton>
-                            </ActivatorContent>
-                            <ChildContent>
-                                <MudMenuItem Disabled="@(selectedChannels.Count == 0)" OnClick="OpenBatchInviteSelected">批量邀请（已选）</MudMenuItem>
-                                <MudMenuItem Disabled="@(selectedChannels.Count == 0)" OnClick="OpenBatchSetAdminsSelected">批量设置管理员（已选）</MudMenuItem>
-                                <MudMenuItem Disabled="@(selectedChannels.Count == 0)" OnClick="OpenBatchSetGroupSelected">批量修改分组（已选）</MudMenuItem>
-                            </ChildContent>
-                        </MudMenu>
-                    </MudStack>
-                </MudStack>
-            </ToolBarContent>
             <HeaderContent>
                 <MudTh>频道名称</MudTh>
                 <MudTh>用户名</MudTh>
@@ -130,16 +129,20 @@
                 </MudTd>
                 <MudTd DataLabel="最后同步"><PanelTime Value="context.SyncedAt" /></MudTd>
                 <MudTd DataLabel="操作">
-                    <MudMenu Icon="@Icons.Material.Filled.MoreVert" Size="Size.Small">
-                        <MudMenuItem Icon="@Icons.Material.Filled.Info" OnClick="@(async () => await ShowDetails(context))">查看详情</MudMenuItem>
-                        <MudMenuItem Icon="@Icons.Material.Filled.Edit" OnClick="@(async () => await EditChannel(context))">编辑频道</MudMenuItem>
-                        <MudMenuItem Icon="@Icons.Material.Filled.PersonAdd" OnClick="@(async () => await OpenInvite(context))">邀请成员</MudMenuItem>
-                        <MudMenuItem Icon="@Icons.Material.Filled.AdminPanelSettings" OnClick="@(async () => await OpenSetAdmins(context))">设置管理员</MudMenuItem>
-                        <MudMenuItem Icon="@Icons.Material.Filled.PersonRemove" OnClick="@(async () => await KickUser(context))">踢人</MudMenuItem>
-                        <MudMenuItem Icon="@Icons.Material.Filled.Link" OnClick="@(async () => await CopyLinkAsync(context))">复制链接</MudMenuItem>
-                        <MudDivider />
-                        <MudMenuItem Icon="@Icons.Material.Filled.Delete" IconColor="Color.Error" OnClick="@(() => DeleteChannel(context.Id))">删除频道</MudMenuItem>
-                    </MudMenu>
+                    <MudStack Row="true" Spacing="1" AlignItems="AlignItems.Center" Style="flex-wrap: wrap;">
+                        <MudIconButton Icon="@Icons.Material.Filled.Info" Size="Size.Small" Color="Color.Info"
+                                       OnClick="@(async () => await ShowDetails(context))" Title="查看详情" />
+                        <MudIconButton Icon="@Icons.Material.Filled.Edit" Size="Size.Small" Color="Color.Primary"
+                                       OnClick="@(async () => await EditChannel(context))" Title="编辑频道" />
+                        <MudMenu Icon="@Icons.Material.Filled.MoreVert" Size="Size.Small" Dense="true">
+                             <MudMenuItem Icon="@Icons.Material.Filled.PersonAdd" OnClick="@(async () => await OpenInvite(context))">邀请成员</MudMenuItem>
+                             <MudMenuItem Icon="@Icons.Material.Filled.AdminPanelSettings" OnClick="@(async () => await OpenSetAdmins(context))">设置管理员</MudMenuItem>
+                             <MudMenuItem Icon="@Icons.Material.Filled.PersonRemove" OnClick="@(async () => await KickUser(context))">踢人</MudMenuItem>
+                             <MudMenuItem Icon="@Icons.Material.Filled.Link" OnClick="@(async () => await CopyLinkAsync(context))">复制链接</MudMenuItem>
+                             <MudDivider />
+                             <MudMenuItem Icon="@Icons.Material.Filled.Delete" IconColor="Color.Error" OnClick="@(() => DeleteChannel(context.Id))">删除频道</MudMenuItem>
+                        </MudMenu>
+                    </MudStack>
                 </MudTd>
             </RowTemplate>
             <NoRecordsContent>
