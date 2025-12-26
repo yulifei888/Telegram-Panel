@@ -62,6 +62,22 @@
                                       Style="min-width: 220px; flex: 1 1 260px;"
                                       Immediate="true" Disabled="@(selectedBotId <= 0)" @bind-Value:after="OnSearchChanged" />
 
+                        <MudMenu Dense="true" Disabled="@(loading || selectedBotId <= 0)">
+                            <ActivatorContent>
+                                <MudButton Variant="Variant.Outlined" Color="Color.Default" StartIcon="@Icons.Material.Filled.MoreHoriz"
+                                           Class="tp-nowrap"
+                                           Disabled="@(loading || selectedBotId <= 0)" Size="Size.Small">
+                                    批量操作
+                                </MudButton>
+                            </ActivatorContent>
+                            <ChildContent>
+                                <MudMenuItem Disabled="@(selected.Count == 0)" OnClick="ExportInvites">导出邀请（已选）</MudMenuItem>
+                                <MudMenuItem Disabled="@(selected.Count == 0)" OnClick="OpenSetAdmins">批量设置管理员（已选）</MudMenuItem>
+                                <MudMenuItem Disabled="@(selected.Count == 0)" OnClick="OpenBatchSetCategory">批量设置分类（已选）</MudMenuItem>
+                                <MudMenuItem Disabled="@(selected.Count == 0)" OnClick="OpenBanMember">踢出用户（已选）</MudMenuItem>
+                            </ChildContent>
+                        </MudMenu>
+
                         <MudIconButton Icon="@(_actionsExpanded ? Icons.Material.Filled.ExpandLess : Icons.Material.Filled.ExpandMore)"
                                        Color="Color.Default"
                                        Title="@(_actionsExpanded ? "收起操作" : "展开操作")"
@@ -80,21 +96,6 @@
                                        Disabled="@(loading || selectedBotId <= 0)" OnClick="ReloadTable" Size="Size.Small">
                                 刷新
                             </MudButton>
-
-                            <MudMenu Dense="true" Disabled="@(loading || selectedBotId <= 0)">
-                                <ActivatorContent>
-                                    <MudButton Variant="Variant.Outlined" Color="Color.Default" StartIcon="@Icons.Material.Filled.MoreHoriz"
-                                               Disabled="@(loading || selectedBotId <= 0)" Size="Size.Small">
-                                        批量操作
-                                    </MudButton>
-                                </ActivatorContent>
-                                <ChildContent>
-                                    <MudMenuItem Disabled="@(selected.Count == 0)" OnClick="ExportInvites">导出邀请（已选）</MudMenuItem>
-                                    <MudMenuItem Disabled="@(selected.Count == 0)" OnClick="OpenSetAdmins">批量设置管理员（已选）</MudMenuItem>
-                                    <MudMenuItem Disabled="@(selected.Count == 0)" OnClick="OpenBatchSetCategory">批量设置分类（已选）</MudMenuItem>
-                                    <MudMenuItem Disabled="@(selected.Count == 0)" OnClick="OpenBanMember">踢出用户（已选）</MudMenuItem>
-                                </ChildContent>
-                            </MudMenu>
                         </MudStack>
                     </MudCollapse>
                 </MudStack>

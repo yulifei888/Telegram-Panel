@@ -32,6 +32,32 @@
                                    Disabled="@loading" OnClick="ReloadTable" Size="Size.Small">
                             刷新
                         </MudButton>
+
+                        <MudMenu Dense="true" Disabled="@loading">
+                            <ActivatorContent>
+                                <MudButton Variant="Variant.Outlined" Color="Color.Default" StartIcon="@Icons.Material.Filled.MoreHoriz"
+                                           Class="tp-nowrap"
+                                           Disabled="@loading" Size="Size.Small">
+                                    批量操作
+                                </MudButton>
+                            </ActivatorContent>
+                            <ChildContent>
+                                <MudMenuItem Disabled="@(accounts.Count == 0)" Icon="@SelectionToggleIcon" OnClick="CycleSelectionToggle">@SelectionToggleText</MudMenuItem>
+                                <MudMenuItem Icon="@Icons.Material.Filled.Sync" Disabled="@loading" OnClick="BatchRefreshTelegramStatus">批量刷新状态</MudMenuItem>
+                                <MudDivider />
+                                <MudMenuItem Disabled="@(selectedAccounts.Count == 0)" OnClick="OpenBatchJoinSubscribe">批量加群/订阅（已选）</MudMenuItem>
+                                <MudMenuItem Disabled="@(selectedAccounts.Count == 0)" OnClick="OpenBatchLeaveUnsubscribe">批量退群/退订（已选）</MudMenuItem>
+                                <MudMenuItem Disabled="@(selectedAccounts.Count == 0)" OnClick="OpenBatchChangeTwoFactorPassword">修改二级密码（已选）</MudMenuItem>
+                                <MudMenuItem Disabled="@(selectedAccounts.Count == 0)" OnClick="BatchKickAllOtherDevices">批量踢出所有其他设备（已选）</MudMenuItem>
+                                <MudMenuItem Disabled="@(selectedAccounts.Count == 0)" OnClick="OpenBatchSetAccountCategory">批量修改分类（已选）</MudMenuItem>
+                                <MudMenuItem Disabled="@(selectedAccounts.Count == 0)" OnClick="OpenBatchChangeNickname">批量改昵称（已选）</MudMenuItem>
+                                <MudMenuItem Disabled="@(selectedAccounts.Count == 0)" OnClick="OpenBatchChangeUsername">批量改用户名（已选）</MudMenuItem>
+                                <MudMenuItem Disabled="@(selectedAccounts.Count == 0)" OnClick="OpenBatchChangeBio">批量改Bio（已选）</MudMenuItem>
+                                <MudMenuItem Disabled="@(selectedAccounts.Count == 0)" OnClick="DeleteSelectedAccounts">删除已选</MudMenuItem>
+                                <MudMenuItem OnClick="ExportSelectedAccounts">导出已选</MudMenuItem>
+                                <MudMenuItem OnClick="ExportCurrentPageAccounts">导出当前页</MudMenuItem>
+                            </ChildContent>
+                        </MudMenu>
                     </MudStack>
 
                     <MudStack Row="true" AlignItems="AlignItems.Center" Spacing="1" Class="tp-flex-wrap" Style="gap: 6px;">
@@ -60,32 +86,6 @@
                                    Disabled="@loading" OnClick="BatchRefreshTelegramStatus" Size="Size.Small">
                             批量刷新状态
                         </MudButton>
-
-                        <MudMenu Dense="true" Disabled="@loading">
-                            <ActivatorContent>
-                                <MudButton Variant="Variant.Outlined" Color="Color.Default" StartIcon="@Icons.Material.Filled.MoreHoriz"
-                                           Class="tp-nowrap"
-                                           Disabled="@loading" Size="Size.Small">
-                                    批量操作
-                                </MudButton>
-                            </ActivatorContent>
-                            <ChildContent>
-                                <MudMenuItem Disabled="@(accounts.Count == 0)" Icon="@SelectionToggleIcon" OnClick="CycleSelectionToggle">@SelectionToggleText</MudMenuItem>
-                                <MudMenuItem Icon="@Icons.Material.Filled.Sync" Disabled="@loading" OnClick="BatchRefreshTelegramStatus">批量刷新状态</MudMenuItem>
-                                <MudDivider />
-                                <MudMenuItem Disabled="@(selectedAccounts.Count == 0)" OnClick="OpenBatchJoinSubscribe">批量加群/订阅（已选）</MudMenuItem>
-                                <MudMenuItem Disabled="@(selectedAccounts.Count == 0)" OnClick="OpenBatchLeaveUnsubscribe">批量退群/退订（已选）</MudMenuItem>
-                                <MudMenuItem Disabled="@(selectedAccounts.Count == 0)" OnClick="OpenBatchChangeTwoFactorPassword">修改二级密码（已选）</MudMenuItem>
-                                <MudMenuItem Disabled="@(selectedAccounts.Count == 0)" OnClick="BatchKickAllOtherDevices">批量踢出所有其他设备（已选）</MudMenuItem>
-                                <MudMenuItem Disabled="@(selectedAccounts.Count == 0)" OnClick="OpenBatchSetAccountCategory">批量修改分类（已选）</MudMenuItem>
-                                <MudMenuItem Disabled="@(selectedAccounts.Count == 0)" OnClick="OpenBatchChangeNickname">批量改昵称（已选）</MudMenuItem>
-                                <MudMenuItem Disabled="@(selectedAccounts.Count == 0)" OnClick="OpenBatchChangeUsername">批量改用户名（已选）</MudMenuItem>
-                                <MudMenuItem Disabled="@(selectedAccounts.Count == 0)" OnClick="OpenBatchChangeBio">批量改Bio（已选）</MudMenuItem>
-                                <MudMenuItem Disabled="@(selectedAccounts.Count == 0)" OnClick="DeleteSelectedAccounts">删除已选</MudMenuItem>
-                                <MudMenuItem OnClick="ExportSelectedAccounts">导出已选</MudMenuItem>
-                                <MudMenuItem OnClick="ExportCurrentPageAccounts">导出当前页</MudMenuItem>
-                            </ChildContent>
-                        </MudMenu>
                     </MudStack>
                 </MudStack>
             </ToolBarContent>
