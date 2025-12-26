@@ -22,6 +22,29 @@
   display: none;
 }
 
+.tp-toolbar-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  width: 100%;
+}
+
+.tp-toolbar-left {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.tp-toolbar-right {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  flex: 0 0 auto;
+}
+
 @media (max-width: 600px) {
   /* MudStack 在小屏下允许换行，优先换行而不是压缩到极窄导致逐字换行 */
   .mud-stack-root.tp-flex-wrap {
@@ -49,5 +72,25 @@
 
   .tp-actions-menu {
     display: inline-flex !important;
+  }
+
+  .tp-page-title {
+    font-size: 1.6rem !important;
+    line-height: 1.2 !important;
+  }
+
+  .tp-toolbar-row {
+    justify-content: flex-start;
+  }
+
+  .tp-toolbar-right {
+    width: 100%;
+    justify-content: flex-end;
+  }
+
+  /* 避免某些布局下工具栏“吸顶”遮挡页面标题 */
+  .tp-table .mud-table-toolbar {
+    position: static !important;
+    top: auto !important;
   }
 }

@@ -10,11 +10,12 @@
 
 <PageTitle>Bot 频道 - Telegram Panel</PageTitle>
 
-<MudText Typo="Typo.h4" Class="mb-4">Bot 频道</MudText>
+<MudText Typo="Typo.h4" Class="mb-4 tp-page-title">Bot 频道</MudText>
 
 <MudCard>
     <MudCardContent>
         <MudTable ServerData="LoadChannelsServerData" Hover="true" Breakpoint="Breakpoint.Sm" Loading="@loading"
+                  Class="tp-table"
                   MultiSelection="true" @bind-SelectedItems="selected" @ref="_table">
             <ToolBarContent>
                 <MudStack Spacing="1" Style="width: 100%;">
@@ -98,6 +99,8 @@
                             </MudButton>
                         </MudStack>
                     </MudCollapse>
+
+                    <MudDivider Class="mt-2" />
                 </MudStack>
             </ToolBarContent>
 
