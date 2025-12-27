@@ -44,8 +44,8 @@
         @SelectionToggleText
     </MudButton>
     <MudButton Variant="Variant.Outlined" Color="Color.Info" StartIcon="@Icons.Material.Filled.Sync"
-               Disabled="@loading" OnClick="BatchRefreshTelegramStatus" Size="Size.Small">
-        批量刷新状态
+               Disabled="@(loading || selectedAccounts.Count == 0)" OnClick="BatchRefreshTelegramStatus" Size="Size.Small">
+        刷新已选状态
     </MudButton>
     
     <MudMenu Label="批量操作" Variant="Variant.Outlined" Color="Color.Default" StartIcon="@Icons.Material.Filled.MoreHoriz" 
@@ -613,9 +613,15 @@
 
     private async Task BatchRefreshTelegramStatus()
     {
-        if (accounts.Count == 0)
+        var targets = selectedAccounts
+            .Where(a => a.Id > 0)
+            .GroupBy(a => a.Id)
+            .Select(g => g.First())
+            .ToList();
+
+        if (targets.Count == 0)
         {
-            Snackbar.Add("暂无账号可刷新", Severity.Info);
+            Snackbar.Add("请先选择账号", Severity.Warning);
             return;
         }
 
@@ -623,14 +629,12 @@
         try
         {
             bool? probeResult = await DialogService.ShowMessageBox(
-                "批量刷新 Telegram 状态",
-                "是否进行深度探测（将对每个账号创建并删除一个测试频道，用于判断【创建频道接口是否被冻结】）？",
+                "刷新已选 Telegram 状态",
+                $"将刷新已选 {targets.Count} 个账号的 Telegram 状态。\n\n是否进行深度探测（将对每个账号创建并删除一个测试频道，用于判断【创建频道接口是否被冻结】）？",
                 yesText: "深度探测",
                 cancelText: "普通刷新");
 
             var probe = probeResult == true;
-            var categoryId = filterCategoryId <= 0 ? (int?)null : filterCategoryId;
-            var targets = (await AccountManagement.QueryAccountsAsync(categoryId, searchString, _pageCts.Token)).ToList();
 
             // 批量风控检查：深度探测是敏感操作
             if (probe && targets.Count > 0)
