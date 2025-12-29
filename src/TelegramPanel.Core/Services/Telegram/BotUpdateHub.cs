@@ -118,6 +118,8 @@ public sealed class BotUpdateHub : IAsyncDisposable
             FullMode = BoundedChannelFullMode.DropOldest
         };
 
+        private const string AllowedMyChatMemberOnlyJson = "[\"my_chat_member\"]";
+
         private readonly int _persistBotId;
         private readonly string _token;
         private readonly IServiceScopeFactory _scopeFactory;
@@ -142,6 +144,7 @@ public sealed class BotUpdateHub : IAsyncDisposable
             int persistBotId,
             string token,
             long nextOffset,
+            IReadOnlyList<JsonElement>? initialPendingMyChatMember,
             IServiceScopeFactory scopeFactory,
             TelegramBotApiClient botApi,
             ILogger logger)
@@ -152,6 +155,19 @@ public sealed class BotUpdateHub : IAsyncDisposable
             _scopeFactory = scopeFactory;
             _botApi = botApi;
             _logger = logger;
+
+            if (initialPendingMyChatMember is { Count: > 0 })
+            {
+                lock (_pendingLock)
+                {
+                    foreach (var u in initialPendingMyChatMember)
+                    {
+                        _pendingMyChatMember.Enqueue(u);
+                        while (_pendingMyChatMember.Count > PendingMyChatMemberMax)
+                            _pendingMyChatMember.Dequeue();
+                    }
+                }
+            }
 
             _loopTask = Task.Run(() => RunAsync(_cts.Token));
         }
@@ -169,16 +185,20 @@ public sealed class BotUpdateHub : IAsyncDisposable
             // - 如果数据库里已有 LastUpdateId，则从其后开始
             // - 否则快进到最新，避免冷启动回放历史消息造成刷屏
             long nextOffset;
+            List<JsonElement>? pendingMyChatMember = null;
             if (lastUpdateId.HasValue)
             {
                 nextOffset = lastUpdateId.Value + 1;
             }
             else
             {
-                nextOffset = await FastForwardOffsetAsync(botId, token, scopeFactory, botApi, logger, cancellationToken);
+                // 重要：冷启动快进会丢历史消息（避免刷屏），但不能丢 my_chat_member（否则 Bot 加入私密频道永远同步不到）。
+                var r = await FastForwardOffsetAndCollectMyChatMemberAsync(botId, token, scopeFactory, botApi, logger, cancellationToken);
+                nextOffset = r.NextOffset;
+                pendingMyChatMember = r.PendingMyChatMember;
             }
 
-            return new BotPoller(botId, token, nextOffset, scopeFactory, botApi, logger);
+            return new BotPoller(botId, token, nextOffset, pendingMyChatMember, scopeFactory, botApi, logger);
         }
 
         public BotUpdateSubscription Subscribe()
@@ -241,6 +261,15 @@ public sealed class BotUpdateHub : IAsyncDisposable
             {
                 try
                 {
+                    // Bot 被停用（或 Token 被替换）时暂停轮询：
+                    // 否则即使 UI 停用了 Bot，后台仍可能因为历史订阅而持续 getUpdates，导致 409/限流。
+                    if (!await IsBotPollingEnabledAsync(cancellationToken))
+                    {
+                        conflictStreak = 0;
+                        await Task.Delay(TimeSpan.FromSeconds(5), cancellationToken);
+                        continue;
+                    }
+
                     // 没有订阅者时也继续拉取并确认 offset，避免积压导致后续刷屏；
                     // 同时还能保证 Bot 频道自动同步等后台能力可工作。
 
@@ -295,6 +324,33 @@ public sealed class BotUpdateHub : IAsyncDisposable
                     _logger.LogWarning(ex, "Bot update poll loop failed: botId={BotId}", _persistBotId);
                     await Task.Delay(TimeSpan.FromSeconds(2), cancellationToken);
                 }
+            }
+        }
+
+        private async Task<bool> IsBotPollingEnabledAsync(CancellationToken cancellationToken)
+        {
+            try
+            {
+                using var scope = _scopeFactory.CreateScope();
+                var botRepo = scope.ServiceProvider.GetRequiredService<IBotRepository>();
+                var bot = await botRepo.GetByIdAsync(_persistBotId);
+                if (bot == null || !bot.IsActive)
+                    return false;
+
+                var token = (bot.Token ?? string.Empty).Trim();
+                if (!string.Equals(token, _token, StringComparison.Ordinal))
+                {
+                    // Bot Token 被替换了：停止旧 token 的轮询（新 token 会创建新 poller）
+                    _logger.LogWarning("Bot token changed, pausing old poller: botId={BotId}", _persistBotId);
+                    return false;
+                }
+
+                return true;
+            }
+            catch
+            {
+                // 配置/数据库短暂异常时不应导致 poller 永久停掉
+                return true;
             }
         }
 
@@ -359,7 +415,9 @@ public sealed class BotUpdateHub : IAsyncDisposable
             }
         }
 
-        private static async Task<long> FastForwardOffsetAsync(
+        private sealed record FastForwardResult(long NextOffset, List<JsonElement>? PendingMyChatMember);
+
+        private static async Task<FastForwardResult> FastForwardOffsetAndCollectMyChatMemberAsync(
             int botId,
             string token,
             IServiceScopeFactory scopeFactory,
@@ -367,6 +425,47 @@ public sealed class BotUpdateHub : IAsyncDisposable
             ILogger logger,
             CancellationToken cancellationToken)
         {
+            var pending = new List<JsonElement>();
+
+            // A) 先尽力把 my_chat_member 全部捞出来（用于“Bot 新加入频道”的识别），避免被快进丢弃。
+            long myOffset = 0;
+            for (var i = 0; i < 20; i++)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+
+                var updates = await botApi.CallAsync(token, "getUpdates", new Dictionary<string, string?>
+                {
+                    ["offset"] = myOffset.ToString(),
+                    ["timeout"] = "0",
+                    ["limit"] = "100",
+                    ["allowed_updates"] = AllowedMyChatMemberOnlyJson
+                }, cancellationToken);
+
+                if (updates.ValueKind != JsonValueKind.Array)
+                    break;
+
+                long? maxUpdateId = null;
+                foreach (var u in updates.EnumerateArray())
+                {
+                    if (!TryGetUpdateId(u, out var id))
+                        continue;
+
+                    maxUpdateId = maxUpdateId.HasValue ? Math.Max(maxUpdateId.Value, id) : id;
+                    if (u.ValueKind == JsonValueKind.Object && u.TryGetProperty("my_chat_member", out _))
+                    {
+                        pending.Add(u.Clone());
+                        if (pending.Count > PendingMyChatMemberMax)
+                            pending.RemoveAt(0);
+                    }
+                }
+
+                if (!maxUpdateId.HasValue)
+                    break;
+
+                myOffset = maxUpdateId.Value + 1;
+            }
+
+            // B) 再快进到最新（覆盖所有 update 类型），避免冷启动回放历史消息刷屏。
             long offset = 0;
 
             // 尝试最多 20 次（2000 条）以“清空积压”，避免首次启用模块直接刷历史。
@@ -420,7 +519,7 @@ public sealed class BotUpdateHub : IAsyncDisposable
                 logger.LogWarning(ex, "FastForwardOffset persistence failed: botId={BotId}", botId);
             }
 
-            return offset;
+            return new FastForwardResult(offset, pending.Count > 0 ? pending : null);
         }
 
         public async ValueTask DisposeAsync()

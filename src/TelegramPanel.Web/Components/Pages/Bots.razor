@@ -53,9 +53,15 @@
                         <MudTd DataLabel="分类数">@context.Categories.Count</MudTd>
                         <MudTd DataLabel="最后同步"><PanelTime Value="context.LastSyncAt" /></MudTd>
                         <MudTd DataLabel="状态">
-                            <MudChip T="string" Size="Size.Small" Color="@(context.IsActive ? Color.Success : Color.Default)">
-                                @(context.IsActive ? "启用" : "停用")
-                            </MudChip>
+                            <MudStack Row="true" Spacing="1" AlignItems="AlignItems.Center">
+                                <MudSwitch Value="@context.IsActive"
+                                           ValueChanged="@(async (bool v) => await SetBotActiveAsync(context, v))"
+                                           Disabled="@(loading || togglingBotIds.Contains(context.Id))"
+                                           Color="Color.Primary" />
+                                <MudChip T="string" Size="Size.Small" Color="@(context.IsActive ? Color.Success : Color.Default)">
+                                    @(context.IsActive ? "启用" : "停用")
+                                </MudChip>
+                            </MudStack>
                         </MudTd>
                         <MudTd DataLabel="操作">
                                 <MudMenu Icon="@Icons.Material.Filled.MoreVert" Size="Size.Small">
@@ -83,6 +89,7 @@
 @code {
     private bool loading = true;
     private List<Bot> bots = new();
+    private readonly HashSet<int> togglingBotIds = new();
 
     private string newName = "";
     private string newToken = "";
@@ -164,6 +171,31 @@
         finally
         {
             loading = false;
+        }
+    }
+
+    private async Task SetBotActiveAsync(Bot bot, bool isActive)
+    {
+        if (loading)
+            return;
+
+        if (togglingBotIds.Contains(bot.Id))
+            return;
+
+        togglingBotIds.Add(bot.Id);
+        try
+        {
+            await BotManagement.SetBotActiveStatusAsync(bot.Id, isActive);
+            bot.IsActive = isActive;
+            Snackbar.Add(isActive ? "已启用 Bot" : "已停用 Bot", Severity.Success);
+        }
+        catch (Exception ex)
+        {
+            Snackbar.Add($"更新失败：{ex.Message}", Severity.Error);
+        }
+        finally
+        {
+            togglingBotIds.Remove(bot.Id);
         }
     }
 }

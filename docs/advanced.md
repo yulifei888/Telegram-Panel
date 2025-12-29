@@ -29,6 +29,17 @@
 
 检测结果会持久化到数据库，避免刷新页面又变回“未检测”。
 
+## 清理废号（封禁/受限/未登录/session 失效）
+
+在「账号列表」与「外置验证码链接」页面支持“清理废号”（多选批量）：
+
+- 会先执行 Telegram 状态检测（可选普通/深度）
+- 仅当判定为废号（封禁/受限/被冻结/需要 2FA/Session 失效或损坏）才会删除
+- 删除范围：数据库记录 + `*.session`（含常见备份/同名 json）
+- 若遇到 `*.session` 文件被占用，会先尝试从 `TelegramClientPool` 释放客户端并重试删除
+
+另外，系统「账号列表」支持“一键清理所有废号”（扫描系统全部账号）。
+
 ## 配置项速查
 
 Docker 下常用环境变量（见 `docker-compose.yml`）：
@@ -38,3 +49,16 @@ Docker 下常用环境变量（见 `docker-compose.yml`）：
 - `AdminAuth__CredentialsPath`：后台密码文件（默认 `/data/admin_auth.json`）
 - `Sync__AutoSyncEnabled`：账号创建的频道/群组自动同步（默认关闭）
 - `Telegram__BotAutoSyncEnabled`：Bot 频道轮询自动同步（默认关闭）
+
+## UI 保存到本地覆盖配置
+
+面板里的部分“保存”按钮会把设置写入 `appsettings.local.json`（Docker 下为 `/data/appsettings.local.json`），常见键：
+
+- `Telegram:BotAutoSyncEnabled` / `Telegram:BotAutoSyncIntervalSeconds`：Bot 频道后台自动同步轮询开关/间隔
+- `ChannelAdminDefaults:Rights`：批量设置管理员的“默认权限”
+- `ChannelAdminPresets:Presets`：批量设置管理员的“用户名列表预设”（名称 -> usernames）
+- `ChannelInvitePresets:Presets`：批量邀请成员的“用户名列表预设”（名称 -> usernames）
+
+## Bot 启用/停用（每个 Bot）
+
+机器人管理页可以对单个 Bot 启用/停用：停用后该 Bot 不会再被后台轮询 `getUpdates`，也不会被需要 Bot 的模块/任务使用。

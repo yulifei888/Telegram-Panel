@@ -11,7 +11,7 @@
         <MudText Typo="Typo.h5" Class="ml-3">Telegram Panel</MudText>
         <MudChip T="string" Size="Size.Small" Color="Color.Default" Class="ml-2" Style="cursor: pointer;"
                  title="点击查看版本信息" OnClick="@ShowVersionInfo">
-            v@(VersionService.Version)
+            @VersionService.Version
         </MudChip>
         @if (_updateInfo is { Success: true, UpdateAvailable: true } && !string.IsNullOrWhiteSpace(_updateInfo.LatestVersion))
         {

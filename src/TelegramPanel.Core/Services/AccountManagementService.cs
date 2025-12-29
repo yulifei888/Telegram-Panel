@@ -130,6 +130,63 @@ public class AccountManagementService
         }
     }
 
+    /// <summary>
+    /// 清理废号：强制尝试删除账号记录与 session 文件。
+    /// - 删除前会先从 TelegramClientPool 释放客户端，避免 session 被占用
+    /// - 若仍存在被占用的 session 文件，会重试并在最终失败时抛出异常（用于提示 UI）
+    /// </summary>
+    public async Task PurgeAccountAsync(int id, CancellationToken cancellationToken = default)
+    {
+        var account = await _accountRepository.GetByIdAsync(id);
+        if (account == null)
+            return;
+
+        try
+        {
+            await _clientPool.RemoveClientAsync(account.Id);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Failed to remove client for account {AccountId} before purge", account.Id);
+        }
+
+        var sessionCandidates = ResolveSessionFileCandidates(account).ToList();
+        var existingSessionFiles = sessionCandidates
+            .Select(p => SafeGetFullPath(p))
+            .Where(p => !string.IsNullOrWhiteSpace(p) && File.Exists(p))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+
+        var failedSessionDeletes = new List<string>();
+        foreach (var sessionPath in existingSessionFiles)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            var ok = await TryDeleteFileWithRetriesAsync(
+                fullPath: sessionPath,
+                maxAttempts: 6,
+                baseDelayMs: 150,
+                accountId: account.Id,
+                cancellationToken: cancellationToken);
+
+            if (!ok)
+                failedSessionDeletes.Add(sessionPath);
+        }
+
+        if (failedSessionDeletes.Count > 0)
+        {
+            var hint = string.Join(Environment.NewLine, failedSessionDeletes.Take(5));
+            if (failedSessionDeletes.Count > 5)
+                hint += Environment.NewLine + $"...（仅展示前 5 个，共 {failedSessionDeletes.Count} 个）";
+
+            throw new InvalidOperationException("无法删除 session 文件（可能仍被占用，请稍后重试）：\n" + hint);
+        }
+
+        // session 删除成功后，再尽力清理其它关联文件（json/备份等）
+        TryDeleteAccountFiles(account);
+        await _accountRepository.DeleteAsync(account);
+    }
+
     private void TryDeleteAccountFiles(Account account)
     {
         try
@@ -152,6 +209,18 @@ public class AccountManagementService
         catch (Exception ex)
         {
             _logger.LogWarning(ex, "Failed to delete account files for {Phone}", account.Phone);
+        }
+    }
+
+    private static string SafeGetFullPath(string path)
+    {
+        try
+        {
+            return Path.GetFullPath(path);
+        }
+        catch
+        {
+            return path;
         }
     }
 
@@ -236,6 +305,58 @@ public class AccountManagementService
         {
             _logger.LogWarning(ex, "Failed to delete file: {Path}", path);
         }
+    }
+
+    private async Task<bool> TryDeleteFileWithRetriesAsync(
+        string fullPath,
+        int maxAttempts,
+        int baseDelayMs,
+        int accountId,
+        CancellationToken cancellationToken)
+    {
+        if (string.IsNullOrWhiteSpace(fullPath))
+            return true;
+
+        if (maxAttempts < 1) maxAttempts = 1;
+        if (baseDelayMs < 0) baseDelayMs = 0;
+
+        for (var attempt = 1; attempt <= maxAttempts; attempt++)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            try
+            {
+                if (!File.Exists(fullPath))
+                    return true;
+
+                File.Delete(fullPath);
+                _logger.LogInformation("Deleted file: {Path}", fullPath);
+                return true;
+            }
+            catch (Exception ex) when (attempt < maxAttempts && (ex is IOException || ex is UnauthorizedAccessException))
+            {
+                // 典型场景：session 被 WTelegram/其它后台任务占用，先再移除一次 client，再做短退避
+                try
+                {
+                    await _clientPool.RemoveClientAsync(accountId);
+                }
+                catch
+                {
+                    // ignore
+                }
+
+                var delayMs = baseDelayMs * attempt;
+                if (delayMs > 3000) delayMs = 3000;
+                await Task.Delay(TimeSpan.FromMilliseconds(delayMs), cancellationToken);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "Failed to delete file: {Path}", fullPath);
+                return false;
+            }
+        }
+
+        return !File.Exists(fullPath);
     }
 
     private static string NormalizePhone(string? phone)

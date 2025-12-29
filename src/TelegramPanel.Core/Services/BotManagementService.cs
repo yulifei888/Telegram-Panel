@@ -70,6 +70,16 @@ public class BotManagementService
         await _botRepository.UpdateAsync(bot);
     }
 
+    public async Task SetBotActiveStatusAsync(int botId, bool isActive)
+    {
+        var bot = await _botRepository.GetByIdAsync(botId);
+        if (bot == null)
+            return;
+
+        bot.IsActive = isActive;
+        await _botRepository.UpdateAsync(bot);
+    }
+
     public async Task DeleteBotAsync(int id)
     {
         var bot = await _botRepository.GetByIdAsync(id);

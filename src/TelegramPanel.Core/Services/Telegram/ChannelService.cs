@@ -390,6 +390,31 @@ public class ChannelService : IChannelService
 
         await client.Channels_EditAdmin(channel, resolved.User, chatAdminRights, title);
 
+        // 权限校验：Telegram 可能会静默“削减”你请求的权限（典型：执行账号本身没有 add_admins/promote 权限）
+        try
+        {
+            var granted = await TryGetGrantedAdminRightsAsync(client, channel, resolved.User.id);
+            if (granted.HasValue)
+            {
+                var missing = rights & ~granted.Value;
+                if (missing != Interfaces.AdminRights.None)
+                {
+                    throw new InvalidOperationException(
+                        $"已设置管理员，但部分权限未生效：{FormatAdminRights(missing)}。" +
+                        "请确认：执行账号是该频道创建者，或执行账号在频道内拥有“添加管理员”权限。");
+                }
+            }
+        }
+        catch (InvalidOperationException)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            // 不阻塞主流程：有些频道无法拉取管理员列表（例如权限不足/风控），只记 debug 方便排查
+            _logger.LogDebug(ex, "Verify admin rights failed for channel {ChannelId}", channelId);
+        }
+
         _logger.LogInformation("Set @{Username} as admin in channel {ChannelId}", username, channelId);
         return true;
     }
@@ -662,7 +687,8 @@ public class ChannelService : IChannelService
 
     private static ChatAdminRights ConvertAdminRights(Interfaces.AdminRights rights)
     {
-        var flags = ChatAdminRights.Flags.other;
+        // 注意：不要默认带上 unknown/other flag。某些情况下会导致服务端“净化/削减”你请求的权限。
+        ChatAdminRights.Flags flags = 0;
 
         if (rights.HasFlag(Interfaces.AdminRights.ChangeInfo))
             flags |= ChatAdminRights.Flags.change_info;
@@ -688,6 +714,87 @@ public class ChannelService : IChannelService
             flags |= ChatAdminRights.Flags.manage_topics;
 
         return new ChatAdminRights { flags = flags };
+    }
+
+    private static Interfaces.AdminRights ConvertAdminRights(ChatAdminRights rights)
+    {
+        var r = Interfaces.AdminRights.None;
+        var flags = rights.flags;
+
+        if (flags.HasFlag(ChatAdminRights.Flags.change_info))
+            r |= Interfaces.AdminRights.ChangeInfo;
+        if (flags.HasFlag(ChatAdminRights.Flags.post_messages))
+            r |= Interfaces.AdminRights.PostMessages;
+        if (flags.HasFlag(ChatAdminRights.Flags.edit_messages))
+            r |= Interfaces.AdminRights.EditMessages;
+        if (flags.HasFlag(ChatAdminRights.Flags.delete_messages))
+            r |= Interfaces.AdminRights.DeleteMessages;
+        if (flags.HasFlag(ChatAdminRights.Flags.ban_users))
+            r |= Interfaces.AdminRights.BanUsers;
+        if (flags.HasFlag(ChatAdminRights.Flags.invite_users))
+            r |= Interfaces.AdminRights.InviteUsers;
+        if (flags.HasFlag(ChatAdminRights.Flags.pin_messages))
+            r |= Interfaces.AdminRights.PinMessages;
+        if (flags.HasFlag(ChatAdminRights.Flags.manage_call))
+            r |= Interfaces.AdminRights.ManageCall;
+        if (flags.HasFlag(ChatAdminRights.Flags.add_admins))
+            r |= Interfaces.AdminRights.AddAdmins;
+        if (flags.HasFlag(ChatAdminRights.Flags.anonymous))
+            r |= Interfaces.AdminRights.Anonymous;
+        if (flags.HasFlag(ChatAdminRights.Flags.manage_topics))
+            r |= Interfaces.AdminRights.ManageTopics;
+
+        return r;
+    }
+
+    private async Task<Interfaces.AdminRights?> TryGetGrantedAdminRightsAsync(Client client, Channel channel, long userId)
+    {
+        // 取管理员列表（通常很小）。若频道管理员非常多，仍可能只返回一部分；这种场景下校验只作为“尽力而为”。
+        var participants = await client.Channels_GetParticipants(channel, new ChannelParticipantsAdmins());
+        foreach (var p in participants.participants)
+        {
+            if (p is ChannelParticipantCreator creator && creator.user_id == userId)
+            {
+                // 创建者权限视为 FullAdmin（至少包含本系统可表达的权限）
+                return Interfaces.AdminRights.FullAdmin | Interfaces.AdminRights.Anonymous | Interfaces.AdminRights.ManageTopics;
+            }
+
+            if (p is ChannelParticipantAdmin admin && admin.user_id == userId)
+            {
+                if (admin.admin_rights == null)
+                    return Interfaces.AdminRights.None;
+                return ConvertAdminRights(admin.admin_rights);
+            }
+        }
+
+        return null;
+    }
+
+    private static string FormatAdminRights(Interfaces.AdminRights rights)
+    {
+        if (rights == Interfaces.AdminRights.None)
+            return "无";
+
+        var parts = new List<string>();
+        void Add(Interfaces.AdminRights r, string label)
+        {
+            if (rights.HasFlag(r))
+                parts.Add(label);
+        }
+
+        Add(Interfaces.AdminRights.ChangeInfo, "修改信息");
+        Add(Interfaces.AdminRights.PostMessages, "发消息");
+        Add(Interfaces.AdminRights.EditMessages, "编辑消息");
+        Add(Interfaces.AdminRights.DeleteMessages, "删除消息");
+        Add(Interfaces.AdminRights.BanUsers, "封禁用户");
+        Add(Interfaces.AdminRights.InviteUsers, "邀请用户");
+        Add(Interfaces.AdminRights.PinMessages, "置顶消息");
+        Add(Interfaces.AdminRights.ManageCall, "管理语音/直播");
+        Add(Interfaces.AdminRights.AddAdmins, "添加管理员");
+        Add(Interfaces.AdminRights.Anonymous, "匿名管理员");
+        Add(Interfaces.AdminRights.ManageTopics, "管理话题");
+
+        return parts.Count == 0 ? rights.ToString() : string.Join("、", parts);
     }
 
     #endregion

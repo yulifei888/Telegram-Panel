@@ -27,24 +27,44 @@ public class AccountRepository : Repository<Account>, IAccountRepository
         {
             // 注意：SQLite LIKE 在默认 collation 下对 ASCII 通常不区分大小写；这里用 Like 保持可翻译性与可读性
             var like = $"%{search}%";
+
+            // 允许用户直接粘贴 “+86 138 0013 8000” 等格式，统一提取纯数字后匹配 Phone 字段
+            var phoneDigits = NormalizeDigits(search);
+            var phoneLike = phoneDigits.Length > 0 ? $"%{phoneDigits}%" : like;
             if (long.TryParse(search, out var uid) && uid > 0)
             {
                 query = query.Where(a =>
                     a.UserId == uid
-                    || EF.Functions.Like(a.Phone, like)
+                    || EF.Functions.Like(a.Phone, phoneLike)
                     || (a.Nickname != null && EF.Functions.Like(a.Nickname, like))
                     || (a.Username != null && EF.Functions.Like(a.Username, like)));
             }
             else
             {
                 query = query.Where(a =>
-                    EF.Functions.Like(a.Phone, like)
+                    EF.Functions.Like(a.Phone, phoneLike)
                     || (a.Nickname != null && EF.Functions.Like(a.Nickname, like))
                     || (a.Username != null && EF.Functions.Like(a.Username, like)));
             }
         }
 
         return query.OrderByDescending(a => a.Id);
+    }
+
+    private static string NormalizeDigits(string text)
+    {
+        if (string.IsNullOrWhiteSpace(text))
+            return string.Empty;
+
+        Span<char> buf = stackalloc char[text.Length];
+        var n = 0;
+        foreach (var ch in text)
+        {
+            if (ch is >= '0' and <= '9')
+                buf[n++] = ch;
+        }
+
+        return n == 0 ? string.Empty : new string(buf[..n]);
     }
 
     public override async Task<Account?> GetByIdAsync(int id)

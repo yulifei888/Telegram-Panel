@@ -120,6 +120,24 @@
                            OnClick="@(async (MouseEventArgs _) => await SaveSyncConfig())">
                     保存同步设置
                 </MudButton>
+
+                <MudDivider Class="my-4" />
+
+                <MudText Typo="Typo.subtitle2">Bot 频道秒级更新</MudText>
+                <MudText Typo="Typo.caption" Color="Color.Secondary" Class="mb-2">
+                    说明：开启后后台会持续轮询 Bot API（getUpdates）并应用 my_chat_member 更新，用于 Bot 被加入/撤权频道后自动出现在“Bot 频道”列表。
+                </MudText>
+                <MudSwitch @bind-Value="botAutoSyncEnabled" Label="自动同步 Bot 频道（后台）" Color="Color.Primary" />
+                @if (botAutoSyncEnabled)
+                {
+                    <MudNumericField @bind-Value="botAutoSyncIntervalSeconds" Label="轮询间隔 (秒)" Variant="Variant.Outlined" Class="mt-3"
+                                     Min="2" Max="60" HelperText="建议 2-10 秒；过低可能更容易触发 Telegram 限流。" />
+                }
+                <MudButton Variant="Variant.Outlined" Color="Color.Primary" FullWidth="true" Class="mt-3"
+                           OnClick="@(async (MouseEventArgs _) => await SaveBotAutoSyncConfig())">
+                    保存 Bot 自动同步设置
+                </MudButton>
+
                 <MudButton Variant="Variant.Outlined" Color="Color.Info" FullWidth="true" Class="mt-4"
                            OnClick="@(async (MouseEventArgs _) => await SyncNow())">
                     立即同步
@@ -171,7 +189,7 @@
                 <MudText Typo="Typo.h6">系统信息</MudText>
             </MudCardHeader>
             <MudCardContent>
-                <MudText Typo="Typo.body2"><strong>版本：</strong> 1.0.0</MudText>
+                <MudText Typo="Typo.body2"><strong>版本：</strong> @VersionService.Version</MudText>
                 <MudText Typo="Typo.body2" Class="mt-2"><strong>运行时：</strong> .NET 8.0</MudText>
                 <MudText Typo="Typo.body2" Class="mt-2"><strong>数据库：</strong> SQLite</MudText>
                 <MudDivider Class="my-3" />
@@ -194,6 +212,8 @@
     private int maxRetries = 3;
     private bool autoSync = true;
     private int syncInterval = 6;
+    private bool botAutoSyncEnabled = false;
+    private int botAutoSyncIntervalSeconds = 2;
     private string logLevel = "Information";
     private int logRetentionDays = 30;
     private bool syncing = false;
@@ -230,6 +250,8 @@
         apiHash = Configuration["Telegram:ApiHash"] ?? "";
         autoSync = Configuration.GetValue("Sync:AutoSyncEnabled", false);
         syncInterval = Configuration.GetValue("Sync:IntervalHours", 6);
+        botAutoSyncEnabled = Configuration.GetValue("Telegram:BotAutoSyncEnabled", false);
+        botAutoSyncIntervalSeconds = Configuration.GetValue("Telegram:BotAutoSyncIntervalSeconds", 2);
         timeZoneId = Configuration["System:TimeZoneId"] ?? "";
     }
 
@@ -296,6 +318,31 @@
             await SaveLocalConfigAsync(root);
 
             Snackbar.Add("同步设置已保存（重启/自动重载后生效）", Severity.Success);
+            StateHasChanged();
+        }
+        catch (Exception ex)
+        {
+            Snackbar.Add($"保存失败：{ex.Message}（路径：{LocalConfigPath}）", Severity.Error);
+        }
+    }
+
+    private async Task SaveBotAutoSyncConfig()
+    {
+        if (botAutoSyncEnabled && (botAutoSyncIntervalSeconds < 2 || botAutoSyncIntervalSeconds > 60))
+        {
+            Snackbar.Add("Bot 自动同步轮询间隔范围应为 2-60 秒", Severity.Error);
+            return;
+        }
+
+        try
+        {
+            var root = await LoadOrCreateLocalConfigAsync();
+            var tg = EnsureObject(root, "Telegram");
+            tg["BotAutoSyncEnabled"] = botAutoSyncEnabled;
+            tg["BotAutoSyncIntervalSeconds"] = botAutoSyncIntervalSeconds;
+            await SaveLocalConfigAsync(root);
+
+            Snackbar.Add("Bot 自动同步设置已保存（重启/自动重载后生效）", Severity.Success);
             StateHasChanged();
         }
         catch (Exception ex)

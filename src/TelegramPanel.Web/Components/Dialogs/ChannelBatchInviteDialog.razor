@@ -2,6 +2,7 @@
 @inject IChannelService ChannelService
 @inject ISnackbar Snackbar
 @inject IDialogService DialogService
+@inject TelegramPanel.Web.Services.ChannelInvitePresetsService PresetsService
 @using TelegramPanel.Core.Interfaces
 @using TelegramPanel.Data.Entities
 
@@ -17,6 +18,25 @@
 
             <MudText Typo="Typo.subtitle2">目标频道：@channels.Count 个</MudText>
 
+            <MudGrid Spacing="2">
+                <MudItem xs="12" sm="8">
+                    <MudSelect T="string" Value="@selectedPresetName" ValueChanged="OnPresetChanged"
+                               Label="邀请预设" Variant="Variant.Outlined" Dense="true" Disabled="@(running || loadingPresets)">
+                        <MudSelectItem Value="@string.Empty">（不使用预设）</MudSelectItem>
+                        @foreach (var p in Presets)
+                        {
+                            <MudSelectItem Value="@p.Name">@p.Name</MudSelectItem>
+                        }
+                    </MudSelect>
+                </MudItem>
+                <MudItem xs="12" sm="4" Class="d-flex align-center">
+                    <MudButton Variant="Variant.Outlined" Color="Color.Error" OnClick="DeleteSelectedPreset"
+                               Disabled="@(running || loadingPresets || string.IsNullOrWhiteSpace(selectedPresetName))">
+                        删除预设
+                    </MudButton>
+                </MudItem>
+            </MudGrid>
+
             <MudSelect @bind-Value="selectedAccountId" Label="执行账号" Variant="Variant.Outlined" Dense="true">
                 @foreach (var a in accounts)
                 {
@@ -26,6 +46,19 @@
 
             <MudTextField @bind-Value="usernamesText" Label="用户名列表（换行分隔）" Variant="Variant.Outlined" Lines="8"
                           HelperText="@UsernamesHelperText" />
+
+            <MudGrid Spacing="2">
+                <MudItem xs="12" sm="8">
+                    <MudTextField @bind-Value="presetNameToSave" Label="保存当前用户名为预设组（名称）"
+                                  Variant="Variant.Outlined" Disabled="@(running || loadingPresets)" />
+                </MudItem>
+                <MudItem xs="12" sm="4" Class="d-flex align-center">
+                    <MudButton Variant="Variant.Filled" Color="Color.Primary" OnClick="SavePreset"
+                               Disabled="@(running || loadingPresets || string.IsNullOrWhiteSpace(presetNameToSave))">
+                        保存为预设
+                    </MudButton>
+                </MudItem>
+            </MudGrid>
 
             <MudNumericField @bind-Value="delayMs" Label="邀请间隔（毫秒）" Variant="Variant.Outlined" Min="0" Max="30000"
                              HelperText="建议设置 1500-4000ms，避免触发风控（会额外加少量随机抖动）。" />
@@ -67,6 +100,11 @@
     private int delayMs = 2000;
     private const string UsernamesHelperText = "每行一个 username 或 @username，将按“频道 × 用户”的顺序依次执行。";
 
+    private bool loadingPresets;
+    private List<TelegramPanel.Web.Services.ChannelInvitePreset> Presets { get; set; } = new();
+    private string selectedPresetName = "";
+    private string presetNameToSave = "";
+
     private bool running;
     private int total;
     private int done;
@@ -91,6 +129,88 @@
             selectedAccountId = DefaultAccountId;
         else
             selectedAccountId = accounts.FirstOrDefault()?.Id ?? 0;
+
+        await ReloadPresetsAsync();
+    }
+
+    private async Task ReloadPresetsAsync()
+    {
+        loadingPresets = true;
+        try
+        {
+            Presets = (await PresetsService.GetPresetsAsync()).ToList();
+        }
+        finally
+        {
+            loadingPresets = false;
+        }
+    }
+
+    private async Task OnPresetChanged(string? name)
+    {
+        selectedPresetName = name ?? "";
+        if (string.IsNullOrWhiteSpace(selectedPresetName))
+            return;
+
+        var p = Presets.FirstOrDefault(x => string.Equals(x.Name, selectedPresetName, StringComparison.OrdinalIgnoreCase));
+        if (p == null)
+            return;
+
+        usernamesText = string.Join(Environment.NewLine, p.Usernames.Select(x => $"@{x}"));
+        await Task.CompletedTask;
+    }
+
+    private async Task SavePreset()
+    {
+        var name = (presetNameToSave ?? "").Trim();
+        if (string.IsNullOrWhiteSpace(name))
+            return;
+
+        var usernames = ParseUsernames(usernamesText);
+        if (usernames.Count == 0)
+        {
+            Snackbar.Add("当前用户名列表为空，无法保存为预设", Severity.Warning);
+            return;
+        }
+
+        try
+        {
+            await PresetsService.SavePresetAsync(name, usernames);
+            Snackbar.Add("已保存预设", Severity.Success);
+            presetNameToSave = "";
+            await ReloadPresetsAsync();
+        }
+        catch (Exception ex)
+        {
+            Snackbar.Add($"保存预设失败：{ex.Message}", Severity.Error);
+        }
+    }
+
+    private async Task DeleteSelectedPreset()
+    {
+        if (string.IsNullOrWhiteSpace(selectedPresetName))
+            return;
+
+        bool? ok = await DialogService.ShowMessageBox(
+            title: "删除预设",
+            message: $"确定删除预设“{selectedPresetName}”吗？",
+            yesText: "删除",
+            cancelText: "取消");
+
+        if (ok != true)
+            return;
+
+        try
+        {
+            await PresetsService.DeletePresetAsync(selectedPresetName);
+            Snackbar.Add("已删除预设", Severity.Success);
+            selectedPresetName = "";
+            await ReloadPresetsAsync();
+        }
+        catch (Exception ex)
+        {
+            Snackbar.Add($"删除预设失败：{ex.Message}", Severity.Error);
+        }
     }
 
     private async Task Submit()
