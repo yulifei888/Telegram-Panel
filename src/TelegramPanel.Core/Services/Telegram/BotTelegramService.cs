@@ -393,6 +393,8 @@ public class BotTelegramService
 
             var status = el.TryGetProperty("status", out var statusEl) ? (statusEl.GetString() ?? "") : "";
             var customTitle = el.TryGetProperty("custom_title", out var ctEl) ? ctEl.GetString() : null;
+            var canInviteUsers = ReadBool(el, "can_invite_users");
+            var canPromoteMembers = ReadBool(el, "can_promote_members");
 
             if (!el.TryGetProperty("user", out var userEl) || userEl.ValueKind != JsonValueKind.Object)
                 continue;
@@ -410,7 +412,9 @@ public class BotTelegramService
                 FirstName: firstName,
                 LastName: lastName,
                 Status: status,
-                CustomTitle: string.IsNullOrWhiteSpace(customTitle) ? null : customTitle.Trim()
+                CustomTitle: string.IsNullOrWhiteSpace(customTitle) ? null : customTitle.Trim(),
+                CanInviteUsers: canInviteUsers,
+                CanPromoteMembers: canPromoteMembers
             ));
         }
 
@@ -646,7 +650,15 @@ public class BotTelegramService
 
     public sealed record BotChatInfo(long TelegramId, string Type, string? Title, string? Username, string? Description, int? MemberCount);
 
-    public sealed record BotChatAdminInfo(long UserId, string? Username, string? FirstName, string? LastName, string Status, string? CustomTitle)
+    public sealed record BotChatAdminInfo(
+        long UserId,
+        string? Username,
+        string? FirstName,
+        string? LastName,
+        string Status,
+        string? CustomTitle,
+        bool CanInviteUsers,
+        bool CanPromoteMembers)
     {
         public bool IsCreator => string.Equals(Status, "creator", StringComparison.OrdinalIgnoreCase);
         public string DisplayName

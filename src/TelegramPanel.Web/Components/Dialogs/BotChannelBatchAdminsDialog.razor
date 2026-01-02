@@ -148,7 +148,7 @@
     private readonly Random _rand = new();
     private readonly List<Account> eligibleAccounts = new();
     private readonly Dictionary<long, Account> accountsByUserId = new();
-    private readonly Dictionary<long, HashSet<long>> channelAdminUserIds = new();
+    private readonly Dictionary<long, List<BotTelegramService.BotChatAdminInfo>> channelAdmins = new();
 
     private List<BotChannel> channels = new();
     private int selectedAccountId;
@@ -228,7 +228,7 @@
         loadingAdmins = true;
         adminSummary = null;
         eligibleAccounts.Clear();
-        channelAdminUserIds.Clear();
+        channelAdmins.Clear();
         try
         {
             var eligibleUserIds = new HashSet<long>();
@@ -236,13 +236,12 @@
 
             foreach (var ch in channels)
             {
-                var adminIds = new HashSet<long>();
+                var admins = new List<BotTelegramService.BotChatAdminInfo>();
                 try
                 {
-                    var admins = await BotTelegram.GetChatAdminsAsync(BotId, ch.TelegramId, CancellationToken.None);
+                    admins = await BotTelegram.GetChatAdminsAsync(BotId, ch.TelegramId, CancellationToken.None);
                     foreach (var a in admins)
                     {
-                        adminIds.Add(a.UserId);
                         if (accountsByUserId.ContainsKey(a.UserId))
                             eligibleUserIds.Add(a.UserId);
                     }
@@ -255,7 +254,7 @@
                     // ignore
                 }
 
-                channelAdminUserIds[ch.TelegramId] = adminIds;
+                channelAdmins[ch.TelegramId] = admins;
             }
 
             foreach (var uid in eligibleUserIds)
@@ -422,7 +421,7 @@
 
             foreach (var ch in channels)
             {
-                var executorId = ResolveExecutorAccountId(ch);
+                var (executorId, reason) = ResolveExecutorAccountId(ch);
                 if (executorId == null)
                 {
                     foreach (var _ in usernames)
@@ -431,7 +430,7 @@
                         failed++;
                     }
 
-                    failures.Add($"{ch.Title}：无可用执行账号（需要该频道管理员且存在于系统账号）");
+                    failures.Add($"{ch.Title}：{reason ?? "无可用执行账号"}");
                     StateHasChanged();
                     continue;
                 }
@@ -530,27 +529,37 @@
         }
     }
 
-    private int? ResolveExecutorAccountId(BotChannel channel)
+    private (int? ExecutorId, string? Reason) ResolveExecutorAccountId(BotChannel channel)
     {
-        if (!channelAdminUserIds.TryGetValue(channel.TelegramId, out var adminIds) || adminIds.Count == 0)
-            return null;
+        if (!channelAdmins.TryGetValue(channel.TelegramId, out var admins) || admins.Count == 0)
+            return (null, "无法获取频道管理员列表（请确认 Bot 已加入且为管理员）");
 
         if (selectedAccountId > 0)
         {
             var selected = eligibleAccounts.FirstOrDefault(x => x.Id == selectedAccountId);
             if (selected == null || selected.UserId <= 0)
-                return null;
+                return (null, "所选执行账号无效");
 
-            return adminIds.Contains(selected.UserId) ? selected.Id : null;
+            var admin = admins.FirstOrDefault(x => x.UserId == selected.UserId);
+            if (admin == null)
+                return (null, "所选执行账号不是该频道管理员");
+
+            if (!admin.IsCreator && !admin.CanPromoteMembers)
+                return (null, "所选执行账号缺少“添加管理员”权限");
+
+            return (selected.Id, null);
         }
 
-        foreach (var uid in adminIds)
+        foreach (var a in admins)
         {
-            if (accountsByUserId.TryGetValue(uid, out var acc))
-                return acc.Id;
+            if (!a.IsCreator && !a.CanPromoteMembers)
+                continue;
+
+            if (accountsByUserId.TryGetValue(a.UserId, out var acc))
+                return (acc.Id, null);
         }
 
-        return null;
+        return (null, "无可用执行账号（需要该频道管理员且拥有“添加管理员”权限，并且在系统中存在）");
     }
 
     private void CancelOrClose()
