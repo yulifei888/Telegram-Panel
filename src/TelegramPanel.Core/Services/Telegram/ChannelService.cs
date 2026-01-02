@@ -576,8 +576,23 @@ public class ChannelService : IChannelService
 
     #region Private Methods
 
+    private static long NormalizeChannelId(long channelId)
+    {
+        // Bot API 的频道/超级群 chat_id 通常形如：-100xxxxxxxxxx（即 -1000000000000 - channel_id）
+        // MTProto 的 channel_id 为 int32（可能为负），WTelegram 的 Channel.id 也基于该 int32。
+        // 因此这里把 -100... 规范化回 MTProto 的 int32 id，避免出现 “Channel -100... not found”。
+        if (channelId <= -1000000000000L)
+        {
+            var raw = -(channelId + 1000000000000L);
+            return unchecked((int)raw);
+        }
+
+        return channelId;
+    }
+
     private async Task<Channel?> GetChannelByIdAsync(Client client, long channelId)
     {
+        channelId = NormalizeChannelId(channelId);
         var dialogs = await client.Messages_GetAllDialogs();
         return dialogs.chats.Values.OfType<Channel>().FirstOrDefault(c => c.id == channelId);
     }
