@@ -481,6 +481,10 @@
             return (selected.Id, null);
         }
 
+        var creator = admins.FirstOrDefault(x => x.IsCreator);
+        if (creator != null && accountsByUserId.TryGetValue(creator.UserId, out var creatorAcc))
+            return (creatorAcc.Id, null);
+
         foreach (var a in admins)
         {
             if (!a.IsCreator && !a.CanInviteUsers)

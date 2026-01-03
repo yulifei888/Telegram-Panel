@@ -338,7 +338,7 @@ public class ChannelService : IChannelService
                 ?? throw new InvalidOperationException($"Channel {channelId} not found");
 
             var resolved = await client.Contacts_ResolveUsername(username);
-            await client.AddChatUser(channel, resolved.User);
+            await client.Channels_InviteToChannel(channel, new InputUser(resolved.User.id, resolved.User.access_hash));
 
             _logger.LogInformation("Successfully invited @{Username} to channel {ChannelId}", username, channelId);
             return new InviteResult(username, true);
@@ -346,6 +346,14 @@ public class ChannelService : IChannelService
         catch (RpcException ex)
         {
             _logger.LogWarning("Failed to invite @{Username}: {Error}", username, ex.Message);
+
+            // 目标是 Bot：频道里通常不能以“邀请成员”的方式添加 bot（需要通过“设置管理员”添加）
+            if (ex.Message.Contains("USER_BOT", StringComparison.OrdinalIgnoreCase))
+                return new InviteResult(username, false, "目标是 Bot：请用“设置管理员”把 Bot 加为管理员（不能用邀请成员）");
+
+            if (ex.Message.Contains("USER_ALREADY_PARTICIPANT", StringComparison.OrdinalIgnoreCase))
+                return new InviteResult(username, true);
+
             return new InviteResult(username, false, ex.Message);
         }
         catch (Exception ex)
@@ -388,7 +396,34 @@ public class ChannelService : IChannelService
 
         var chatAdminRights = ConvertAdminRights(rights);
 
-        await client.Channels_EditAdmin(channel, resolved.User, chatAdminRights, title);
+        try
+        {
+            await client.Channels_EditAdmin(channel, resolved.User, chatAdminRights, title);
+        }
+        catch (RpcException ex) when (ex.Message.Contains("USER_NOT_PARTICIPANT", StringComparison.OrdinalIgnoreCase))
+        {
+            // 目标用户不在频道：先尝试邀请进频道，再重试一次提升权限
+            try
+            {
+                await client.Channels_InviteToChannel(channel, new InputUser(resolved.User.id, resolved.User.access_hash));
+            }
+            catch (RpcException inviteEx) when (inviteEx.Message.Contains("USER_ALREADY_PARTICIPANT", StringComparison.OrdinalIgnoreCase))
+            {
+                // ignore
+            }
+            catch (RpcException inviteEx) when (inviteEx.Message.Contains("USER_BOT", StringComparison.OrdinalIgnoreCase))
+            {
+                // 目标是 Bot：邀请成员可能不被允许，继续尝试提升（部分频道/权限组合仍可直接提升）
+                _logger.LogDebug(inviteEx, "Invite bot as member is not allowed for channel {ChannelId}, continue promoting", channelId);
+            }
+
+            await client.Channels_EditAdmin(channel, resolved.User, chatAdminRights, title);
+        }
+        catch (RpcException ex) when (ex.Message.Contains("RIGHT_FORBIDDEN", StringComparison.OrdinalIgnoreCase))
+        {
+            throw new InvalidOperationException(
+                "RIGHT_FORBIDDEN：执行账号缺少权限。请确认执行账号是频道创建者，或在频道里拥有“邀请用户/添加管理员”等权限。");
+        }
 
         // 权限校验：Telegram 可能会静默“削减”你请求的权限（典型：执行账号本身没有 add_admins/promote 权限）
         try
