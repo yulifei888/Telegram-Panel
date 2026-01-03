@@ -31,7 +31,6 @@
 @code
 {
     [CascadingParameter] private MudDialogInstance MudDialog { get; set; } = default!;
-    [Parameter] public int BotId { get; set; }
     [Parameter] public BotChannelCategory? Category { get; set; }
 
     private bool saving;
@@ -71,7 +70,7 @@
             if (Category == null)
             {
                 // 新增模式：使用现有的 CreateCategoryAsync 方法
-                var category = await BotManagement.CreateCategoryAsync(BotId, name, description);
+                var category = await BotManagement.CreateCategoryAsync(name, description);
                 Snackbar.Add("分类创建成功", Severity.Success);
                 MudDialog.Close(DialogResult.Ok(category));
             }

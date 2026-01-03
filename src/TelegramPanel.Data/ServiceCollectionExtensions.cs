@@ -30,6 +30,7 @@ public static class ServiceCollectionExtensions
         services.AddScoped<IBotRepository, BotRepository>();
         services.AddScoped<IBotChannelRepository, BotChannelRepository>();
         services.AddScoped<IBotChannelCategoryRepository, BotChannelCategoryRepository>();
+        services.AddScoped<IBotChannelMemberRepository, BotChannelMemberRepository>();
         services.AddScoped(typeof(IRepository<>), typeof(Repository<>));
 
         return services;

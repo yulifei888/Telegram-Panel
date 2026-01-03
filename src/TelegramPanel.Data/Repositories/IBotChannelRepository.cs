@@ -6,6 +6,7 @@ public interface IBotChannelRepository : IRepository<BotChannel>
 {
     Task<BotChannel?> GetByTelegramIdAsync(int botId, long telegramId);
     Task<IEnumerable<BotChannel>> GetForBotAsync(int botId, int? categoryId = null);
+    Task<BotChannel?> GetGlobalByTelegramIdAsync(long telegramId);
 
     Task<(IReadOnlyList<BotChannel> Items, int TotalCount)> QueryPagedAsync(
         int botId,

@@ -10,17 +10,20 @@ public class BotManagementService
     private readonly IBotRepository _botRepository;
     private readonly IBotChannelRepository _botChannelRepository;
     private readonly IBotChannelCategoryRepository _categoryRepository;
+    private readonly IBotChannelMemberRepository _memberRepository;
     private readonly ILogger<BotManagementService> _logger;
 
     public BotManagementService(
         IBotRepository botRepository,
         IBotChannelRepository botChannelRepository,
         IBotChannelCategoryRepository categoryRepository,
+        IBotChannelMemberRepository memberRepository,
         ILogger<BotManagementService> logger)
     {
         _botRepository = botRepository;
         _botChannelRepository = botChannelRepository;
         _categoryRepository = categoryRepository;
+        _memberRepository = memberRepository;
         _logger = logger;
     }
 
@@ -96,28 +99,25 @@ public class BotManagementService
         }
     }
 
-    public async Task<IEnumerable<BotChannelCategory>> GetCategoriesAsync(int botId)
+    public async Task<IEnumerable<BotChannelCategory>> GetCategoriesAsync()
     {
-        return await _categoryRepository.GetForBotAsync(botId);
+        return await _categoryRepository.GetAllOrderedAsync();
     }
 
-    public async Task<BotChannelCategory> CreateCategoryAsync(int botId, string name, string? description = null)
+    public async Task<BotChannelCategory> CreateCategoryAsync(string name, string? description = null)
     {
         name = (name ?? string.Empty).Trim();
         description = string.IsNullOrWhiteSpace(description) ? null : description.Trim();
 
-        if (botId <= 0)
-            throw new ArgumentException("botId 无效", nameof(botId));
         if (string.IsNullOrWhiteSpace(name))
             throw new ArgumentException("分类名称不能为空", nameof(name));
 
-        var existing = await _categoryRepository.GetByNameAsync(botId, name);
+        var existing = await _categoryRepository.GetByNameAsync(name);
         if (existing != null)
             throw new InvalidOperationException("分类名称已存在");
 
         var cat = new BotChannelCategory
         {
-            BotId = botId,
             Name = name,
             Description = description,
             CreatedAt = DateTime.UtcNow
@@ -173,15 +173,22 @@ public class BotManagementService
         return await _botChannelRepository.GetByTelegramIdAsync(botId, telegramId);
     }
 
-    public async Task<BotChannel> UpsertChannelAsync(BotChannel channel)
+    public async Task<BotChannel> UpsertChannelAsync(int botId, BotChannel channel)
     {
-        if (channel.BotId <= 0)
-            throw new ArgumentException("BotId 无效", nameof(channel));
+        if (botId <= 0)
+            throw new ArgumentException("BotId 无效", nameof(botId));
         if (channel.TelegramId == 0)
             throw new ArgumentException("TelegramId 无效", nameof(channel));
 
-        var existing = await _botChannelRepository.GetByTelegramIdAsync(channel.BotId, channel.TelegramId);
-        if (existing != null)
+        var now = DateTime.UtcNow;
+
+        var existing = await _botChannelRepository.GetGlobalByTelegramIdAsync(channel.TelegramId);
+        if (existing == null)
+        {
+            channel.SyncedAt = now;
+            existing = await _botChannelRepository.AddAsync(channel);
+        }
+        else
         {
             existing.Title = channel.Title;
             existing.Username = channel.Username;
@@ -191,23 +198,27 @@ public class BotManagementService
             existing.AccessHash = channel.AccessHash;
             if (channel.CreatedAt.HasValue)
                 existing.CreatedAt = channel.CreatedAt;
-            existing.SyncedAt = DateTime.UtcNow;
+            existing.SyncedAt = now;
 
             await _botChannelRepository.UpdateAsync(existing);
-            return existing;
         }
 
-        channel.SyncedAt = DateTime.UtcNow;
-        return await _botChannelRepository.AddAsync(channel);
+        await _memberRepository.UpsertAsync(botId, existing.Id, now);
+        return existing;
     }
 
     public async Task DeleteChannelByTelegramIdAsync(int botId, long telegramId)
     {
-        var existing = await _botChannelRepository.GetByTelegramIdAsync(botId, telegramId);
-        if (existing == null)
+        var ch = await _botChannelRepository.GetByTelegramIdAsync(botId, telegramId);
+        if (ch == null)
             return;
 
-        await _botChannelRepository.DeleteAsync(existing);
+        await _memberRepository.DeleteAsync(botId, ch.Id);
+
+        // 清理无任何 Bot 关联的“孤儿频道”
+        var remains = await _memberRepository.CountForChannelAsync(ch.Id);
+        if (remains == 0)
+            await _botChannelRepository.DeleteAsync(ch);
     }
 
     public async Task SetChannelCategoryAsync(int botChannelId, int? categoryId)

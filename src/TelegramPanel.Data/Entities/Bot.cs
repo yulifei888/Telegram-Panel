@@ -14,6 +14,5 @@ public class Bot
     public DateTime? LastSyncAt { get; set; }
     public long? LastUpdateId { get; set; }
 
-    public ICollection<BotChannelCategory> Categories { get; set; } = new List<BotChannelCategory>();
-    public ICollection<BotChannel> Channels { get; set; } = new List<BotChannel>();
+    public ICollection<BotChannelMember> ChannelMembers { get; set; } = new List<BotChannelMember>();
 }

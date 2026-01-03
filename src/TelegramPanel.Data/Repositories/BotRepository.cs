@@ -31,10 +31,8 @@ public class BotRepository : Repository<Bot>, IBotRepository
     {
         // 只用于列表显示统计信息，避免一次性加载全部频道详情
         return await _dbSet
-            .Include(x => x.Channels)
-            .Include(x => x.Categories)
+            .Include(x => x.ChannelMembers)
             .OrderByDescending(x => x.CreatedAt)
             .ToListAsync();
     }
 }
-

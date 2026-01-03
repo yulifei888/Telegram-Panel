@@ -256,9 +256,8 @@ public class BotTelegramService
             // left/kicked 或降权为 member 等，直接从列表移除（否则导出邀请会失败且列表不准）。
             if (change.Status is "administrator" or "creator")
             {
-                await _botManagement.UpsertChannelAsync(new BotChannel
+                await _botManagement.UpsertChannelAsync(bot.Id, new BotChannel
                 {
-                    BotId = bot.Id,
                     TelegramId = chatId,
                     Title = string.IsNullOrWhiteSpace(change.Chat.Title) ? $"频道 {chatId}" : change.Chat.Title,
                     Username = string.IsNullOrWhiteSpace(change.Chat.Username) ? null : change.Chat.Username.Trim().TrimStart('@'),

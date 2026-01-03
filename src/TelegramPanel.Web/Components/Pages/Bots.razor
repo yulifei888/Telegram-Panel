@@ -40,8 +40,7 @@
                     <HeaderContent>
                         <MudTh>名称</MudTh>
                         <MudTh>用户名</MudTh>
-                        <MudTh>频道数</MudTh>
-                        <MudTh>分类数</MudTh>
+                        <MudTh>可管理聊天数</MudTh>
                         <MudTh>最后同步</MudTh>
                         <MudTh>状态</MudTh>
                         <MudTh>操作</MudTh>
@@ -49,8 +48,7 @@
                     <RowTemplate>
                         <MudTd DataLabel="名称">@context.Name</MudTd>
                         <MudTd DataLabel="用户名">@(!string.IsNullOrWhiteSpace(context.Username) ? $"@{context.Username}" : "-")</MudTd>
-                        <MudTd DataLabel="频道数">@context.Channels.Count(x => x.IsBroadcast)</MudTd>
-                        <MudTd DataLabel="分类数">@context.Categories.Count</MudTd>
+                        <MudTd DataLabel="可管理聊天数">@context.ChannelMembers.Count</MudTd>
                         <MudTd DataLabel="最后同步"><PanelTime Value="context.LastSyncAt" /></MudTd>
                         <MudTd DataLabel="状态">
                             <MudStack Row="true" Spacing="1" AlignItems="AlignItems.Center">
@@ -151,7 +149,7 @@
     {
         bool? result = await DialogService.ShowMessageBox(
             "确认删除",
-            $"确定要删除机器人 {bot.Name} 吗？该机器人加入的频道与分类也会一并删除。",
+            $"确定要删除机器人 {bot.Name} 吗？该机器人加入的频道关联也会一并删除。",
             yesText: "删除", cancelText: "取消");
 
         if (result != true)

@@ -6,12 +6,9 @@ namespace TelegramPanel.Data.Entities;
 public class BotChannelCategory
 {
     public int Id { get; set; }
-    public int BotId { get; set; }
     public string Name { get; set; } = null!;
     public string? Description { get; set; }
     public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
 
-    public Bot? Bot { get; set; }
     public ICollection<BotChannel> Channels { get; set; } = new List<BotChannel>();
 }
-

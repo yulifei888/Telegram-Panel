@@ -252,7 +252,7 @@
                 return;
             }
 
-            categories = (await BotManagement.GetCategoriesAsync(selectedBotId)).ToList();
+            categories = (await BotManagement.GetCategoriesAsync()).ToList();
             await ReloadTable();
         }
         catch (Exception ex)
@@ -364,10 +364,7 @@
         if (selectedBotId <= 0)
             return;
 
-        var parameters = new DialogParameters
-        {
-            ["BotId"] = selectedBotId
-        };
+        var parameters = new DialogParameters();
         var options = new DialogOptions { CloseOnEscapeKey = true, MaxWidth = MaxWidth.Small, FullWidth = true };
         var dialog = DialogService.Show<BotChannelCategoryDialog>("新建分类", parameters, options);
         var result = await dialog.Result;

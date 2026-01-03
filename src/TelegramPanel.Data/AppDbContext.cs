@@ -23,6 +23,7 @@ public class AppDbContext : DbContext
     public DbSet<Bot> Bots => Set<Bot>();
     public DbSet<BotChannel> BotChannels => Set<BotChannel>();
     public DbSet<BotChannelCategory> BotChannelCategories => Set<BotChannelCategory>();
+    public DbSet<BotChannelMember> BotChannelMembers => Set<BotChannelMember>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
@@ -166,12 +167,7 @@ public class AppDbContext : DbContext
             entity.Property(e => e.Name).IsRequired().HasMaxLength(100);
             entity.Property(e => e.Description).HasMaxLength(500);
 
-            entity.HasIndex(e => new { e.BotId, e.Name }).IsUnique();
-
-            entity.HasOne(e => e.Bot)
-                .WithMany(b => b.Categories)
-                .HasForeignKey(e => e.BotId)
-                .OnDelete(DeleteBehavior.Cascade);
+            entity.HasIndex(e => e.Name).IsUnique();
         });
 
         // BotChannel配置
@@ -182,19 +178,33 @@ public class AppDbContext : DbContext
             entity.Property(e => e.Username).HasMaxLength(100);
             entity.Property(e => e.About).HasMaxLength(1000);
 
-            entity.HasIndex(e => new { e.BotId, e.TelegramId }).IsUnique();
+            entity.HasIndex(e => e.TelegramId).IsUnique();
             entity.HasIndex(e => e.Username);
             entity.HasIndex(e => e.CategoryId);
-
-            entity.HasOne(e => e.Bot)
-                .WithMany(b => b.Channels)
-                .HasForeignKey(e => e.BotId)
-                .OnDelete(DeleteBehavior.Cascade);
 
             entity.HasOne(e => e.Category)
                 .WithMany(c => c.Channels)
                 .HasForeignKey(e => e.CategoryId)
                 .OnDelete(DeleteBehavior.SetNull);
+        });
+
+        // BotChannelMember 配置
+        modelBuilder.Entity<BotChannelMember>(entity =>
+        {
+            entity.HasKey(e => e.Id);
+            entity.HasIndex(e => new { e.BotId, e.BotChannelId }).IsUnique();
+            entity.HasIndex(e => e.BotId);
+            entity.HasIndex(e => e.BotChannelId);
+
+            entity.HasOne(e => e.Bot)
+                .WithMany(b => b.ChannelMembers)
+                .HasForeignKey(e => e.BotId)
+                .OnDelete(DeleteBehavior.Cascade);
+
+            entity.HasOne(e => e.BotChannel)
+                .WithMany(c => c.Members)
+                .HasForeignKey(e => e.BotChannelId)
+                .OnDelete(DeleteBehavior.Cascade);
         });
     }
 }

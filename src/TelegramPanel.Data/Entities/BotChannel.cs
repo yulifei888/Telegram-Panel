@@ -6,7 +6,6 @@ namespace TelegramPanel.Data.Entities;
 public class BotChannel
 {
     public int Id { get; set; }
-    public int BotId { get; set; }
     public long TelegramId { get; set; }
     public long? AccessHash { get; set; }
     public string Title { get; set; } = null!;
@@ -19,7 +18,6 @@ public class BotChannel
 
     public int? CategoryId { get; set; }
 
-    public Bot? Bot { get; set; }
     public BotChannelCategory? Category { get; set; }
+    public ICollection<BotChannelMember> Members { get; set; } = new List<BotChannelMember>();
 }
-

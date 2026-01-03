@@ -124,9 +124,8 @@
             var username = chatInfo?.Username ?? dbChannel?.Username;
             var memberCount = chatInfo?.MemberCount ?? dbChannel?.MemberCount ?? 0;
 
-            await BotManagement.UpsertChannelAsync(new BotChannel
+            await BotManagement.UpsertChannelAsync(BotId, new BotChannel
             {
-                BotId = BotId,
                 TelegramId = ChannelTelegramId,
                 Title = title,
                 Username = username,

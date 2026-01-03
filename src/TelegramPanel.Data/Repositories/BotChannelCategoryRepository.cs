@@ -9,21 +9,19 @@ public class BotChannelCategoryRepository : Repository<BotChannelCategory>, IBot
     {
     }
 
-    public async Task<IEnumerable<BotChannelCategory>> GetForBotAsync(int botId)
+    public async Task<IEnumerable<BotChannelCategory>> GetAllOrderedAsync()
     {
         return await _dbSet
-            .Where(x => x.BotId == botId)
             .OrderBy(x => x.Name)
             .ToListAsync();
     }
 
-    public async Task<BotChannelCategory?> GetByNameAsync(int botId, string name)
+    public async Task<BotChannelCategory?> GetByNameAsync(string name)
     {
         name = (name ?? string.Empty).Trim();
         if (string.IsNullOrWhiteSpace(name))
             return null;
 
-        return await _dbSet.FirstOrDefaultAsync(x => x.BotId == botId && x.Name == name);
+        return await _dbSet.FirstOrDefaultAsync(x => x.Name == name);
     }
 }
-

@@ -14,7 +14,7 @@ public class BotChannelRepository : Repository<BotChannel>, IBotChannelRepositor
         var query = _dbSet
             .AsNoTracking()
             .Include(x => x.Category)
-            .Where(x => x.BotId == botId);
+            .Where(x => x.Members.Any(m => m.BotId == botId));
 
         // 约定：categoryId = -1 表示“未分类”（CategoryId == null）
         if (categoryId.HasValue)
@@ -44,21 +44,34 @@ public class BotChannelRepository : Repository<BotChannel>, IBotChannelRepositor
     {
         return await _dbSet
             .Include(x => x.Category)
-            .FirstOrDefaultAsync(x => x.BotId == botId && x.TelegramId == telegramId);
+            .FirstOrDefaultAsync(x => x.TelegramId == telegramId && x.Members.Any(m => m.BotId == botId));
     }
 
     public async Task<IEnumerable<BotChannel>> GetForBotAsync(int botId, int? categoryId = null)
     {
         var query = _dbSet
             .Include(x => x.Category)
-            .Where(x => x.BotId == botId);
+            .Where(x => x.Members.Any(m => m.BotId == botId));
 
+        // 约定：categoryId = -1 表示“未分类”（CategoryId == null）
         if (categoryId.HasValue)
-            query = query.Where(x => x.CategoryId == categoryId.Value);
+        {
+            if (categoryId.Value == -1)
+                query = query.Where(x => x.CategoryId == null);
+            else
+                query = query.Where(x => x.CategoryId == categoryId.Value);
+        }
 
         return await query
             .OrderByDescending(x => x.SyncedAt)
             .ToListAsync();
+    }
+
+    public async Task<BotChannel?> GetGlobalByTelegramIdAsync(long telegramId)
+    {
+        return await _dbSet
+            .Include(x => x.Category)
+            .FirstOrDefaultAsync(x => x.TelegramId == telegramId);
     }
 
     public async Task<(IReadOnlyList<BotChannel> Items, int TotalCount)> QueryPagedAsync(
