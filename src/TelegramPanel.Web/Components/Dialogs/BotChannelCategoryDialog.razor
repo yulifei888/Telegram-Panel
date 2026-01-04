@@ -34,6 +34,7 @@
     [Parameter] public BotChannelCategory? Category { get; set; }
 
     private bool saving;
+    private int? categoryId;
     private string name = "";
     private string description = "";
 
@@ -42,6 +43,7 @@
         // 如果传入了分类，说明是编辑模式
         if (Category != null)
         {
+            categoryId = Category.Id;
             name = Category.Name ?? "";
             description = Category.Description ?? "";
         }
@@ -67,7 +69,7 @@
         saving = true;
         try
         {
-            if (Category == null)
+            if (categoryId == null)
             {
                 // 新增模式：使用现有的 CreateCategoryAsync 方法
                 var category = await BotManagement.CreateCategoryAsync(name, description);
@@ -76,12 +78,10 @@
             }
             else
             {
-                // 编辑模式：需要更新方法（暂未实现）
-                Category.Name = name;
-                Category.Description = description;
-                // TODO: 需要实现 UpdateCategoryAsync 方法
-                Snackbar.Add("分类更新功能待实现", Severity.Warning);
-                MudDialog.Close(DialogResult.Ok(Category));
+                // 编辑模式：更新分类
+                var updated = await BotManagement.UpdateCategoryAsync(categoryId.Value, name, description);
+                Snackbar.Add("分类更新成功", Severity.Success);
+                MudDialog.Close(DialogResult.Ok(updated));
             }
         }
         catch (Exception ex)

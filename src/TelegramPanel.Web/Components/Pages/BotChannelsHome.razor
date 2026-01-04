@@ -39,6 +39,14 @@
                        Title="新建分类" OnClick="OpenCreateCategoryDialog"
                        Disabled="@(selectedBotId <= 0)" />
 
+        <MudIconButton Icon="@Icons.Material.Filled.Edit" Color="Color.Default" Size="Size.Small"
+                       Title="编辑当前分类" OnClick="OpenEditCategoryDialog"
+                       Disabled="@(selectedBotId <= 0 || filterCategoryId <= 0)" />
+
+        <MudIconButton Icon="@Icons.Material.Filled.Delete" Color="Color.Error" Size="Size.Small"
+                       Title="删除当前分类" OnClick="DeleteSelectedCategoryAsync"
+                       Disabled="@(selectedBotId <= 0 || filterCategoryId <= 0)" />
+
         <MudTextField @bind-Value="search" Placeholder="搜索频道..." Adornment="Adornment.Start"
                       AdornmentIcon="@Icons.Material.Filled.Search" IconSize="Size.Medium" Class="mt-0 tp-input-full-xs"
                       Style="min-width: 200px; flex: 1; max-width: 400px;"
@@ -373,6 +381,79 @@
         {
             // 重新加载分类列表
             await LoadBotData();
+        }
+    }
+
+    private BotChannelCategory? GetSelectedCategory()
+    {
+        if (filterCategoryId <= 0)
+            return null;
+
+        return categories.FirstOrDefault(x => x.Id == filterCategoryId);
+    }
+
+    private async Task OpenEditCategoryDialog()
+    {
+        if (selectedBotId <= 0)
+            return;
+
+        var cat = GetSelectedCategory();
+        if (cat == null)
+        {
+            Snackbar.Add("请先在“分类”里选择一个具体分类再编辑", Severity.Info);
+            return;
+        }
+
+        var parameters = new DialogParameters
+        {
+            ["Category"] = cat
+        };
+        var options = new DialogOptions { CloseOnEscapeKey = true, MaxWidth = MaxWidth.Small, FullWidth = true };
+        var dialog = DialogService.Show<BotChannelCategoryDialog>("编辑分类", parameters, options);
+        var result = await dialog.Result;
+
+        if (!result.Canceled)
+        {
+            await LoadBotData();
+        }
+    }
+
+    private async Task DeleteSelectedCategoryAsync()
+    {
+        if (selectedBotId <= 0)
+            return;
+
+        var cat = GetSelectedCategory();
+        if (cat == null)
+        {
+            Snackbar.Add("请先在“分类”里选择一个具体分类再删除", Severity.Info);
+            return;
+        }
+
+        bool? ok = await DialogService.ShowMessageBox(
+            "确认删除",
+            $"确定删除分类“{cat.Name}”吗？删除后，该分类下的频道会变为“未分类”。",
+            yesText: "删除", cancelText: "取消");
+
+        if (ok != true)
+            return;
+
+        loading = true;
+        try
+        {
+            await BotManagement.DeleteCategoryAsync(cat.Id);
+            Snackbar.Add("分类已删除", Severity.Success);
+
+            filterCategoryId = 0;
+            await LoadBotData();
+        }
+        catch (Exception ex)
+        {
+            Snackbar.Add($"删除失败：{ex.Message}", Severity.Error);
+        }
+        finally
+        {
+            loading = false;
         }
     }
 

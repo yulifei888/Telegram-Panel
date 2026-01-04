@@ -147,6 +147,55 @@ public class BotManagementService
         }
     }
 
+    public async Task<BotChannelCategory> UpdateCategoryAsync(int categoryId, string name, string? description = null)
+    {
+        if (categoryId <= 0)
+            throw new ArgumentException("分类ID无效", nameof(categoryId));
+
+        name = (name ?? string.Empty).Trim();
+        description = string.IsNullOrWhiteSpace(description) ? null : description.Trim();
+
+        if (string.IsNullOrWhiteSpace(name))
+            throw new ArgumentException("分类名称不能为空", nameof(name));
+
+        var cat = await _categoryRepository.GetByIdAsync(categoryId);
+        if (cat == null)
+            throw new InvalidOperationException("分类不存在或已被删除");
+
+        if (!string.Equals(cat.Name, name, StringComparison.Ordinal))
+        {
+            var existing = await _categoryRepository.GetByNameAsync(name);
+            if (existing != null && existing.Id != cat.Id)
+                throw new InvalidOperationException("分类名称已存在");
+        }
+
+        cat.Name = name;
+        cat.Description = description;
+
+        try
+        {
+            await _categoryRepository.UpdateAsync(cat);
+            return cat;
+        }
+        catch (DbUpdateException ex)
+        {
+            var msg = GetInnermostMessage(ex);
+            if (msg.Contains("UNIQUE constraint failed: BotChannelCategories.Name", StringComparison.OrdinalIgnoreCase))
+                throw new InvalidOperationException("分类名称已存在");
+
+            if (msg.Contains("database is locked", StringComparison.OrdinalIgnoreCase)
+                || msg.Contains("database is busy", StringComparison.OrdinalIgnoreCase)
+                || msg.Contains("SQLite Error 5", StringComparison.OrdinalIgnoreCase))
+                throw new InvalidOperationException("数据库正被占用（SQLite database is locked），请稍后重试；若云端部署了多个实例共享同一个 sqlite 文件，请改为单实例或换用 MySQL/PostgreSQL。");
+
+            if (msg.Contains("no such table: BotChannelCategories", StringComparison.OrdinalIgnoreCase)
+                || msg.Contains("no such column", StringComparison.OrdinalIgnoreCase))
+                throw new InvalidOperationException($"数据库结构过旧或未完成迁移，请重启主程序以自动迁移数据库。详情：{msg}");
+
+            throw new InvalidOperationException($"更新分类失败：{msg}", ex);
+        }
+    }
+
     private static string GetInnermostMessage(Exception ex)
     {
         var cur = ex;
