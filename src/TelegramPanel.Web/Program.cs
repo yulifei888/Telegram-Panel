@@ -72,8 +72,14 @@ if (args.Length >= 2 && string.Equals(args[0], "--diag-session-dir", StringCompa
 
             if (!TryGetString(root, out var phone, "phone") || string.IsNullOrWhiteSpace(phone))
             {
-                Console.WriteLine($"[FAIL] {Path.GetFileName(jsonPath)}: 缺少 phone");
-                continue;
+                if (!TryGetString(root, out phone, "session_file", "sessionFile") || string.IsNullOrWhiteSpace(phone))
+                    phone = Path.GetFileNameWithoutExtension(jsonPath);
+
+                if (string.IsNullOrWhiteSpace(phone))
+                {
+                    Console.WriteLine($"[FAIL] {Path.GetFileName(jsonPath)}: 缺少 phone");
+                    continue;
+                }
             }
 
             _ = TryGetLong(root, out var userId, "user_id", "uid");

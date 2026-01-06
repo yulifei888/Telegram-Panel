@@ -347,7 +347,10 @@ public class AccountImportService
                 return new ImportResult(false, null, null, null, null, $"json 缺少 api_hash: {jsonPath}");
 
             if (!TryGetString(root, out var phone, "phone", "phone_number", "phoneNumber") || string.IsNullOrWhiteSpace(phone))
-                return new ImportResult(false, null, null, null, null, $"json 缺少 phone: {jsonPath}");
+            {
+                if (!TryInferPhone(root, jsonPath, out phone))
+                    return new ImportResult(false, null, null, null, null, $"json 缺少 phone: {jsonPath}");
+            }
 
             phone = PhoneNumberFormatter.NormalizeToDigits(phone);
             if (string.IsNullOrWhiteSpace(phone))
@@ -511,6 +514,16 @@ public class AccountImportService
         if (!string.IsNullOrWhiteSpace(display))
             return display;
         return string.IsNullOrWhiteSpace(username) ? null : username.Trim();
+    }
+
+    private static bool TryInferPhone(System.Text.Json.JsonElement root, string jsonPath, out string? phone)
+    {
+        // 兼容一些导出：json 里 phone 可能为 null，但文件名/ session_file 会带 +手机号
+        if (!TryGetString(root, out phone, "session_file", "sessionFile") || string.IsNullOrWhiteSpace(phone))
+            phone = Path.GetFileNameWithoutExtension(jsonPath);
+
+        phone = string.IsNullOrWhiteSpace(phone) ? null : phone.Trim();
+        return !string.IsNullOrWhiteSpace(phone);
     }
 
     private static bool LooksLikeSqliteSession(string filePath)
