@@ -234,7 +234,7 @@
                 okRecovery = false;
                 if (autoConfirm && (err ?? "").Contains("EMAIL_UNCONFIRMED", StringComparison.OrdinalIgnoreCase))
                 {
-                    var pendingCode = await TryWaitTelegramCodeAsync(email, startUtc, CancellationToken.None, allowOlder: true);
+                    var pendingCode = await TryWaitTelegramCodeAsync(email, startUtc, CancellationToken.None, TelegramMailCodePurpose.RecoveryEmail, allowOlder: true);
                     if (string.IsNullOrWhiteSpace(pendingCode))
                     {
                         var diag = await TryBuildReceiveDiagAsync(email, CancellationToken.None);
@@ -257,7 +257,7 @@
                             if ((pendingConfirmErr ?? "").Contains("CODE_INVALID", StringComparison.OrdinalIgnoreCase))
                             {
                                 _ = await AccountTelegramTools.ResendTwoFactorRecoveryEmailAsync(account.Id, CancellationToken.None);
-                                var retryCode = await TryWaitTelegramCodeAsync(email, DateTimeOffset.UtcNow, CancellationToken.None, allowOlder: true);
+                                var retryCode = await TryWaitTelegramCodeAsync(email, DateTimeOffset.UtcNow, CancellationToken.None, TelegramMailCodePurpose.RecoveryEmail, allowOlder: true);
                                 if (!string.IsNullOrWhiteSpace(retryCode))
                                 {
                                     var (retryOk, retryErr) = await AccountTelegramTools.ConfirmTwoFactorRecoveryEmailAsync(
@@ -386,7 +386,7 @@
                 }
                 else
                 {
-                    var code = await TryWaitTelegramCodeAsync(email, startUtc, CancellationToken.None);
+                    var code = await TryWaitTelegramCodeAsync(email, startUtc, CancellationToken.None, TelegramMailCodePurpose.LoginEmail);
                     if (string.IsNullOrWhiteSpace(code))
                     {
                         okLogin = false;
@@ -409,7 +409,7 @@
                                 || (confirmErr ?? "").Contains("EMAIL_TOKEN_INVALID", StringComparison.OrdinalIgnoreCase))
                             {
                                 _ = await AccountTelegramTools.SetLoginEmailAsync(account.Id, email, CancellationToken.None);
-                                var retryCode = await TryWaitTelegramCodeAsync(email, DateTimeOffset.UtcNow, CancellationToken.None);
+                                var retryCode = await TryWaitTelegramCodeAsync(email, DateTimeOffset.UtcNow, CancellationToken.None, TelegramMailCodePurpose.LoginEmail);
                                 if (!string.IsNullOrWhiteSpace(retryCode))
                                 {
                                     var (retryOk, retryErr) = await AccountTelegramTools.ConfirmLoginEmailAsync(account.Id, retryCode, CancellationToken.None);
@@ -439,7 +439,12 @@
         return (kind, msgAll);
     }
 
-    private async Task<string?> TryWaitTelegramCodeAsync(string toEmail, DateTimeOffset startUtc, CancellationToken cancellationToken, bool allowOlder = false)
+    private async Task<string?> TryWaitTelegramCodeAsync(
+        string toEmail,
+        DateTimeOffset startUtc,
+        CancellationToken cancellationToken,
+        TelegramMailCodePurpose purpose = TelegramMailCodePurpose.Any,
+        bool allowOlder = false)
     {
         var timeout = TimeSpan.FromSeconds(Math.Clamp(pollTimeoutSeconds, 10, 300));
         var interval = TimeSpan.FromSeconds(Math.Clamp(pollIntervalSeconds, 2, 30));
@@ -491,13 +496,24 @@
                 continue;
             }
 
+            var candidates = new List<(DateTimeOffset CreatedUtc, TelegramPanel.Web.Services.CloudMailEmail Mail)>();
             foreach (var mail in FilterCandidates(emails, toEmail))
             {
                 var createdUtc = TryParseUtc(mail.CreateTime);
                 if (createdUtc.HasValue && createdUtc.Value < allowOldBeforeUtc)
                     continue;
 
-                var code = TryExtractCode(mail);
+                // 邮件列表可能包含“找回邮箱验证码 + 登录邮箱验证码”，必须按用途过滤，否则容易拿到错误验证码导致 CODE_INVALID。
+                var merged = BuildMergedText(mail);
+                if (!IsMatchPurpose(merged, purpose))
+                    continue;
+
+                candidates.Add((createdUtc ?? DateTimeOffset.MinValue, mail));
+            }
+
+            foreach (var c in candidates.OrderByDescending(x => x.CreatedUtc))
+            {
+                var code = TryExtractCode(c.Mail);
                 if (!string.IsNullOrWhiteSpace(code))
                     return code;
             }
@@ -506,6 +522,50 @@
         }
 
         return null;
+    }
+
+    private enum TelegramMailCodePurpose
+    {
+        Any = 0,
+        RecoveryEmail = 1,
+        LoginEmail = 2
+    }
+
+    private static bool IsMatchPurpose(string merged, TelegramMailCodePurpose purpose)
+    {
+        merged = (merged ?? string.Empty).Trim();
+        if (merged.Length == 0)
+            return purpose == TelegramMailCodePurpose.Any;
+
+        if (purpose == TelegramMailCodePurpose.Any)
+            return true;
+
+        var lower = merged.ToLowerInvariant();
+
+        // 示例：
+        // - 找回邮箱："... verify your new password recovery email ..."
+        // - 登录邮箱："... verify your email for Login."
+        if (purpose == TelegramMailCodePurpose.RecoveryEmail)
+        {
+            return (lower.Contains("recovery") && lower.Contains("email") && lower.Contains("verify"))
+                   || lower.Contains("password recovery email");
+        }
+
+        if (purpose == TelegramMailCodePurpose.LoginEmail)
+        {
+            return (lower.Contains("verify") && lower.Contains("email") && lower.Contains("login"))
+                   && !lower.Contains("recovery");
+        }
+
+        return true;
+    }
+
+    private static string BuildMergedText(TelegramPanel.Web.Services.CloudMailEmail mail)
+    {
+        var subject = mail.Subject ?? "";
+        var text = mail.Text ?? "";
+        var html = mail.Content ?? "";
+        return $"{subject}\n{text}\n{StripHtml(html)}";
     }
 
     private static IEnumerable<TelegramPanel.Web.Services.CloudMailEmail> FilterCandidates(
