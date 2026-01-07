@@ -207,9 +207,16 @@ public sealed class TelegramEmailCodeService : ITelegramEmailCodeService
         var html = mail.Content ?? "";
         var merged = $"{subject}\n{text}\n{StripHtml(html)}";
 
-        var m = Regex.Match(merged, "(?i)your\\s+code\\s*[-–—]\\s*(\\d{5,6})");
+        // 优先匹配 Telegram 常见模板（尽量减少误判）
+        var m = Regex.Match(merged, @"(?i)\byour\s+code\s+is\s*[:：]?\s*(\d{5,6})\b");
         if (m.Success) return m.Groups[1].Value;
-        m = Regex.Match(merged, "(?i)your\\s+code\\s+is\\s*[:：]?\\s*(\\d{5,6})");
+
+        // 兼容部分邮件模板：Login code: 12345
+        m = Regex.Match(merged, @"(?i)\blogin\s+code\s*[:：]?\s*(\d{5,6})\b");
+        if (m.Success) return m.Groups[1].Value;
+
+        // 匹配带破折号的格式 "your code - 12345"
+        m = Regex.Match(merged, @"(?i)\byour\s+code\s*[-–—]\s*(\d{5,6})\b");
         if (m.Success) return m.Groups[1].Value;
 
         var matches = Regex.Matches(merged, "\\b\\d{5,6}\\b");
@@ -227,4 +234,3 @@ public sealed class TelegramEmailCodeService : ITelegramEmailCodeService
         return Regex.Replace(html, "<.*?>", " ").Replace("&nbsp;", " ").Trim();
     }
 }
-
