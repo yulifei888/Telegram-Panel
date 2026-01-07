@@ -16,6 +16,7 @@ public class DataSyncService
     private readonly GroupManagementService _groupManagement;
     private readonly IChannelService _channelService;
     private readonly IGroupService _groupService;
+    private readonly AccountTelegramToolsService _telegramTools;
     private readonly ILogger<DataSyncService> _logger;
 
     public DataSyncService(
@@ -24,6 +25,7 @@ public class DataSyncService
         GroupManagementService groupManagement,
         IChannelService channelService,
         IGroupService groupService,
+        AccountTelegramToolsService telegramTools,
         ILogger<DataSyncService> logger)
     {
         _accountManagement = accountManagement;
@@ -31,6 +33,7 @@ public class DataSyncService
         _groupManagement = groupManagement;
         _channelService = channelService;
         _groupService = groupService;
+        _telegramTools = telegramTools;
         _logger = logger;
     }
 
@@ -117,11 +120,34 @@ public class DataSyncService
                 try
                 {
                     var (statusSummary, statusDetails) = AccountTelegramToolsService.MapTelegramException(ex);
-                    account.TelegramStatusOk = false;
-                    account.TelegramStatusSummary = statusSummary;
-                    account.TelegramStatusDetails = statusDetails;
-                    account.TelegramStatusCheckedAtUtc = DateTime.UtcNow;
-                    await _accountManagement.UpdateAccountAsync(account);
+                    var updatedByProbe = false;
+                    if (string.Equals(statusSummary, "连接失败", StringComparison.OrdinalIgnoreCase))
+                    {
+                        // 同步操作里遇到的“连接失败”有可能是误判：这里做一次轻量探测（等同于“刷新账号状态”不勾深度探测），避免把存活账号标成掉线。
+                        try
+                        {
+                            var probe = await _telegramTools.RefreshAccountStatusAsync(account.Id, probeCreateChannel: false, cancellationToken: cancellationToken);
+                            if (!string.Equals(probe.Summary, "连接失败", StringComparison.OrdinalIgnoreCase)
+                                && !string.Equals(probe.Summary, "已取消", StringComparison.OrdinalIgnoreCase))
+                            {
+                                // RefreshAccountStatusAsync 内部已持久化账号状态，这里避免覆盖回“连接失败”。
+                                updatedByProbe = true;
+                            }
+                        }
+                        catch (Exception probeEx)
+                        {
+                            _logger.LogWarning(probeEx, "Account sync fallback status probe failed: {AccountId}", account.Id);
+                        }
+                    }
+
+                    if (!updatedByProbe)
+                    {
+                        account.TelegramStatusOk = false;
+                        account.TelegramStatusSummary = statusSummary;
+                        account.TelegramStatusDetails = statusDetails;
+                        account.TelegramStatusCheckedAtUtc = DateTime.UtcNow;
+                        await _accountManagement.UpdateAccountAsync(account);
+                    }
                 }
                 catch (Exception statusEx)
                 {
