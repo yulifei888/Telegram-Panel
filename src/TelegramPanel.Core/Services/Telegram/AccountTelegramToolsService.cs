@@ -1152,6 +1152,9 @@ public class AccountTelegramToolsService
                 "邮箱验证码已过期（EMAIL_HASH_EXPIRED）",
                 "请点击“重发验证码”，并使用最新邮件中的验证码。" + Environment.NewLine + msg);
 
+        if (msg.Contains("EMAIL_NOT_SETUP", StringComparison.OrdinalIgnoreCase))
+            return ("登录邮箱未启用（EMAIL_NOT_SETUP）", "该账号未处于可设置/可变更登录邮箱的状态（通常需要登录流程触发设置）。" + Environment.NewLine + msg);
+
         if (msg.Contains("EMAIL_UNCONFIRMED", StringComparison.OrdinalIgnoreCase))
         {
             var m = System.Text.RegularExpressions.Regex.Match(msg, "(EMAIL_UNCONFIRMED(?:_[A-Z0-9]+)?)", System.Text.RegularExpressions.RegexOptions.IgnoreCase);

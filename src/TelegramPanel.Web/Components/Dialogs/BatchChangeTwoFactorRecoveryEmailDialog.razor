@@ -55,7 +55,7 @@
             @if (accounts.Count > 0)
             {
                 <MudAlert Severity="Severity.Info" Variant="Variant.Outlined" Dense="true">
-                    已选账号：@accounts.Count；进度：@processed/@accounts.Count；成功：@success；失败：@failed
+                    已选账号：@accounts.Count；进度：@processed/@accounts.Count；成功：@success；失败：@failed；跳过：@skipped
                 </MudAlert>
             }
 
@@ -71,7 +71,7 @@
                     <RowTemplate>
                         <MudTd DataLabel="手机号">@context.Phone</MudTd>
                         <MudTd DataLabel="邮箱">@context.Email</MudTd>
-                        <MudTd DataLabel="结果">@(context.Success ? "成功" : "失败")</MudTd>
+                        <MudTd DataLabel="结果">@context.Result</MudTd>
                         <MudTd DataLabel="信息">@(context.Message ?? "-")</MudTd>
                     </RowTemplate>
                 </MudTable>
@@ -96,6 +96,7 @@
     private int processed;
     private int success;
     private int failed;
+    private int skipped;
 
     private string cloudMailBaseUrl = "";
     private string cloudMailToken = "";
@@ -166,6 +167,7 @@
         processed = 0;
         success = 0;
         failed = 0;
+        skipped = 0;
         results.Clear();
 
         try
@@ -175,14 +177,17 @@
                 var phoneDigits = PhoneNumberFormatter.NormalizeToDigits(a.Phone);
                 var email = string.IsNullOrWhiteSpace(phoneDigits) ? "" : $"{phoneDigits}@{domain}";
 
-                var (ok, msg) = await ProcessOneAsync(a, email);
+                var (kind, msg) = await ProcessOneAsync(a, email);
                 processed++;
-                if (ok) success++; else failed++;
-                results.Add(new ResultRow(a.DisplayPhone, email, ok, msg));
+                if (kind == ResultKind.Success) success++;
+                else if (kind == ResultKind.Failed) failed++;
+                else skipped++;
+
+                results.Add(new ResultRow(a.DisplayPhone, email, KindToText(kind), msg));
                 StateHasChanged();
             }
 
-            Snackbar.Add($"批量换绑完成：成功 {success}/{accounts.Count}，失败 {failed}/{accounts.Count}", failed == 0 ? Severity.Success : Severity.Warning);
+            Snackbar.Add($"批量换绑完成：成功 {success}/{accounts.Count}，失败 {failed}/{accounts.Count}，跳过 {skipped}/{accounts.Count}", failed == 0 ? Severity.Success : Severity.Warning);
         }
         catch (Exception ex)
         {
@@ -194,14 +199,15 @@
         }
     }
 
-    private async Task<(bool Ok, string? Message)> ProcessOneAsync(Account account, string email)
+    private async Task<(ResultKind Kind, string? Message)> ProcessOneAsync(Account account, string email)
     {
         if (string.IsNullOrWhiteSpace(email))
-            return (false, "手机号无效，无法生成邮箱");
+            return (ResultKind.Failed, "手机号无效，无法生成邮箱");
 
         var messages = new List<string>();
         var okRecovery = true;
         var okLogin = true;
+        var loginKind = ResultKind.Success;
 
         // 1) 找回邮箱（2FA）
         var effectivePassword = useStoredPasswords
@@ -217,7 +223,7 @@
         else
         {
             var startUtc = DateTimeOffset.UtcNow;
-            var (sent, err, _) = await AccountTelegramTools.SetTwoFactorRecoveryEmailAsync(
+            var (sent, err, pattern) = await AccountTelegramTools.SetTwoFactorRecoveryEmailAsync(
                 accountId: account.Id,
                 currentPassword: effectivePassword,
                 email: email,
@@ -279,6 +285,10 @@
                 {
                     messages.Add($"找回邮箱失败：{err}");
                 }
+            }
+            else if (string.IsNullOrWhiteSpace(pattern))
+            {
+                messages.Add("找回邮箱无需确认（可能已是目标邮箱）");
             }
             else if (!autoConfirm)
             {
@@ -343,10 +353,12 @@
             if (!statusOk)
             {
                 okLogin = false;
+                loginKind = ResultKind.Failed;
                 messages.Add($"登录邮箱失败：获取状态失败：{statusErr}");
             }
             else if (!hasLoginEmail && !trySetLoginEmailWhenMissing)
             {
+                loginKind = ResultKind.Skipped;
                 messages.Add("登录邮箱已跳过：该账号未设置登录邮箱（Telegram 未要求配置时，通常无法在已登录状态下直接新增）");
             }
             else
@@ -355,8 +367,18 @@
                 var (sent, err, pattern) = await AccountTelegramTools.SetLoginEmailAsync(account.Id, email, CancellationToken.None);
                 if (!sent)
                 {
-                    okLogin = false;
-                    messages.Add($"登录邮箱失败：{err}");
+                    var msg = err ?? "未知错误";
+                    if (msg.Contains("EMAIL_NOT_SETUP", StringComparison.OrdinalIgnoreCase))
+                    {
+                        loginKind = ResultKind.Skipped;
+                        messages.Add($"登录邮箱不支持：{msg}");
+                    }
+                    else
+                    {
+                        okLogin = false;
+                        loginKind = ResultKind.Failed;
+                        messages.Add($"登录邮箱失败：{msg}");
+                    }
                 }
                 else if (!autoConfirm)
                 {
@@ -368,6 +390,7 @@
                     if (string.IsNullOrWhiteSpace(code))
                     {
                         okLogin = false;
+                        loginKind = ResultKind.Failed;
                         var diag = await TryBuildReceiveDiagAsync(email, CancellationToken.None);
                         messages.Add($"登录邮箱收码超时（{pollTimeoutSeconds}s）{(string.IsNullOrWhiteSpace(diag) ? "" : "：" + diag)}");
                     }
@@ -381,6 +404,7 @@
                         else
                         {
                             okLogin = false;
+                            loginKind = ResultKind.Failed;
                             if ((confirmErr ?? "").Contains("CODE_INVALID", StringComparison.OrdinalIgnoreCase)
                                 || (confirmErr ?? "").Contains("EMAIL_TOKEN_INVALID", StringComparison.OrdinalIgnoreCase))
                             {
@@ -392,6 +416,7 @@
                                     if (retryOk)
                                     {
                                         okLogin = true;
+                                        loginKind = ResultKind.Success;
                                         messages.Add("登录邮箱已确认（重发后重试成功）");
                                     }
                                     else
@@ -409,9 +434,9 @@
             }
         }
 
-        var okAll = changeLoginEmail ? okLogin : okRecovery;
+        var kind = changeLoginEmail ? loginKind : (okRecovery ? ResultKind.Success : ResultKind.Failed);
         var msgAll = messages.Count == 0 ? null : string.Join("；", messages);
-        return (okAll, msgAll);
+        return (kind, msgAll);
     }
 
     private async Task<string?> TryWaitTelegramCodeAsync(string toEmail, DateTimeOffset startUtc, CancellationToken cancellationToken, bool allowOlder = false)
@@ -589,5 +614,20 @@
 
     private void Cancel() => MudDialog.Close();
 
-    private sealed record ResultRow(string Phone, string Email, bool Success, string? Message);
+    private enum ResultKind
+    {
+        Success,
+        Failed,
+        Skipped
+    }
+
+    private static string KindToText(ResultKind kind) => kind switch
+    {
+        ResultKind.Success => "成功",
+        ResultKind.Failed => "失败",
+        ResultKind.Skipped => "跳过",
+        _ => "-"
+    };
+
+    private sealed record ResultRow(string Phone, string Email, string Result, string? Message);
 }
