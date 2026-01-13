@@ -282,14 +282,6 @@ public class TelegramClientPool : ITelegramClientPool, IDisposable
                 return;
             }
 
-            if (message.Contains("exception", StringComparison.OrdinalIgnoreCase)
-                || message.Contains("unhandled", StringComparison.OrdinalIgnoreCase)
-                || message.Contains("fatal", StringComparison.OrdinalIgnoreCase))
-            {
-                _logger.LogError("WTelegram({Level}): {Message}", level, message);
-                return;
-            }
-
             _logger.LogDebug("WTelegram({Level}): {Message}", level, message);
         };
     }

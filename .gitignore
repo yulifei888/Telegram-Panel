@@ -40,6 +40,11 @@ session数据/
 .DS_Store
 Thumbs.db
 
+# Python / docs site
+.venv/
+__pycache__/
+site/
+
 # SQLite
 *.db
 

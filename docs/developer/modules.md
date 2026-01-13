@@ -418,6 +418,7 @@ public IEnumerable<ModuleTaskDefinition> GetTasks(ModuleHostContext context)
 - 在编辑器里做基础校验：未选择账号、未填写链接时 `CanSubmit=false` 并给出 `ValidationError`
 - `Total` 建议按“账号数 × 链接数”或“账号数 × 用户名数”等可预估的总步数计算，便于任务中心展示进度
 - 支持筛选：例如“账号分类筛选/搜索”，减少用户选择成本
+- 遵循宿主的账号排除规则：默认不展示 `Category.ExcludeFromOperations=true` 的账号（常用于“工作账号”）；如你的模块确实需要，也可以提供“包含工作账号”的开关
 
 ## 外部 API 扩展（API）
 

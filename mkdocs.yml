@@ -1,0 +1,47 @@
+site_name: Telegram Panel 文档
+site_description: Telegram Panel 使用文档（面向使用者）
+repo_url: https://github.com/moeacgx/Telegram-Panel
+repo_name: moeacgx/Telegram-Panel
+
+docs_dir: docs
+
+exclude_docs: |
+  README.md
+
+theme:
+  name: material
+  language: zh
+  features:
+    - content.code.copy
+    - navigation.sections
+    - navigation.top
+
+plugins:
+  - search
+
+markdown_extensions:
+  - admonition
+  - tables
+  - toc:
+      permalink: true
+
+nav:
+  - 首页: index.md
+  - 快速开始:
+      - 安装部署: getting-started/installation.md
+      - 更新升级: getting-started/update.md
+      - 常见问题: getting-started/faq.md
+  - 使用指南:
+      - 防冻结指南: guides/anti-freeze.md
+      - 账号导入: guides/account-import.md
+      - 同步说明: guides/sync.md
+  - 部署与运维:
+      - 反向代理: deployment/reverse-proxy.md
+      - Bot Webhook: deployment/bot-webhook.md
+  - 参考:
+      - 配置与数据目录: reference/configuration.md
+      - 数据库: reference/database.md
+      - API: reference/api.md
+  - 开发:
+      - 模块开发: developer/modules.md
+      - 文档维护: developer/documentation.md

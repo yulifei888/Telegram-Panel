@@ -1,4 +1,5 @@
 using System.Text.Json;
+using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging;
 using SixLabors.ImageSharp;
 using SixLabors.ImageSharp.Formats.Jpeg;
@@ -18,17 +19,20 @@ public class BotTelegramService
     private readonly BotManagementService _botManagement;
     private readonly TelegramBotApiClient _api;
     private readonly BotUpdateHub _updateHub;
+    private readonly IConfiguration _configuration;
     private readonly ILogger<BotTelegramService> _logger;
 
     public BotTelegramService(
         BotManagementService botManagement,
         TelegramBotApiClient api,
         BotUpdateHub updateHub,
+        IConfiguration configuration,
         ILogger<BotTelegramService> logger)
     {
         _botManagement = botManagement;
         _api = api;
         _updateHub = updateHub;
+        _configuration = configuration;
         _logger = logger;
     }
 
@@ -202,6 +206,12 @@ public class BotTelegramService
         if (seconds < 1) seconds = 1;
         if (seconds > 120) seconds = 120;
         return true;
+    }
+
+    private static int ReadInt(IConfiguration configuration, string key, int defaultValue)
+    {
+        var raw = (configuration[key] ?? "").Trim();
+        return int.TryParse(raw, out var v) ? v : defaultValue;
     }
 
     /// <summary>
@@ -830,53 +840,107 @@ public sealed record BotAdminRights(
 
         var botUserId = await GetBotUserIdAsync(bot.Token, cancellationToken);
 
+        var delayMs = ReadInt(_configuration, "Telegram:DefaultDelayMs", 2000);
+        if (delayMs < 0) delayMs = 0;
+        if (delayMs > 60000) delayMs = 60000;
+
+        var maxRetries = ReadInt(_configuration, "Telegram:MaxRetries", 0);
+        if (maxRetries < 0) maxRetries = 0;
+        if (maxRetries > 10) maxRetries = 10;
+
         var ok = 0;
-        foreach (var chatId in distinctIds)
+        for (var index = 0; index < distinctIds.Count; index++)
         {
+            var chatId = distinctIds[index];
             cancellationToken.ThrowIfCancellationRequested();
 
-            try
+            var attempt = 0;
+            while (true)
             {
-                var (canBan, reason) = await CanBotBanMembersAsync(bot.Token, chatId, botUserId, cancellationToken);
-                if (!canBan)
-                    throw new InvalidOperationException(reason);
-
-                // 目标如果是管理员：Telegram 不允许直接 ban/kick 管理员，需先取消管理员再踢出
-                var targetStatus = await GetChatMemberStatusAsync(bot.Token, chatId, userId, cancellationToken);
-                if (string.Equals(targetStatus, "creator", StringComparison.OrdinalIgnoreCase))
-                    throw new InvalidOperationException("目标是频道创建者，无法踢出/封禁");
-
-                if (string.Equals(targetStatus, "administrator", StringComparison.OrdinalIgnoreCase))
-                {
-                    var (canPromote, promoteReason) = await CanBotPromoteMembersAsync(bot.Token, chatId, botUserId, cancellationToken);
-                    if (!canPromote)
-                        throw new InvalidOperationException($"目标是管理员，且无法取消管理员权限：{promoteReason}");
-
-                    await DemoteChatMemberAsync(bot.Token, chatId, userId, cancellationToken);
-                }
-
                 try
                 {
-                    await BanOrKickInternalAsync(bot.Token, chatId, userId, permanentBan, cancellationToken);
+                    var (canBan, reason) = await CanBotBanMembersAsync(bot.Token, chatId, botUserId, cancellationToken);
+                    if (!canBan)
+                        throw new InvalidOperationException(reason);
+
+                    // 目标如果是管理员：Telegram 不允许直接 ban/kick 管理员，需先取消管理员再踢出
+                    var targetStatus = await GetChatMemberStatusAsync(bot.Token, chatId, userId, cancellationToken);
+                    if (string.Equals(targetStatus, "creator", StringComparison.OrdinalIgnoreCase))
+                        throw new InvalidOperationException("目标是频道创建者，无法踢出/封禁");
+
+                    if (string.Equals(targetStatus, "administrator", StringComparison.OrdinalIgnoreCase))
+                    {
+                        var (canPromote, promoteReason) = await CanBotPromoteMembersAsync(bot.Token, chatId, botUserId, cancellationToken);
+                        if (!canPromote)
+                            throw new InvalidOperationException($"目标是管理员，且无法取消管理员权限：{promoteReason}");
+
+                        await DemoteChatMemberAsync(bot.Token, chatId, userId, cancellationToken);
+                    }
+
+                    try
+                    {
+                        await BanOrKickInternalAsync(bot.Token, chatId, userId, permanentBan, cancellationToken);
+                    }
+                    catch (InvalidOperationException ex) when (IsUserIsAdministratorError(ex.Message))
+                    {
+                        // 兜底：即使前面没识别到/状态变化，也尝试“先降权再踢”
+                        var (canPromote, promoteReason) = await CanBotPromoteMembersAsync(bot.Token, chatId, botUserId, cancellationToken);
+                        if (!canPromote)
+                            throw new InvalidOperationException($"目标是管理员，且无法取消管理员权限：{promoteReason}");
+
+                        await DemoteChatMemberAsync(bot.Token, chatId, userId, cancellationToken);
+                        await BanOrKickInternalAsync(bot.Token, chatId, userId, permanentBan, cancellationToken);
+                    }
+
+                    ok++;
+                    break;
                 }
-                catch (InvalidOperationException ex) when (IsUserIsAdministratorError(ex.Message))
+                catch (InvalidOperationException ex) when (TryGetRetryAfterSeconds(ex.Message, out var seconds))
                 {
-                    // 兜底：即使前面没识别到/状态变化，也尝试“先降权再踢”
-                    var (canPromote, promoteReason) = await CanBotPromoteMembersAsync(bot.Token, chatId, botUserId, cancellationToken);
-                    if (!canPromote)
-                        throw new InvalidOperationException($"目标是管理员，且无法取消管理员权限：{promoteReason}");
+                    attempt++;
+                    if (attempt > maxRetries)
+                    {
+                        failures[chatId] = ex.Message;
+                        _logger.LogWarning(
+                            "BanChatMember hit rate limit but retries exceeded: bot={BotId} chat={ChatId} user={UserId} retryAfter={Seconds}s",
+                            botId,
+                            chatId,
+                            userId,
+                            seconds);
+                        break;
+                    }
 
-                    await DemoteChatMemberAsync(bot.Token, chatId, userId, cancellationToken);
-                    await BanOrKickInternalAsync(bot.Token, chatId, userId, permanentBan, cancellationToken);
+                    _logger.LogWarning(
+                        "BanChatMember hit rate limit, retry after {Seconds}s (attempt {Attempt}/{Max}): bot={BotId} chat={ChatId} user={UserId}",
+                        seconds,
+                        attempt,
+                        maxRetries,
+                        botId,
+                        chatId,
+                        userId);
+
+                    await Task.Delay(TimeSpan.FromSeconds(seconds), cancellationToken);
                 }
-
-                ok++;
+                catch (Exception ex)
+                {
+                    failures[chatId] = ex.Message;
+                    _logger.LogWarning(
+                        "BanChatMember failed: bot={BotId} chat={ChatId} user={UserId} permanent={Permanent} error={Error}",
+                        botId,
+                        chatId,
+                        userId,
+                        permanentBan,
+                        ex.Message);
+                    _logger.LogDebug(ex, "BanChatMember debug details: bot={BotId} chat={ChatId} user={UserId}", botId, chatId, userId);
+                    break;
+                }
             }
-            catch (Exception ex)
+
+            // 降速：避免 Bot API 429
+            if (delayMs > 0 && index < distinctIds.Count - 1)
             {
-                var msg = ex.Message;
-                failures[chatId] = msg;
-                _logger.LogWarning(ex, "BanChatMember failed for bot {BotId} chat {ChatId} user {UserId} permanent {Permanent}", botId, chatId, userId, permanentBan);
+                var jitter = Random.Shared.Next(0, Math.Min(500, delayMs + 1));
+                await Task.Delay(delayMs + jitter, cancellationToken);
             }
         }
 

@@ -31,7 +31,6 @@
                      @bind-Value="onlyWaste"
                      @bind-Value:after="OnFiltersChanged"
                      Dense="true"
-                     Disabled="@loading"
                      Label="只看废号"
                      Class="tp-input-full-xs"
                      Style="min-width: 140px; flex: 0 1 160px;" />
@@ -64,6 +63,13 @@
                Disabled="@(loading || selectedAccounts.Count == 0)" OnClick="CleanupSelectedWasteAccounts" Size="Size.Small">
         清理废号（已选）
     </MudButton>
+    @if (onlyWaste)
+    {
+        <MudButton Variant="Variant.Outlined" Color="Color.Error" StartIcon="@Icons.Material.Filled.DeleteSweep"
+                   Disabled="@(loading || accounts.Count == 0)" OnClick="CleanupFilteredWasteAccounts" Size="Size.Small">
+            清理废号（筛选）
+        </MudButton>
+    }
     <MudButton Variant="Variant.Outlined" Color="Color.Error" StartIcon="@Icons.Material.Filled.DeleteSweep"
                Disabled="@loading" OnClick="CleanupAllWasteAccounts" Size="Size.Small">
         清理所有废号
@@ -1091,6 +1097,133 @@
                     telegramStatus[a.Id] = status;
 
                     if (!TelegramAccountWasteJudge.TryGetWasteReason(status, out var reason))
+                    {
+                        skipped++;
+                        continue;
+                    }
+
+                    await AccountManagement.PurgeAccountAsync(a.Id, _pageCts.Token);
+                    deleted++;
+                }
+                catch (Exception ex)
+                {
+                    failures.Add($"{a.DisplayPhone}：{ex.Message}");
+                }
+
+                StateHasChanged();
+            }
+
+            selectedAccounts.Clear();
+            await ReloadTable();
+
+            var summary = $"清理完成：删除 {deleted}，跳过 {skipped}，失败 {failures.Count}（共 {targets.Count}）";
+            Snackbar.Add(summary, failures.Count == 0 ? Severity.Success : Severity.Warning);
+
+            if (failures.Count > 0)
+            {
+                var details = string.Join(Environment.NewLine, failures.Take(80));
+                if (failures.Count > 80)
+                    details += Environment.NewLine + $"... 仅展示前 80 条（共 {failures.Count} 条）";
+
+                await DialogService.ShowMessageBox("失败明细（前 80 条）", details, "关闭");
+            }
+        }
+        catch (Exception ex)
+        {
+            Snackbar.Add($"批量清理失败：{ex.Message}", Severity.Error);
+        }
+        finally
+        {
+            loading = false;
+        }
+    }
+
+    private async Task CleanupFilteredWasteAccounts()
+    {
+        if (loading)
+            return;
+
+        var categoryId = filterCategoryId <= 0 ? (int?)null : filterCategoryId;
+        var targets = (await AccountManagement.QueryAccountsAsync(
+                categoryId: categoryId,
+                search: searchString,
+                onlyWaste: true,
+                cancellationToken: _pageCts.Token))
+            .Where(a => a.Id > 0)
+            .GroupBy(a => a.Id)
+            .Select(g => g.First())
+            .ToList();
+
+        if (targets.Count == 0)
+        {
+            Snackbar.Add("当前筛选条件下没有可清理的废号（需要先执行一次状态检测）", Severity.Info);
+            return;
+        }
+
+        loading = true;
+        try
+        {
+            bool? probeResult = await DialogService.ShowMessageBox(
+                "清理筛选废号",
+                $"将对筛选结果 {targets.Count} 个账号执行 Telegram 状态检测，并删除判定为废号的账号与 session 文件。\n\n是否进行深度探测（将对每个账号创建并删除一个测试频道，用于判断【创建频道接口是否被冻结】）？",
+                yesText: "深度检测并清理",
+                cancelText: "普通检测并清理");
+
+            var probe = probeResult == true;
+
+            // 批量风控检查：深度探测是敏感操作
+            if (probe && targets.Count > 0)
+            {
+                var batchCheck = RiskService.CheckBatchAccounts(targets);
+                if (batchCheck.HasRiskyAccounts)
+                {
+                    var parameters = new DialogParameters
+                    {
+                        ["Message"] = $"检测到 {batchCheck.RiskyCount} 个风险账号",
+                        ["DetailedMessage"] = batchCheck.GetRiskySummary(),
+                        ["ShowRecommendations"] = true,
+                        ["ShowExcludeOption"] = true,
+                        ["RiskyAccounts"] = batchCheck.RiskyAccounts.ToList()
+                    };
+                    var options = new DialogOptions { CloseOnEscapeKey = true, MaxWidth = MaxWidth.Large };
+                    var dialog = DialogService.Show<RiskWarningDialog>("批量操作风控警告", parameters, options);
+                    var dialogResult = await dialog.Result;
+
+                    if (dialogResult.Canceled)
+                    {
+                        loading = false;
+                        return;
+                    }
+
+                    if (dialogResult.Data is TelegramPanel.Core.Services.RiskWarningAction action
+                        && action == TelegramPanel.Core.Services.RiskWarningAction.ExcludeRisky)
+                    {
+                        targets = batchCheck.SafeAccounts.ToList();
+                        if (targets.Count == 0)
+                        {
+                            Snackbar.Add("排除风险账号后无剩余账号", Severity.Info);
+                            loading = false;
+                            return;
+                        }
+                    }
+                }
+            }
+
+            var deleted = 0;
+            var skipped = 0;
+            var failures = new List<string>();
+
+            foreach (var a in targets)
+            {
+                try
+                {
+                    var status = await AccountTelegramTools.RefreshAccountStatusAsync(
+                        a.Id,
+                        probeCreateChannel: probe,
+                        cancellationToken: _pageCts.Token);
+                    telegramStatus[a.Id] = status;
+
+                    if (!TelegramAccountWasteJudge.TryGetWasteReason(status, out _))
                     {
                         skipped++;
                         continue;

@@ -254,8 +254,8 @@
     private string apiId = "";
     private string apiHash = "";
     private int defaultDelay = 2000;
-    private int maxConcurrent = 3;
-    private bool autoRetry = true;
+    private int maxConcurrent = 1;
+    private bool autoRetry = false;
     private int maxRetries = 3;
     private bool autoSync = true;
     private int syncInterval = 6;
@@ -302,6 +302,11 @@
         // 从配置文件加载默认设置
         apiId = Configuration["Telegram:ApiId"] ?? "";
         apiHash = Configuration["Telegram:ApiHash"] ?? "";
+        defaultDelay = Configuration.GetValue("Telegram:DefaultDelayMs", 2000);
+        maxConcurrent = Configuration.GetValue("BatchTasks:MaxConcurrent", 1);
+        maxRetries = Configuration.GetValue("Telegram:MaxRetries", 0);
+        autoRetry = maxRetries > 0;
+        if (maxRetries <= 0) maxRetries = 3;
         autoSync = Configuration.GetValue("Sync:AutoSyncEnabled", false);
         syncInterval = Configuration.GetValue("Sync:IntervalHours", 6);
         botAutoSyncEnabled = Configuration.GetValue("Telegram:BotAutoSyncEnabled", false);
@@ -532,11 +537,45 @@
         return created;
     }
 
-    private Task SaveBatchConfig()
+    private async Task SaveBatchConfig()
     {
-        // TODO: 实现配置保存到文件
-        Snackbar.Add("批量操作配置已保存", Severity.Success);
-        return Task.CompletedTask;
+        if (defaultDelay < 1000 || defaultDelay > 10000)
+        {
+            Snackbar.Add("默认操作间隔范围应为 1000-10000ms", Severity.Error);
+            return;
+        }
+
+        if (maxConcurrent < 1 || maxConcurrent > 10)
+        {
+            Snackbar.Add("最大并发任务数范围应为 1-10", Severity.Error);
+            return;
+        }
+
+        if (autoRetry && (maxRetries < 1 || maxRetries > 5))
+        {
+            Snackbar.Add("最大重试次数范围应为 1-5", Severity.Error);
+            return;
+        }
+
+        try
+        {
+            var root = await LoadOrCreateLocalConfigAsync();
+
+            var telegram = EnsureObject(root, "Telegram");
+            telegram["DefaultDelayMs"] = defaultDelay;
+            telegram["MaxRetries"] = autoRetry ? maxRetries : 0;
+
+            var batchTasks = EnsureObject(root, "BatchTasks");
+            batchTasks["MaxConcurrent"] = maxConcurrent;
+
+            await SaveLocalConfigAsync(root);
+            Snackbar.Add("批量操作配置已保存（配置热重载后生效）", Severity.Success);
+            StateHasChanged();
+        }
+        catch (Exception ex)
+        {
+            Snackbar.Add($"保存失败：{ex.Message}（路径：{LocalConfigPath}）", Severity.Error);
+        }
     }
 
     private Task SaveLogConfig()

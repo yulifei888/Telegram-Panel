@@ -1176,6 +1176,12 @@ public class AccountTelegramToolsService
         if (msg.Contains("FROZEN_METHOD_INVALID", StringComparison.OrdinalIgnoreCase))
             return ("账号被冻结（FROZEN_METHOD_INVALID）", "Telegram 提示该账号/ApiId 的某些接口被冻结（常见为创建频道接口）。" + Environment.NewLine + msg);
 
+        if (msg.Contains("FLOOD_WAIT", StringComparison.OrdinalIgnoreCase))
+            return ("触发限流（FLOOD_WAIT）", msg);
+
+        if (msg.Contains("CHANNEL_MONOFORUM_UNSUPPORTED", StringComparison.OrdinalIgnoreCase))
+            return ("群组接口不支持（CHANNEL_MONOFORUM_UNSUPPORTED）", msg);
+
         if (msg.Contains("AUTH_KEY_UNREGISTERED", StringComparison.OrdinalIgnoreCase))
             return ("Session 失效（AUTH_KEY_UNREGISTERED）", msg);
 
