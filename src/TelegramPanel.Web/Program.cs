@@ -241,12 +241,34 @@ catch (FileNotFoundException ex)
 }
 
 // 配置 Serilog
-Log.Logger = new LoggerConfiguration()
-    .ReadFrom.Configuration(builder.Configuration)
-    .Enrich.FromLogContext()
-    .WriteTo.Console()
-    .WriteTo.File("logs/telegram-panel-.log", rollingInterval: RollingInterval.Day)
-    .CreateLogger();
+static int ReadRetainedFileCountLimit(IConfiguration configuration)
+{
+    var raw = (configuration["Serilog:RetainedFileCountLimit"] ?? "").Trim();
+    if (!int.TryParse(raw, out var v))
+        return 30;
+    if (v < 1) return 1;
+    if (v > 3650) return 3650;
+    return v;
+}
+
+var retainedFileCountLimit = ReadRetainedFileCountLimit(builder.Configuration);
+var serilogEnabled = builder.Configuration.GetValue("Serilog:Enabled", false);
+
+if (!serilogEnabled)
+{
+    Log.Logger = new LoggerConfiguration()
+        .MinimumLevel.Fatal()
+        .CreateLogger();
+}
+else
+{
+    Log.Logger = new LoggerConfiguration()
+        .ReadFrom.Configuration(builder.Configuration)
+        .Enrich.FromLogContext()
+        .WriteTo.Console()
+        .WriteTo.File("logs/telegram-panel-.log", rollingInterval: RollingInterval.Day, retainedFileCountLimit: retainedFileCountLimit)
+        .CreateLogger();
+}
 
 builder.Host.UseSerilog();
 

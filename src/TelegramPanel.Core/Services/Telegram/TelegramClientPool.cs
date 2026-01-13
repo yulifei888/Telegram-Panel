@@ -1,6 +1,7 @@
 using System.Collections.Concurrent;
 using System.Linq;
 using System.Reflection;
+using System.Threading;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging;
 using TelegramPanel.Core.Interfaces;
@@ -19,11 +20,13 @@ public class TelegramClientPool : ITelegramClientPool, IDisposable
     private readonly IConfiguration _configuration;
     private readonly ILogger<TelegramClientPool> _logger;
     private bool _disposed;
+    private static int _wtelegramLogConfigured;
 
     public TelegramClientPool(IConfiguration configuration, ILogger<TelegramClientPool> logger)
     {
         _configuration = configuration;
         _logger = logger;
+        ConfigureWTelegramLoggingOnce();
     }
 
     public int ActiveClientCount => _clients.Count;
@@ -253,5 +256,41 @@ public class TelegramClientPool : ITelegramClientPool, IDisposable
         {
             _logger.LogDebug(ex, "Failed to rebind WTelegram session ApiId (ignored)");
         }
+    }
+
+    private void ConfigureWTelegramLoggingOnce()
+    {
+        // WTelegramClient 默认会把大量底层网络/RPC trace 直接写到 Console，严重干扰面板日志查看。
+        // 这里把它重定向到宿主 ILogger，以便用 Serilog 的 MinimumLevel/Override 控制输出量。
+        if (Interlocked.Exchange(ref _wtelegramLogConfigured, 1) == 1)
+            return;
+
+        Helpers.Log = (level, message) =>
+        {
+            message = (message ?? "").TrimEnd();
+            if (message.Length == 0)
+                return;
+
+            // 说明：用户通常只关心“限流/错误”等关键信息；
+            // 像 MsgsAck / GetDialogs / RpcResult 这类底层 trace 即使在 WTelegram 的低 level 下也会非常多，
+            // 因此默认全部降为 Debug，仅将关键错误/限流提升到 Warning/Error，方便在面板里用 Warning 级别过滤出重点。
+
+            if (message.Contains("FLOOD_WAIT", StringComparison.OrdinalIgnoreCase)
+                || message.Contains("RpcError", StringComparison.OrdinalIgnoreCase))
+            {
+                _logger.LogWarning("WTelegram({Level}): {Message}", level, message);
+                return;
+            }
+
+            if (message.Contains("exception", StringComparison.OrdinalIgnoreCase)
+                || message.Contains("unhandled", StringComparison.OrdinalIgnoreCase)
+                || message.Contains("fatal", StringComparison.OrdinalIgnoreCase))
+            {
+                _logger.LogError("WTelegram({Level}): {Message}", level, message);
+                return;
+            }
+
+            _logger.LogDebug("WTelegram({Level}): {Message}", level, message);
+        };
     }
 }

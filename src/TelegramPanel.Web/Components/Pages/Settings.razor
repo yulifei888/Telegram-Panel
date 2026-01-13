@@ -205,13 +205,22 @@
                 <MudText Typo="Typo.h6">日志设置</MudText>
             </MudCardHeader>
             <MudCardContent>
-                <MudSelect @bind-Value="logLevel" Label="日志级别" Variant="Variant.Outlined">
+                <MudSwitch T="bool" @bind-Value="logEnabled" Color="Color.Primary" Class="mb-2">
+                    启用日志输出
+                </MudSwitch>
+                <MudText Typo="Typo.caption" Color="Color.Secondary">
+                    说明：关闭后会禁用 Serilog 输出（控制台/文件）。Docker 仍可能记录 stdout/stderr，建议同时在 docker-compose 配置日志滚动。
+                </MudText>
+
+                <MudSelect @bind-Value="logLevel" Label="日志级别" Variant="Variant.Outlined" Disabled="@(!logEnabled)"
+                           Class="mt-3">
                     <MudSelectItem Value='@("Debug")'>Debug</MudSelectItem>
                     <MudSelectItem Value='@("Information")'>Information</MudSelectItem>
                     <MudSelectItem Value='@("Warning")'>Warning</MudSelectItem>
                     <MudSelectItem Value='@("Error")'>Error</MudSelectItem>
                 </MudSelect>
                 <MudNumericField @bind-Value="logRetentionDays" Label="日志保留天数" Variant="Variant.Outlined" Class="mt-3"
+                                 Disabled="@(!logEnabled)"
                                  Min="1" Max="90" />
             </MudCardContent>
             <MudCardActions>
@@ -252,6 +261,7 @@
     private int syncInterval = 6;
     private bool botAutoSyncEnabled = false;
     private int botAutoSyncIntervalSeconds = 2;
+    private bool logEnabled = false;
     private string logLevel = "Information";
     private int logRetentionDays = 30;
     private bool syncing = false;
@@ -296,6 +306,9 @@
         syncInterval = Configuration.GetValue("Sync:IntervalHours", 6);
         botAutoSyncEnabled = Configuration.GetValue("Telegram:BotAutoSyncEnabled", false);
         botAutoSyncIntervalSeconds = Configuration.GetValue("Telegram:BotAutoSyncIntervalSeconds", 2);
+        logEnabled = Configuration.GetValue("Serilog:Enabled", false);
+        logLevel = (Configuration["Serilog:MinimumLevel:Default"] ?? "Information").Trim();
+        logRetentionDays = Configuration.GetValue("Serilog:RetainedFileCountLimit", 30);
         timeZoneId = Configuration["System:TimeZoneId"] ?? "";
         cloudMailBaseUrl = Configuration["CloudMail:BaseUrl"] ?? "";
         cloudMailDomain = Configuration["CloudMail:Domain"] ?? "";
@@ -528,9 +541,44 @@
 
     private Task SaveLogConfig()
     {
-        // TODO: 实现配置保存到文件
-        Snackbar.Add("日志配置已保存", Severity.Success);
-        return Task.CompletedTask;
+        return SaveLogConfigAsync();
+    }
+
+    private async Task SaveLogConfigAsync()
+    {
+        var level = (logLevel ?? "Information").Trim();
+        if (level is not ("Debug" or "Information" or "Warning" or "Error"))
+        {
+            Snackbar.Add("日志级别无效", Severity.Error);
+            return;
+        }
+
+        if (logRetentionDays < 1 || logRetentionDays > 90)
+        {
+            Snackbar.Add("日志保留天数范围应为 1-90", Severity.Error);
+            return;
+        }
+
+        try
+        {
+            var root = await LoadOrCreateLocalConfigAsync();
+            var serilog = EnsureObject(root, "Serilog");
+            serilog["Enabled"] = logEnabled;
+
+            var minimumLevel = EnsureObject(serilog, "MinimumLevel");
+            minimumLevel["Default"] = level;
+
+            // 程序使用按天滚动的日志文件，因此“保留天数”可以映射到“保留文件数”。
+            serilog["RetainedFileCountLimit"] = logRetentionDays;
+
+            await SaveLocalConfigAsync(root);
+            Snackbar.Add("日志配置已保存（重启后生效）", Severity.Success);
+            StateHasChanged();
+        }
+        catch (Exception ex)
+        {
+            Snackbar.Add($"保存失败：{ex.Message}（路径：{LocalConfigPath}）", Severity.Error);
+        }
     }
 
     private async Task SyncNow()

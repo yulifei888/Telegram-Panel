@@ -22,11 +22,9 @@ services:
       # 后台登录凭据文件（持久化到 ./docker-data/admin_auth.json）
       AdminAuth__CredentialsPath: "/data/admin_auth.json"
 
-      # 默认关闭，避免频繁调用 Telegram API；可在系统设置里开启并保存到 /data/appsettings.local.json
-      Sync__AutoSyncEnabled: "false"
-
-      # 默认关闭 bot 轮询自动同步（需要时可手动同步），使用Webhook建议开启
-      Telegram__BotAutoSyncEnabled: "true"
+      # 说明：这些“易变开关”建议通过面板「系统设置」保存到 /data/appsettings.local.json 来配置，
+      # 不要直接改 docker-compose.yml（否则 git pull 更新时容易冲突）。
+      # 注意：如果在这里设置了对应环境变量，会覆盖 /data/appsettings.local.json 的面板配置。
 
       # ========== Webhook 模式配置 ==========
       # 启用 Webhook 模式（启用后将使用 Webhook 替代轮询接收更新）
@@ -35,3 +33,10 @@ services:
       Telegram__WebhookBaseUrl: "${TP_TELEGRAM_WEBHOOK_BASE_URL:-}"
       # Webhook 验证密钥（用于验证 Telegram 请求，建议使用随机字符串）
       Telegram__WebhookSecretToken: "${TP_TELEGRAM_WEBHOOK_SECRET_TOKEN:-}"
+
+    # Docker 自身的 stdout/stderr 日志滚动，避免日志无限增长占满磁盘。
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "5"
