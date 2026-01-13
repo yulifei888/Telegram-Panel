@@ -98,7 +98,13 @@ docker compose up -d --build
 
 ### 反向代理（生产环境建议）
 
-见 `docs/reverse-proxy.md`（含 Nginx/Caddy + WebSocket）。
+如果你用宝塔面板（Nginx）部署，通常**直接用默认反向代理**到面板端口即可：
+
+- 目标 URL：`http://127.0.0.1:5000`（或你 compose 暴露的端口）
+- 记得在宝塔反代设置里开启/勾选 **WebSocket**（Blazor Server 需要）
+- HTTPS 建议在宝塔侧配置证书
+
+更完整的 Nginx/Caddy 配置参考：`docs/reverse-proxy.md`。
 
 ### Bot Webhook（可选）
 
