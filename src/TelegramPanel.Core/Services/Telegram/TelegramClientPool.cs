@@ -271,31 +271,22 @@ public class TelegramClientPool : ITelegramClientPool, IDisposable
             if (message.Length == 0)
                 return;
 
-            // 关键错误（例如 FLOOD_WAIT）即使来自高 verbosity level，也提升为 Warning，避免被 Debug 过滤掉。
+            // 说明：用户通常只关心“限流/错误”等关键信息；
+            // 像 MsgsAck / GetDialogs / RpcResult 这类底层 trace 即使在 WTelegram 的低 level 下也会非常多，
+            // 因此默认全部降为 Debug，仅将关键错误/限流提升到 Warning/Error，方便在面板里用 Warning 级别过滤出重点。
+
             if (message.Contains("FLOOD_WAIT", StringComparison.OrdinalIgnoreCase)
-                || message.Contains("RpcError", StringComparison.OrdinalIgnoreCase)
-                || message.Contains("ERROR", StringComparison.OrdinalIgnoreCase))
+                || message.Contains("RpcError", StringComparison.OrdinalIgnoreCase))
             {
                 _logger.LogWarning("WTelegram({Level}): {Message}", level, message);
                 return;
             }
 
-            // WTelegram 的 level 越大越啰嗦（常见 4/5 是大量 RPC/包级别日志）。
-            if (level <= 1)
+            if (message.Contains("exception", StringComparison.OrdinalIgnoreCase)
+                || message.Contains("unhandled", StringComparison.OrdinalIgnoreCase)
+                || message.Contains("fatal", StringComparison.OrdinalIgnoreCase))
             {
                 _logger.LogError("WTelegram({Level}): {Message}", level, message);
-                return;
-            }
-
-            if (level == 2)
-            {
-                _logger.LogWarning("WTelegram({Level}): {Message}", level, message);
-                return;
-            }
-
-            if (level == 3)
-            {
-                _logger.LogInformation("WTelegram({Level}): {Message}", level, message);
                 return;
             }
 
