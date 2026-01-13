@@ -96,26 +96,6 @@ docker compose up -d --build
 
 如果 `git stash pop` 出现冲突，按提示手动合并 `docker-compose.yml` 后再继续。
 
-## 账号导入（简要）
-
-面板支持多种导入/登录方式，常用的是“压缩包批量导入”：
-
-- 每个账号一个独立子文件夹
-- 子文件夹内放一个 `.json` + 一个 `.session`（文件名建议与文件夹同名）
-- Docker 部署下，导入后的 session 会写入：`./docker-data/sessions/`
-
-结构示例：
-
-```
-accounts.zip
-  ├─ 8613111111111
-  │   ├─ 8613111111111.json
-  │   └─ 8613111111111.session
-  └─ 8615119714541
-      ├─ 8615119714541.json
-      └─ 8615119714541.session
-```
-
 ### 反向代理（生产环境建议）
 
 见 `docs/reverse-proxy.md`（含 Nginx/Caddy + WebSocket）。
