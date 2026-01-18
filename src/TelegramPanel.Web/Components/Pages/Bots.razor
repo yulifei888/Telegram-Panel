@@ -275,7 +275,8 @@
 
         try
         {
-            var webhookUrl = $"{baseUrl.TrimEnd('/')}/api/bot/webhook/{Uri.EscapeDataString(token.Trim())}";
+            var pathToken = WebhookTokenHelper.ToWebhookPathToken(token.Trim());
+            var webhookUrl = $"{baseUrl.TrimEnd('/')}/api/bot/webhook/{pathToken}";
             await BotApi.SetWebhookAsync(
                 token: token.Trim(),
                 url: webhookUrl,

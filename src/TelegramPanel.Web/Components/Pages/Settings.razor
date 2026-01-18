@@ -209,7 +209,7 @@
                     启用日志输出
                 </MudSwitch>
                 <MudText Typo="Typo.caption" Color="Color.Secondary">
-                    说明：关闭后会禁用 Serilog 输出（控制台/文件）。Docker 仍可能记录 stdout/stderr，建议同时在 docker-compose 配置日志滚动。
+                    说明：关闭后仅输出 Error/Fatal（控制台），并停止写入日志文件。Docker 仍可能记录 stdout/stderr，建议同时在 docker-compose 配置日志滚动。
                 </MudText>
 
                 <MudSelect @bind-Value="logLevel" Label="日志级别" Variant="Variant.Outlined" Disabled="@(!logEnabled)"

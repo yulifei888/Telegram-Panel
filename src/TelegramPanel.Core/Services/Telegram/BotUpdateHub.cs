@@ -28,7 +28,12 @@ public sealed class BotUpdateHub : IAsyncDisposable
     private readonly Dictionary<string, BotPoller> _pollersByToken = new(StringComparer.Ordinal);
 
     // Webhook 模式下的接收器（token -> receiver），不启动轮询
-    private readonly Dictionary<string, BotWebhookReceiver> _webhookReceivers = new(StringComparer.Ordinal);
+    private readonly ConcurrentDictionary<string, BotWebhookReceiver> _webhookReceivers = new(StringComparer.Ordinal);
+
+    private static readonly TimeSpan WebhookTokenCacheTtl = TimeSpan.FromMinutes(5);
+    private readonly SemaphoreSlim _webhookTokenCacheGate = new(1, 1);
+    private DateTimeOffset _webhookTokenCacheBuiltAtUtc = DateTimeOffset.MinValue;
+    private Dictionary<string, string> _botTokenByWebhookPathToken = new(StringComparer.Ordinal);
 
     public BotUpdateHub(
         IServiceScopeFactory scopeFactory,
@@ -57,10 +62,19 @@ public sealed class BotUpdateHub : IAsyncDisposable
         if (string.IsNullOrWhiteSpace(token))
             return false;
 
+        if (_webhookReceivers.TryGetValue(token, out var fastReceiver))
+        {
+            fastReceiver.Inject(update);
+            return true;
+        }
+
+        BotWebhookReceiver receiver;
+
+        // 仅在“首次遇到某个 token”时加全局锁，避免高频 webhook 进入串行瓶颈。
         await _gate.WaitAsync(cancellationToken);
         try
         {
-            if (!_webhookReceivers.TryGetValue(token, out var receiver))
+            if (!_webhookReceivers.TryGetValue(token, out receiver!))
             {
                 // 验证 token 有效性并创建 receiver
                 using var scope = _scopeFactory.CreateScope();
@@ -72,14 +86,76 @@ public sealed class BotUpdateHub : IAsyncDisposable
                 receiver = new BotWebhookReceiver(bot.Id, token, _scopeFactory, _logger);
                 _webhookReceivers[token] = receiver;
             }
-
-            receiver.Inject(update);
-            return true;
         }
         finally
         {
             _gate.Release();
         }
+
+        receiver.Inject(update);
+        return true;
+    }
+
+    /// <summary>
+    /// 将 Webhook 路径中的 token（推荐为 SHA256(token)）解析为真实的 bot token。
+    /// </summary>
+    public async Task<string?> ResolveBotTokenFromWebhookPathAsync(string pathToken, CancellationToken cancellationToken)
+    {
+        pathToken = (pathToken ?? "").Trim();
+        if (string.IsNullOrWhiteSpace(pathToken))
+            return null;
+
+        // 兼容：若仍使用明文 bot token 作为路径（不推荐），直接返回。
+        if (WebhookTokenHelper.IsLikelyPlainBotToken(pathToken))
+            return pathToken;
+
+        if (!WebhookTokenHelper.IsSha256Hex(pathToken))
+            return null;
+
+        var builtAt = _webhookTokenCacheBuiltAtUtc;
+        if (builtAt != DateTimeOffset.MinValue
+            && DateTimeOffset.UtcNow - builtAt < WebhookTokenCacheTtl
+            && _botTokenByWebhookPathToken.TryGetValue(pathToken, out var cached))
+        {
+            return cached;
+        }
+
+        await _webhookTokenCacheGate.WaitAsync(cancellationToken);
+        try
+        {
+            builtAt = _webhookTokenCacheBuiltAtUtc;
+            if (builtAt == DateTimeOffset.MinValue || DateTimeOffset.UtcNow - builtAt >= WebhookTokenCacheTtl)
+                await RebuildWebhookTokenCacheAsync(cancellationToken);
+
+            return _botTokenByWebhookPathToken.TryGetValue(pathToken, out var token) ? token : null;
+        }
+        finally
+        {
+            _webhookTokenCacheGate.Release();
+        }
+    }
+
+    private async Task RebuildWebhookTokenCacheAsync(CancellationToken cancellationToken)
+    {
+        using var scope = _scopeFactory.CreateScope();
+        var botRepo = scope.ServiceProvider.GetRequiredService<IBotRepository>();
+        var bots = await botRepo.GetAllAsync();
+
+        var map = new Dictionary<string, string>(StringComparer.Ordinal);
+        foreach (var bot in bots)
+        {
+            if (!bot.IsActive || string.IsNullOrWhiteSpace(bot.Token))
+                continue;
+
+            var token = bot.Token.Trim();
+            if (string.IsNullOrWhiteSpace(token))
+                continue;
+
+            map[WebhookTokenHelper.ToWebhookPathToken(token)] = token;
+        }
+
+        _botTokenByWebhookPathToken = map;
+        _webhookTokenCacheBuiltAtUtc = DateTimeOffset.UtcNow;
     }
 
     /// <summary>

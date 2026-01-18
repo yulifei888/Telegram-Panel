@@ -15,6 +15,7 @@ using TelegramPanel.Web.Services;
 using Microsoft.Extensions.Logging;
 using Microsoft.AspNetCore.DataProtection;
 using Microsoft.Data.Sqlite;
+using System.Diagnostics;
 
 // 诊断：对某个目录下的 *.json/*.session 做一次“可转换/可校验”检查（不写数据库）
 // 用法：dotnet run --project src/TelegramPanel.Web -- --diag-session-dir "D:/path/to/dir"
@@ -254,23 +255,57 @@ static int ReadRetainedFileCountLimit(IConfiguration configuration)
 var retainedFileCountLimit = ReadRetainedFileCountLimit(builder.Configuration);
 var serilogEnabled = builder.Configuration.GetValue("Serilog:Enabled", false);
 
-if (!serilogEnabled)
+var loggerConfig = new LoggerConfiguration()
+    .Enrich.FromLogContext();
+
+if (serilogEnabled)
 {
-    Log.Logger = new LoggerConfiguration()
-        .MinimumLevel.Fatal()
-        .CreateLogger();
+    loggerConfig = loggerConfig
+        .ReadFrom.Configuration(builder.Configuration)
+        .WriteTo.File("logs/telegram-panel-.log", rollingInterval: RollingInterval.Day, retainedFileCountLimit: retainedFileCountLimit);
 }
 else
 {
-    Log.Logger = new LoggerConfiguration()
-        .ReadFrom.Configuration(builder.Configuration)
-        .Enrich.FromLogContext()
-        .WriteTo.Console()
-        .WriteTo.File("logs/telegram-panel-.log", rollingInterval: RollingInterval.Day, retainedFileCountLimit: retainedFileCountLimit)
-        .CreateLogger();
+    // 关闭“详细日志输出”时，仍保留 Error/Fatal：避免进程异常退出却完全看不到日志。
+    loggerConfig = loggerConfig.MinimumLevel.Error();
 }
 
+loggerConfig = loggerConfig.WriteTo.Console();
+Log.Logger = loggerConfig.CreateLogger();
+
 builder.Host.UseSerilog();
+
+// 兜底：即使日志配置被关闭/过滤，也尽量把致命异常打到 stderr
+AppDomain.CurrentDomain.UnhandledException += (_, e) =>
+{
+    try
+    {
+        if (e.ExceptionObject is Exception ex)
+            Log.Fatal(ex, "Unhandled exception (IsTerminating={IsTerminating})", e.IsTerminating);
+        else
+            Log.Fatal("Unhandled exception: {ExceptionObject} (IsTerminating={IsTerminating})", e.ExceptionObject, e.IsTerminating);
+    }
+    catch
+    {
+        // ignore
+    }
+};
+
+TaskScheduler.UnobservedTaskException += (_, e) =>
+{
+    try
+    {
+        Log.Error(e.Exception, "Unobserved task exception");
+    }
+    catch
+    {
+        // ignore
+    }
+    finally
+    {
+        e.SetObserved();
+    }
+};
 
 // Add services to the container.
 builder.Services.AddRazorComponents()
@@ -670,7 +705,8 @@ app.UseStaticFiles();
 app.UseAntiforgery();
 
 // Serilog 请求日志
-app.UseSerilogRequestLogging();
+if (serilogEnabled)
+    app.UseSerilogRequestLogging();
 
 app.UseAuthentication();
 app.UseAuthorization();
@@ -969,11 +1005,6 @@ app.MapPost("/api/bot/webhook/{secretToken}", async (
         }
     }
 
-    // 从路径中的 secretToken 提取 bot token
-    // 我们使用 SHA256(bot_token) 作为 URL 中的 secret，避免暴露真实 token
-    // 但更简单的方式是直接用 bot token（Telegram 官方也是这么做的）
-    // 这里我们假设 secretToken 就是 bot token 的一部分（安全的做法是用 hash）
-
     // 读取请求体
     using var reader = new System.IO.StreamReader(http.Request.Body);
     var body = await reader.ReadToEndAsync(cancellationToken);
@@ -989,10 +1020,16 @@ app.MapPost("/api/bot/webhook/{secretToken}", async (
         using var doc = System.Text.Json.JsonDocument.Parse(body);
         var update = doc.RootElement;
 
-        // 尝试从数据库查找匹配的 bot token
-        // 由于 URL 中不应该暴露完整 token，我们需要一个映射机制
-        // 这里简化处理：直接用 secretToken 作为查找键
-        var success = await updateHub.InjectWebhookUpdateAsync(secretToken, update.Clone(), cancellationToken);
+        var botToken = await updateHub.ResolveBotTokenFromWebhookPathAsync(secretToken, cancellationToken);
+        if (string.IsNullOrWhiteSpace(botToken))
+        {
+            logger.LogWarning("Webhook update rejected: unknown or inactive bot");
+            return Results.NotFound();
+        }
+
+        var sw = Stopwatch.StartNew();
+        var success = await updateHub.InjectWebhookUpdateAsync(botToken, update.Clone(), cancellationToken);
+        sw.Stop();
 
         if (!success)
         {
@@ -1000,8 +1037,11 @@ app.MapPost("/api/bot/webhook/{secretToken}", async (
             return Results.NotFound();
         }
 
-        logger.LogDebug("Webhook update processed: update_id={UpdateId}",
-            update.TryGetProperty("update_id", out var uid) ? uid.GetInt64() : 0);
+        var updateId = update.TryGetProperty("update_id", out var uid) ? uid.GetInt64() : 0;
+        if (sw.Elapsed > TimeSpan.FromSeconds(2))
+            logger.LogWarning("Webhook update processed slowly: update_id={UpdateId} elapsed_ms={ElapsedMs}", updateId, (long)sw.Elapsed.TotalMilliseconds);
+        else
+            logger.LogDebug("Webhook update processed: update_id={UpdateId} elapsed_ms={ElapsedMs}", updateId, (long)sw.Elapsed.TotalMilliseconds);
 
         return Results.Ok();
     }
@@ -1017,4 +1057,11 @@ app.MapPost("/api/bot/webhook/{secretToken}", async (
 
 Log.Information("Telegram Panel started");
 
-app.Run();
+try
+{
+    app.Run();
+}
+finally
+{
+    Log.CloseAndFlush();
+}
