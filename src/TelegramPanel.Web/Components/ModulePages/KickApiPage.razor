@@ -32,11 +32,41 @@
         <MudSwitch @bind-Value="permanentBan" Color="Color.Error" Disabled="@loading"
                    Label="永久封禁（否则仅踢出，可重新加入）" />
 
-        <MudSwitch @bind-Value="useAllChats" Disabled="@(loading || selectedBotId == 0)"
-                   Label="使用全部频道/群组（关闭后可手动输入 chat_id 列表）" />
+        <MudSwitch @bind-Value="useAllChats" @bind-Value:after="OnUseAllChatsChanged" Disabled="@(loading || selectedBotId == 0)"
+                   Label="使用全部频道/群组（关闭后可按分类筛选或输入 chat_id）" />
 
-        @if (!useAllChats && selectedBotId != 0)
+        @if (selectedBotId != 0 && !useAllChats)
         {
+            <MudStack direction="Row" AlignItems="AlignItems.Center" Spacing="2">
+                <MudText Typo="Typo.subtitle2">选择分类：@selectedCategories.Count / @categories.Count</MudText>
+                <MudSpacer />
+                <MudButton Variant="Variant.Outlined" Color="Color.Primary" OnClick="SelectAllCategories"
+                           Disabled="@(loading || categories.Count == 0)">
+                    全选
+                </MudButton>
+                <MudButton Variant="Variant.Text" Color="Color.Secondary" OnClick="ClearCategories"
+                           Disabled="@(loading || selectedCategories.Count == 0)">
+                    清空
+                </MudButton>
+            </MudStack>
+
+            <MudTable Items="@categories" Dense="true" Hover="true" Breakpoint="Breakpoint.Sm"
+                      MultiSelection="true" @bind-SelectedItems="selectedCategories">
+                <HeaderContent>
+                    <MudTh>分类</MudTh>
+                    <MudTh>说明</MudTh>
+                </HeaderContent>
+                <RowTemplate>
+                    <MudTd DataLabel="分类">@context.Name</MudTd>
+                    <MudTd DataLabel="说明">@(!string.IsNullOrWhiteSpace(context.Description) ? context.Description : "-")</MudTd>
+                </RowTemplate>
+                <NoRecordsContent>
+                    <MudText>暂无分类</MudText>
+                </NoRecordsContent>
+            </MudTable>
+
+            <MudSwitch @bind-Value="includeUncategorized" Disabled="@loading" Label="包含未分类" />
+
             <MudTextField @bind-Value="chatIdsText" Label="chat_id 列表（可选）" Variant="Variant.Outlined" Lines="3"
                           Placeholder="支持逗号/空格/换行分隔，例如：123,456,789"
                           Disabled="@loading" />
@@ -62,13 +92,25 @@
 
     private bool loading = true;
     private List<Bot> bots = new();
+    private List<BotChannelCategory> categories = new();
     private int selectedBotId = 0;
     private long userId;
     private bool permanentBan;
     private bool useAllChats = true;
+    private HashSet<BotChannelCategory> selectedCategories = new();
+    private bool includeUncategorized;
     private string chatIdsText = "";
 
-    private bool CanSubmit => !loading && userId > 0 && (selectedBotId == 0 || bots.Any(x => x.Id == selectedBotId));
+    private bool CanSubmit
+        => !loading
+           && userId > 0
+           && (selectedBotId == 0 || bots.Any(x => x.Id == selectedBotId))
+           && (
+               selectedBotId == 0
+               || useAllChats
+               || includeUncategorized
+               || selectedCategories.Count > 0
+               || !string.IsNullOrWhiteSpace(chatIdsText));
 
     protected override async Task OnInitializedAsync()
     {
@@ -78,6 +120,17 @@
                 .Where(b => b.IsActive)
                 .OrderBy(b => b.Id)
                 .ToList();
+
+            categories = (await BotManagement.GetCategoriesAsync())
+                .OrderBy(c => c.Name, StringComparer.OrdinalIgnoreCase)
+                .ToList();
+
+            // 默认不对“全部机器人/全部频道”开火
+            if (bots.Count > 0)
+            {
+                selectedBotId = bots[0].Id;
+                useAllChats = false;
+            }
         }
         catch (Exception ex)
         {
@@ -91,9 +144,40 @@
 
     private async Task OnSelectedBotChanged(int id)
     {
+        var previous = selectedBotId;
         selectedBotId = id;
         if (selectedBotId == 0)
             useAllChats = true;
+        else if (previous == 0)
+            useAllChats = false;
+
+        selectedCategories = new HashSet<BotChannelCategory>();
+        includeUncategorized = false;
+        chatIdsText = "";
+        await Task.CompletedTask;
+    }
+
+    private async Task OnUseAllChatsChanged()
+    {
+        if (useAllChats)
+        {
+            selectedCategories = new HashSet<BotChannelCategory>();
+            includeUncategorized = false;
+            chatIdsText = "";
+        }
+        await Task.CompletedTask;
+    }
+
+    private async Task SelectAllCategories()
+    {
+        selectedCategories = categories.ToHashSet();
+        await Task.CompletedTask;
+    }
+
+    private async Task ClearCategories()
+    {
+        selectedCategories = new HashSet<BotChannelCategory>();
+        includeUncategorized = false;
         await Task.CompletedTask;
     }
 
@@ -104,12 +188,62 @@
 
         var botId = selectedBotId;
         var runUseAllChats = botId == 0 ? true : useAllChats;
-        var chatIds = runUseAllChats ? new List<long>() : ParseChatIds(chatIdsText);
 
         loading = true;
         try
         {
-            var total = await CountTargetsAsync(botId, runUseAllChats, chatIds);
+            var total = 0;
+            var targetChatIds = new List<long>();
+
+            if (botId == 0)
+            {
+                foreach (var b in bots)
+                    total += (await BotManagement.GetChatsAsync(b.Id)).Count();
+            }
+            else
+            {
+                var chats = (await BotManagement.GetChatsAsync(botId)).ToList();
+                if (runUseAllChats)
+                {
+                    total = chats.Count;
+                }
+                else
+                {
+                    var selectedIds = new HashSet<long>();
+                    var selectedCategoryIdSet = selectedCategories.Select(x => x.Id).ToHashSet();
+
+                    if (selectedCategoryIdSet.Count > 0 || includeUncategorized)
+                    {
+                        foreach (var c in chats)
+                        {
+                            if (c.CategoryId.HasValue)
+                            {
+                                if (selectedCategoryIdSet.Contains(c.CategoryId.Value))
+                                    selectedIds.Add(c.TelegramId);
+                            }
+                            else
+                            {
+                                if (includeUncategorized)
+                                    selectedIds.Add(c.TelegramId);
+                            }
+                        }
+                    }
+
+                    foreach (var id in ParseChatIds(chatIdsText))
+                        selectedIds.Add(id);
+
+                    if (selectedIds.Count > 0)
+                    {
+                        total = chats.Count(c => selectedIds.Contains(c.TelegramId));
+                        var knownIds = chats.Select(c => c.TelegramId).ToHashSet();
+                        targetChatIds = selectedIds
+                            .Where(knownIds.Contains)
+                            .OrderBy(x => x)
+                            .ToList();
+                    }
+                }
+            }
+
             if (total <= 0)
             {
                 Snackbar.Add("未匹配到任何可操作的频道/群组（请先同步 Bot 频道数据，或检查 chat_id 列表）", Severity.Warning);
@@ -121,7 +255,7 @@
                 ApiName = "模块页面",
                 BotId = botId,
                 UseAllChats = runUseAllChats,
-                ChatIds = chatIds.Where(x => x != 0).Distinct().OrderBy(x => x).ToList(),
+                ChatIds = runUseAllChats ? new List<long>() : targetChatIds,
                 UserId = userId,
                 PermanentBan = permanentBan,
                 RequestedAtUtc = DateTime.UtcNow
@@ -148,31 +282,6 @@
         {
             loading = false;
         }
-    }
-
-    private async Task<int> CountTargetsAsync(int botId, bool runUseAllChats, IReadOnlyCollection<long> chatIds)
-    {
-        if (botId > 0)
-        {
-            var chats = (await BotManagement.GetChatsAsync(botId)).ToList();
-            if (!runUseAllChats && chatIds.Count > 0)
-                chats = chats.Where(c => chatIds.Contains(c.TelegramId)).ToList();
-            return chats.Count;
-        }
-
-        // botId==0: all bots (force useAllChats)
-        var botsList = (await BotManagement.GetAllBotsAsync())
-            .Where(b => b.IsActive)
-            .OrderBy(b => b.Id)
-            .ToList();
-
-        var total = 0;
-        foreach (var b in botsList)
-        {
-            var chats = await BotManagement.GetChatsAsync(b.Id);
-            total += chats.Count();
-        }
-        return total;
     }
 
     private static List<long> ParseChatIds(string raw)
