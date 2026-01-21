@@ -262,7 +262,13 @@ if (serilogEnabled)
 {
     loggerConfig = loggerConfig
         .ReadFrom.Configuration(builder.Configuration)
-        .WriteTo.File("logs/telegram-panel-.log", rollingInterval: RollingInterval.Day, retainedFileCountLimit: retainedFileCountLimit);
+        // buffered=true：降低磁盘抖动/IO 阻塞导致的请求卡顿风险（尤其是低配 VPS/挂载卷/杀软扫描场景）
+        .WriteTo.File(
+            "logs/telegram-panel-.log",
+            rollingInterval: RollingInterval.Day,
+            retainedFileCountLimit: retainedFileCountLimit,
+            buffered: true,
+            flushToDiskInterval: TimeSpan.FromSeconds(1));
 }
 else
 {

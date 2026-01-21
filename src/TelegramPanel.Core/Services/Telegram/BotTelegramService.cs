@@ -824,7 +824,8 @@ public sealed record BotAdminRights(
         IReadOnlyList<long> channelTelegramIds,
         long userId,
         bool permanentBan,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        Func<long, string?, int, int, Task>? perChatCallback = null)
     {
         var bot = await _botManagement.GetBotAsync(botId)
             ?? throw new InvalidOperationException($"机器人不存在：{botId}");
@@ -934,6 +935,12 @@ public sealed record BotAdminRights(
                     _logger.LogDebug(ex, "BanChatMember debug details: bot={BotId} chat={ChatId} user={UserId}", botId, chatId, userId);
                     break;
                 }
+            }
+
+            if (perChatCallback != null)
+            {
+                failures.TryGetValue(chatId, out var err);
+                await perChatCallback(chatId, err, ok, failures.Count);
             }
 
             // 降速：避免 Bot API 429
