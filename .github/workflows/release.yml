@@ -92,15 +92,25 @@ jobs:
             ${{ steps.pack.outputs.x64 }}
             ${{ steps.pack.outputs.arm64 }}
           body: |
-            ## Docker 镜像
+            ## 本次版本主要更新
+
+            > 下方会自动附加完整变更记录（Changelog），这里保留部署与更新入口说明。
+
+            ## 部署与更新
+
+            ### 1. Docker 镜像
+            拉取对应 tag 的镜像：
 
             ```bash
             docker pull ghcr.io/${{ github.repository }}:${{ steps.vars.outputs.tag }}
             ```
 
-            ## 应用内一键更新资产
+            ### 2. 面板内一键更新（Docker）
+            路径：`左上角版本号 -> 版本信息弹窗 -> 一键更新并重启`
+
+            ## 应用内更新资产
 
             - `${{ steps.pack.outputs.x64 }}`
             - `${{ steps.pack.outputs.arm64 }}`
 
-            > 提示：面板内「系统设置 -> 应用更新（Docker）」会自动匹配并下载对应架构的更新包。
+            > 程序会自动匹配容器架构下载更新包，并部署到 `/data/app-current`。
