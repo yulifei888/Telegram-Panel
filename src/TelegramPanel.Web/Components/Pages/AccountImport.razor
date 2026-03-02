@@ -30,8 +30,10 @@
                         <ul style="margin: 6px 0 0 18px;">
                             <li>单账号：Zip 根目录直接包含一个 <strong>.json</strong> + 一个 <strong>.session</strong></li>
                             <li>批量导入：每个账号一个独立子文件夹，文件夹内包含一个 <strong>.json</strong> + 一个 <strong>.session</strong></li>
+                            <li><strong>tdata 协议包</strong>：支持 Zip 内包含 <strong>tdata</strong> 目录（含 key_datas / D877F783D5D3EF8C*）；首次导入会自动安装解析依赖</li>
                             <li><strong>二级密码</strong>：自动解析账号目录下的 <strong>2fa.txt</strong> 文件作为二级密码保存到数据库</li>
                         </ul>
+                        <div style="margin-top: 6px;">提示：导入 tdata 需要先在【系统设置】配置全局 Telegram API（ApiId/ApiHash）。</div>
                         <div style="margin-top: 6px;">批量结构示例：</div>
                         <pre style="margin: 4px 0 0; white-space: pre; overflow: auto;">xx.zip
   ├─ 8613111111111
