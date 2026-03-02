@@ -26,6 +26,80 @@ docker compose up -d
 - 更新基础镜像层（运行时/系统依赖/安全补丁）
 - `.env` 的 `TP_IMAGE` 改为新 tag 后切换到指定镜像版本
 
+## 常见现象：镜像更新了，页面还是旧版
+
+先检查当前程序实际运行目录：
+
+```bash
+docker exec telegram-panel sh -lc 'readlink /proc/1/cwd'
+```
+
+如果输出是 `/data/app-current`，说明当前在运行「面板一键更新」落地的版本，而不是镜像内 `/app` 版本。
+
+### 切回“手动镜像更新”模式（推荐）
+
+```bash
+cd /home/docker/Telegram-Panel
+
+docker compose down
+mv docker-data/app-current docker-data/app-current.bak-$(date +%s)
+
+docker compose pull
+docker compose up -d --force-recreate
+```
+
+再次确认：
+
+```bash
+docker exec telegram-panel sh -lc 'readlink /proc/1/cwd'
+```
+
+应输出 `/app`。
+
+## 远程镜像 与 本地构建：如何切换
+
+### A. 远程镜像 -> 本地构建镜像
+
+1. 把 `.env` 里的镜像改为本地标签（示例）：
+
+```bash
+TP_IMAGE=telegram-panel:local
+```
+
+2. 在项目根目录构建本地镜像：
+
+```bash
+docker build -t telegram-panel:local .
+```
+
+3. 以本地镜像重建容器（避免拉取远端）：
+
+```bash
+docker compose up -d --pull never --force-recreate
+```
+
+### B. 本地构建镜像 -> 远程镜像（latest/dev-latest/tag）
+
+1. 把 `.env` 里的 `TP_IMAGE` 改回 GHCR 镜像，例如：
+
+```bash
+TP_IMAGE=ghcr.io/moeacgx/telegram-panel:dev-latest
+```
+
+2. 拉取并重建：
+
+```bash
+docker compose pull
+docker compose up -d --force-recreate
+```
+
+### C. 校验当前容器到底跑的是哪个镜像
+
+```bash
+docker inspect telegram-panel --format '{{.Config.Image}}'
+docker exec telegram-panel sh -lc 'readlink /proc/1/cwd'
+```
+
 ## 从源码部署的用户（可选）
 
 如果你不是用 GHCR 远程镜像，而是本地构建镜像部署，可使用：
