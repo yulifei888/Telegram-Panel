@@ -9,7 +9,7 @@ public class BotChannelRepository : Repository<BotChannel>, IBotChannelRepositor
     {
     }
 
-    private IQueryable<BotChannel> BuildQuery(int botId, int? categoryId, bool broadcastOnly, string? search)
+    private IQueryable<BotChannel> BuildQuery(int botId, int? categoryId, bool broadcastOnly, string? search, int statusFilter)
     {
         // 兼容旧模块/旧 UI 约定：categoryId=0 表示“不筛选分类”
         if (categoryId == 0)
@@ -31,6 +31,16 @@ public class BotChannelRepository : Repository<BotChannel>, IBotChannelRepositor
 
         if (broadcastOnly)
             query = query.Where(x => x.IsBroadcast);
+
+        // 频道状态筛选：
+        // 0=全部，1=正常，2=异常，3=未检测
+        query = statusFilter switch
+        {
+            1 => query.Where(x => x.ChannelStatusOk == true),
+            2 => query.Where(x => x.ChannelStatusOk == false),
+            3 => query.Where(x => x.ChannelStatusOk == null),
+            _ => query
+        };
 
         search = (search ?? string.Empty).Trim();
         if (!string.IsNullOrWhiteSpace(search))
@@ -87,6 +97,7 @@ public class BotChannelRepository : Repository<BotChannel>, IBotChannelRepositor
         int? categoryId,
         bool broadcastOnly,
         string? search,
+        int statusFilter,
         int pageIndex,
         int pageSize,
         CancellationToken cancellationToken = default)
@@ -95,7 +106,7 @@ public class BotChannelRepository : Repository<BotChannel>, IBotChannelRepositor
         if (pageSize <= 0) pageSize = 20;
         if (pageSize > 500) pageSize = 500;
 
-        var query = BuildQuery(botId, categoryId, broadcastOnly, search);
+        var query = BuildQuery(botId, categoryId, broadcastOnly, search, statusFilter);
         var total = await query.CountAsync(cancellationToken);
         var items = await query
             .Skip(pageIndex * pageSize)

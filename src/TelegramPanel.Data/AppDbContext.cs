@@ -177,10 +177,12 @@ public class AppDbContext : DbContext
             entity.Property(e => e.Title).IsRequired().HasMaxLength(200);
             entity.Property(e => e.Username).HasMaxLength(100);
             entity.Property(e => e.About).HasMaxLength(1000);
+            entity.Property(e => e.ChannelStatusError).HasMaxLength(500);
 
             entity.HasIndex(e => e.TelegramId).IsUnique();
             entity.HasIndex(e => e.Username);
             entity.HasIndex(e => e.CategoryId);
+            entity.HasIndex(e => e.ChannelStatusOk);
 
             entity.HasOne(e => e.Category)
                 .WithMany(c => c.Channels)

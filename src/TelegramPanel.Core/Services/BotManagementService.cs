@@ -273,6 +273,7 @@ public class BotManagementService
         int botId,
         int? categoryId,
         string? search,
+        int statusFilter,
         int pageIndex,
         int pageSize,
         CancellationToken cancellationToken = default)
@@ -282,6 +283,7 @@ public class BotManagementService
             categoryId: categoryId,
             broadcastOnly: true,
             search: search,
+            statusFilter: statusFilter,
             pageIndex: pageIndex,
             pageSize: pageSize,
             cancellationToken: cancellationToken);
@@ -346,6 +348,23 @@ public class BotManagementService
         var remains = await _memberRepository.CountForChannelAsync(ch.Id);
         if (remains == 0)
             await _botChannelRepository.DeleteAsync(ch);
+    }
+
+    public async Task UpdateChannelStatusAsync(int botId, long telegramId, bool ok, string? error, DateTime checkedAtUtc)
+    {
+        var ch = await _botChannelRepository.GetByTelegramIdAsync(botId, telegramId);
+        if (ch == null)
+            return;
+
+        ch.ChannelStatusOk = ok;
+        ch.ChannelStatusCheckedAtUtc = checkedAtUtc;
+        ch.ChannelStatusError = ok
+            ? null
+            : string.IsNullOrWhiteSpace(error)
+                ? "检测失败"
+                : error.Trim()[..Math.Min(error.Trim().Length, 500)];
+
+        await _botChannelRepository.UpdateAsync(ch);
     }
 
     public async Task SetChannelCategoryAsync(int botChannelId, int? categoryId)

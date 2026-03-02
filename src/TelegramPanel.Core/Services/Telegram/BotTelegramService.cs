@@ -37,6 +37,7 @@ public class BotTelegramService
     }
 
     public sealed record BotChannelSyncResult(int AppliedUpdates, int RemovedStale);
+    public sealed record ChannelStatusCheckResult(int SuccessCount, int FailedCount, int TotalCount, IReadOnlyDictionary<long, string> Failures);
 
     /// <summary>
     /// 手动同步（新增 + 清理）：
@@ -630,6 +631,132 @@ public class BotTelegramService
             }
         }
         return map;
+    }
+
+    /// <summary>
+    /// 批量检测 Bot 在频道中的可操作状态：
+    /// 通过 sendMessage 发送探测消息并立即 deleteMessage；发送失败则记为异常。
+    /// </summary>
+    public async Task<ChannelStatusCheckResult> CheckChannelsStatusAsync(
+        int botId,
+        IReadOnlyList<long> channelTelegramIds,
+        CancellationToken cancellationToken)
+    {
+        var bot = await _botManagement.GetBotAsync(botId)
+            ?? throw new InvalidOperationException($"机器人不存在：{botId}");
+
+        if (!bot.IsActive)
+            throw new InvalidOperationException("该机器人已停用");
+
+        var ids = channelTelegramIds
+            .Where(x => x != 0)
+            .Distinct()
+            .ToList();
+
+        if (ids.Count == 0)
+            return new ChannelStatusCheckResult(0, 0, 0, new Dictionary<long, string>());
+
+        var failures = new Dictionary<long, string>();
+
+        var delayMs = ReadInt(_configuration, "Telegram:DefaultDelayMs", 1000);
+        if (delayMs < 0) delayMs = 0;
+        if (delayMs > 10000) delayMs = 10000;
+
+        var maxRetries = ReadInt(_configuration, "Telegram:MaxRetries", 1);
+        if (maxRetries < 0) maxRetries = 0;
+        if (maxRetries > 5) maxRetries = 5;
+
+        var ok = 0;
+        for (var index = 0; index < ids.Count; index++)
+        {
+            var chatId = ids[index];
+            cancellationToken.ThrowIfCancellationRequested();
+
+            var attempt = 0;
+            while (true)
+            {
+                try
+                {
+                    await ProbeChannelBySendDeleteAsync(bot.Token, chatId, cancellationToken);
+                    await _botManagement.UpdateChannelStatusAsync(bot.Id, chatId, ok: true, error: null, checkedAtUtc: DateTime.UtcNow);
+                    ok++;
+                    break;
+                }
+                catch (InvalidOperationException ex) when (TryGetRetryAfterSeconds(ex.Message, out var seconds))
+                {
+                    attempt++;
+                    if (attempt > maxRetries)
+                    {
+                        var msg = string.IsNullOrWhiteSpace(ex.Message) ? "检测失败（限流重试超限）" : ex.Message.Trim();
+                        failures[chatId] = msg;
+                        await _botManagement.UpdateChannelStatusAsync(bot.Id, chatId, ok: false, error: msg, checkedAtUtc: DateTime.UtcNow);
+                        _logger.LogWarning(
+                            "CheckChannelsStatus retry exceeded: bot={BotId} chat={ChatId} retryAfter={RetryAfter}s",
+                            botId,
+                            chatId,
+                            seconds);
+                        break;
+                    }
+
+                    _logger.LogWarning(
+                        "CheckChannelsStatus hit rate limit, retry after {Seconds}s (attempt {Attempt}/{Max}): bot={BotId} chat={ChatId}",
+                        seconds,
+                        attempt,
+                        maxRetries,
+                        botId,
+                        chatId);
+                    await Task.Delay(TimeSpan.FromSeconds(seconds), cancellationToken);
+                }
+                catch (Exception ex)
+                {
+                    var msg = string.IsNullOrWhiteSpace(ex.Message) ? "检测失败" : ex.Message.Trim();
+                    failures[chatId] = msg;
+                    await _botManagement.UpdateChannelStatusAsync(bot.Id, chatId, ok: false, error: msg, checkedAtUtc: DateTime.UtcNow);
+                    _logger.LogWarning(ex, "CheckChannelsStatus failed: bot={BotId} chat={ChatId}", botId, chatId);
+                    break;
+                }
+            }
+
+            if (delayMs > 0 && index < ids.Count - 1)
+            {
+                var jitter = Random.Shared.Next(0, Math.Min(300, delayMs + 1));
+                await Task.Delay(delayMs + jitter, cancellationToken);
+            }
+        }
+
+        return new ChannelStatusCheckResult(ok, failures.Count, ids.Count, failures);
+    }
+
+    private async Task ProbeChannelBySendDeleteAsync(string token, long chatId, CancellationToken cancellationToken)
+    {
+        var probeText = $"频道状态检测 {DateTime.UtcNow:yyyy-MM-dd HH:mm:ss}";
+        var sendResult = await _api.CallAsync(token, "sendMessage", new Dictionary<string, string?>
+        {
+            ["chat_id"] = chatId.ToString(),
+            ["text"] = probeText,
+            ["disable_notification"] = "true"
+        }, cancellationToken);
+
+        if (sendResult.ValueKind != JsonValueKind.Object
+            || !sendResult.TryGetProperty("message_id", out var messageIdEl)
+            || !messageIdEl.TryGetInt64(out var messageId))
+        {
+            throw new InvalidOperationException("Bot API sendMessage 返回格式异常，无法完成频道检测");
+        }
+
+        try
+        {
+            await _api.CallAsync(token, "deleteMessage", new Dictionary<string, string?>
+            {
+                ["chat_id"] = chatId.ToString(),
+                ["message_id"] = messageId.ToString()
+            }, cancellationToken);
+        }
+        catch (Exception ex)
+        {
+            // 删除失败不判定为“频道异常”，但记录日志便于排查（例如 Bot 缺少删消息权限）。
+            _logger.LogWarning(ex, "Probe deleteMessage failed: chat={ChatId}", chatId);
+        }
     }
 
     private static bool TryParseChatMemberUpdate(JsonElement myChatMember, out BotApiChat chat, out string status)
