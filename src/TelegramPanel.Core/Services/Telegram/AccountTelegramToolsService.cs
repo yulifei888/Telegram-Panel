@@ -830,6 +830,96 @@ public class AccountTelegramToolsService
         }
     }
 
+    /// <summary>
+    /// 启用外部 Bot（向 Bot 发送 /start，可带参数）。
+    /// 支持：@xxxbot、xxxbot、https://t.me/xxxbot、tg://resolve?domain=xxxbot&start=abc
+    /// </summary>
+    public async Task<(bool Success, string? Error, string? BotUsername)> StartExternalBotAsync(
+        int accountId,
+        string botLinkOrUsername,
+        string? startParameter = null,
+        CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            var (username, startFromLink) = NormalizeTelegramBotUsername(botLinkOrUsername);
+            var normalizedManualStart = NormalizeBotStartParameter(startParameter);
+            var finalStart = string.IsNullOrWhiteSpace(normalizedManualStart) ? startFromLink : normalizedManualStart;
+
+            if (finalStart.Length > 64)
+                return (false, "启动参数过长（最多 64 字符）", null);
+
+            var client = await GetOrCreateConnectedClientAsync(accountId, cancellationToken);
+            cancellationToken.ThrowIfCancellationRequested();
+
+            var resolved = await client.Contacts_ResolveUsername(username);
+            var user = resolved.User;
+            if (user.access_hash == 0)
+                return (false, "无法获取 Bot access_hash", null);
+
+            var inputUser = new InputUser(user.id, user.access_hash);
+            var randomId = Random.Shared.NextInt64();
+            await client.Messages_StartBot(
+                bot: inputUser,
+                peer: new InputPeerSelf(),
+                random_id: randomId,
+                start_param: finalStart);
+
+            return (true, null, "@" + username);
+        }
+        catch (RpcException ex) when (ex.Code == 400 && string.Equals(ex.Message, "BOT_APP_INVALID", StringComparison.OrdinalIgnoreCase))
+        {
+            return (false, "目标不是可启动的 Bot（BOT_APP_INVALID）", null);
+        }
+        catch (RpcException ex) when (ex.Code == 400 && string.Equals(ex.Message, "PEER_FLOOD", StringComparison.OrdinalIgnoreCase))
+        {
+            return (false, "触发风控（PEER_FLOOD），请降低频率后重试", null);
+        }
+        catch (Exception ex)
+        {
+            var (summary, details) = MapTelegramException(ex);
+            var msg = string.IsNullOrWhiteSpace(details) ? summary : $"{summary}：{details}";
+            return (false, msg, null);
+        }
+    }
+
+    /// <summary>
+    /// 停用外部 Bot（通过拉黑 Bot 实现）。
+    /// 支持：@xxxbot、xxxbot、https://t.me/xxxbot、tg://resolve?domain=xxxbot
+    /// </summary>
+    public async Task<(bool Success, string? Error, string? BotUsername)> StopExternalBotAsync(
+        int accountId,
+        string botLinkOrUsername,
+        CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            var (username, _) = NormalizeTelegramBotUsername(botLinkOrUsername);
+
+            var client = await GetOrCreateConnectedClientAsync(accountId, cancellationToken);
+            cancellationToken.ThrowIfCancellationRequested();
+
+            var resolved = await client.Contacts_ResolveUsername(username);
+            var user = resolved.User;
+            if (user.access_hash == 0)
+                return (false, "无法获取 Bot access_hash", null);
+
+            await client.Contacts_Block(new InputPeerUser(user.id, user.access_hash));
+            return (true, null, "@" + username);
+        }
+        catch (RpcException ex) when (ex.Code == 400 && string.Equals(ex.Message, "USER_NOT_MUTUAL_CONTACT", StringComparison.OrdinalIgnoreCase))
+        {
+            // 某些账号状态下会返回该错误，按“已停用”处理可避免批量任务中断。
+            return (true, null, null);
+        }
+        catch (Exception ex)
+        {
+            var (summary, details) = MapTelegramException(ex);
+            var msg = string.IsNullOrWhiteSpace(details) ? summary : $"{summary}：{details}";
+            return (false, msg, null);
+        }
+    }
+
     private static string NormalizeTelegramJoinUrl(string input)
     {
         var s = (input ?? string.Empty).Trim();
@@ -865,6 +955,112 @@ public class AccountTelegramToolsService
             return $"https://t.me/{s}";
 
         return s;
+    }
+
+    private static (string Username, string StartFromLink) NormalizeTelegramBotUsername(string input)
+    {
+        var s = (input ?? string.Empty).Trim();
+        if (string.IsNullOrWhiteSpace(s))
+            throw new ArgumentException("Bot 用户名为空", nameof(input));
+
+        string startFromLink = string.Empty;
+
+        // tg://resolve?domain=xxxbot&start=abc
+        if (s.StartsWith("tg://", StringComparison.OrdinalIgnoreCase)
+            && Uri.TryCreate(s, UriKind.Absolute, out var tgUri))
+        {
+            var query = ParseQueryString(tgUri.Query);
+            if (query.TryGetValue("domain", out var domain) && !string.IsNullOrWhiteSpace(domain))
+                s = domain.Trim();
+            if (query.TryGetValue("start", out var start) && !string.IsNullOrWhiteSpace(start))
+                startFromLink = NormalizeBotStartParameter(start);
+        }
+
+        // https://t.me/xxxbot?start=abc 或 t.me/xxxbot?start=abc
+        if (s.StartsWith("http://", StringComparison.OrdinalIgnoreCase)
+            || s.StartsWith("https://", StringComparison.OrdinalIgnoreCase)
+            || s.StartsWith("t.me/", StringComparison.OrdinalIgnoreCase)
+            || s.StartsWith("telegram.me/", StringComparison.OrdinalIgnoreCase))
+        {
+            var url = s.Contains("://", StringComparison.Ordinal) ? s : "https://" + s;
+            if (!Uri.TryCreate(url, UriKind.Absolute, out var uri))
+                throw new ArgumentException("Bot 链接格式无效", nameof(input));
+
+            var path = (uri.AbsolutePath ?? string.Empty).Trim('/');
+            var firstSeg = path.Split('/', StringSplitOptions.RemoveEmptyEntries).FirstOrDefault() ?? string.Empty;
+            if (string.IsNullOrWhiteSpace(firstSeg))
+                throw new ArgumentException("Bot 链接中缺少用户名", nameof(input));
+
+            s = firstSeg;
+
+            var query = ParseQueryString(uri.Query);
+            if (query.TryGetValue("start", out var start) && !string.IsNullOrWhiteSpace(start))
+                startFromLink = NormalizeBotStartParameter(start);
+        }
+
+        s = s.Trim().TrimStart('@');
+        var slash = s.IndexOf('/');
+        if (slash >= 0)
+            s = s[..slash];
+
+        if (string.IsNullOrWhiteSpace(s))
+            throw new ArgumentException("Bot 用户名为空", nameof(input));
+
+        if (s.StartsWith("+", StringComparison.Ordinal))
+            throw new ArgumentException("邀请链接不是 Bot 用户名，请输入 @xxxbot 或 t.me/xxxbot", nameof(input));
+
+        if (!System.Text.RegularExpressions.Regex.IsMatch(s, "^[A-Za-z0-9_]{5,64}$"))
+            throw new ArgumentException("Bot 用户名格式无效", nameof(input));
+
+        if (!s.EndsWith("bot", StringComparison.OrdinalIgnoreCase))
+            throw new ArgumentException("目标看起来不是 Bot 用户名（需以 bot 结尾）", nameof(input));
+
+        return (s, startFromLink);
+    }
+
+    private static string NormalizeBotStartParameter(string? input)
+    {
+        var s = (input ?? string.Empty).Trim();
+        if (string.IsNullOrWhiteSpace(s))
+            return string.Empty;
+
+        if (s.StartsWith("/start", StringComparison.OrdinalIgnoreCase))
+            s = s[6..].Trim();
+
+        if (s.StartsWith("@", StringComparison.Ordinal))
+        {
+            var idx = s.IndexOf(' ');
+            s = idx > 0 ? s[(idx + 1)..].Trim() : string.Empty;
+        }
+
+        return s;
+    }
+
+    private static Dictionary<string, string> ParseQueryString(string query)
+    {
+        var map = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        if (string.IsNullOrWhiteSpace(query))
+            return map;
+
+        var raw = query.StartsWith("?", StringComparison.Ordinal) ? query[1..] : query;
+        foreach (var part in raw.Split('&', StringSplitOptions.RemoveEmptyEntries))
+        {
+            var idx = part.IndexOf('=');
+            if (idx < 0)
+            {
+                var kOnly = Uri.UnescapeDataString(part).Trim();
+                if (!string.IsNullOrWhiteSpace(kOnly))
+                    map[kOnly] = string.Empty;
+                continue;
+            }
+
+            var key = Uri.UnescapeDataString(part[..idx]).Trim();
+            var val = Uri.UnescapeDataString(part[(idx + 1)..]).Trim();
+            if (!string.IsNullOrWhiteSpace(key))
+                map[key] = val;
+        }
+
+        return map;
     }
 
     /// <summary>
