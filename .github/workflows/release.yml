@@ -1,0 +1,51 @@
+name: Release (Auto Changelog)
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "要发布的 tag（例如 v1.2.3）"
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Resolve tag name
+        id: vars
+        shell: bash
+        run: |
+          if [[ "${GITHUB_EVENT_NAME}" == "workflow_dispatch" ]]; then
+            TAG="${{ inputs.tag }}"
+          else
+            TAG="${GITHUB_REF_NAME}"
+          fi
+          echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
+
+      - name: Create GitHub Release with auto changelog
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.vars.outputs.tag }}
+          generate_release_notes: true
+          append_body: true
+          prerelease: ${{ contains(steps.vars.outputs.tag, '-') }}
+          body: |
+            ## Docker 镜像
+
+            ```bash
+            docker pull ghcr.io/${{ github.repository }}:${{ steps.vars.outputs.tag }}
+            ```
+
+            > 提示：该版本对应的多架构镜像由 `Docker Build & Publish` 工作流自动构建并推送。
+

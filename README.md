@@ -80,6 +80,53 @@ docker compose up -d --build
 
 > 更完整的安装、更新、导入与生产部署建议：见 https://moeacgx.github.io/Telegram-Panel/ 。
 
+## CI 自动构建镜像（GitHub Actions）
+
+已内置工作流：`.github/workflows/docker.yml`
+
+触发规则：
+- 推送到 `main` / `dev`：自动构建并推送镜像
+- 推送 tag（如 `v1.2.3`）：自动构建并推送版本镜像
+- PR 到 `main` / `dev`：只构建验证，不推送
+
+镜像仓库（GHCR）：
+- `ghcr.io/<你的GitHub用户名或组织>/telegram-panel`
+
+标签规则：
+- `main` 分支：`latest`、`main`、`sha-xxxxxxx`
+- `dev` 分支：`dev`、`dev-latest`、`sha-xxxxxxx`
+- `v*` tag：例如 `v1.2.3`
+
+拉取示例：
+
+```bash
+# 稳定版
+docker pull ghcr.io/<owner>/telegram-panel:latest
+
+# 开发版
+docker pull ghcr.io/<owner>/telegram-panel:dev-latest
+
+# 指定版本
+docker pull ghcr.io/<owner>/telegram-panel:v1.2.3
+```
+
+## 自动发布与 Changelog
+
+已内置工作流：`.github/workflows/release.yml`
+
+触发规则：
+- 推送 `v*` tag（如 `v1.2.3`）后，自动创建 GitHub Release
+- Release 内容自动生成 changelog（基于提交/PR），并读取 `.github/release.yml` 分类规则
+
+发布示例：
+
+```bash
+git checkout main
+git pull --ff-only origin main
+git tag v1.2.3
+git push origin v1.2.3
+```
+
 ## 截图
 
 更多截图见：`screenshot/`
