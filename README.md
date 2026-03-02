@@ -17,16 +17,17 @@
   👥 <b><a href="https://t.me/vpsbbq">站长交流群</a></b>
 </p>
 
-## v1.30 重要更新
+## v1.31 重要更新
 
 本次版本主要更新：
 
-- ✨ 废号判定补全：`AUTH_KEY_DUPLICATED`（Session 冲突）与 `SESSION_REVOKED`（Session 已撤销）计入废号（影响“只看废号”筛选与清理逻辑）
-- ✨ 一键清理筛选废号：账号页在勾选“只看废号”后提供“清理废号（筛选）”，按当前筛选结果直接批量清理
-- ⚡ 自动同步调度优化：记录上次自动同步时间，避免重启即跑一轮导致限流
-- ⚡ 批量任务配置落地：支持保存默认间隔/最大并发/重试开关，并默认更保守（降低风控风险）
-- 🐛 日志降噪与限流降速：减少刷屏日志与高频请求
-- 📚 新增文档站：更易维护与检索（https://moeacgx.github.io/Telegram-Panel/）
+- ✨ TData 导入完善：支持完整导入 tdata 压缩包，并补全导入链路会话校验，减少导入后不可用情况
+- ✨ TData 导出优化：支持 Telethon/TData 双格式导出；修复官方客户端登录兼容问题；优先已授权 DCSession；补齐 `user_id` 写入；修复旧包缓存导致重复下载
+- ✨ Bot 频道异常治理：支持删除失效频道、频道状态检测（正常/异常）和异常筛选，降低被踢/封禁后脏数据残留
+- ✨ Docker 一键更新：支持面板内检测 Release 并一键更新，自动下载匹配架构包、部署到 `/data/app-current` 并重启生效
+- ⚡ 更新入口统一：左上角版本弹窗集成自动检测、更新确认与 Latest Release Notes 展示（移除设置页重复入口）
+- ⚡ CI/CD 完整化：新增 Docker 自动构建推送（GHCR）与 Release 自动发布/自动 changelog/更新包资产上传
+- 📚 部署文档重排：Docker 部署流程精简为 compose 单路径（稳定版/开发版切换更直观）
 
 ## 功能概览
 
@@ -55,77 +56,72 @@
 
 ### Docker 一键部署（推荐）
 
-🐳 面向小白：`git clone` → `docker compose up` → 浏览器打开 → 登录改密码 → 配置 ApiId/ApiHash。
+环境要求：Docker（Windows 推荐 Docker Desktop + WSL2；Linux 直接装 Docker Engine）
 
-### 环境要求
-
-Docker（Windows 推荐 Docker Desktop + WSL2；Linux 直接装 Docker Engine）
-
-### 启动
+#### 第一步：准备项目
 
 ```bash
 git clone https://github.com/moeacgx/Telegram-Panel
 cd Telegram-Panel
-docker compose up -d --build
+cp .env.example .env
 ```
 
-启动后访问：`http://localhost:5000`
+#### 第二步：选择镜像版本
 
-### 默认后台账号（首次登录）
+默认是稳定版（无需改动）：
+
+```bash
+TP_IMAGE=ghcr.io/moeacgx/telegram-panel:latest
+```
+
+如果你要开发版，改 `.env` 为：
+
+```bash
+TP_IMAGE=ghcr.io/moeacgx/telegram-panel:dev-latest
+```
+
+#### 第三步：启动
+
+```bash
+docker compose pull
+docker compose up -d
+```
+
+访问：`http://localhost:5000`
+
+#### 默认后台账号（首次登录）
 
 用户名：`admin`  
 密码：`admin123`
 
 登录后到「修改密码」页面改掉即可。
 
-> 更完整的安装、更新、导入与生产部署建议：见 https://moeacgx.github.io/Telegram-Panel/ 。
-
-## CI 自动构建镜像（GitHub Actions）
-
-已内置工作流：`.github/workflows/docker.yml`
-
-触发规则：
-- 推送到 `main` / `dev`：自动构建并推送镜像
-- 推送 tag（如 `v1.2.3`）：自动构建并推送版本镜像
-- PR 到 `main` / `dev`：只构建验证，不推送
-
-镜像仓库（GHCR）：
-- `ghcr.io/<你的GitHub用户名或组织>/telegram-panel`
-
-标签规则：
-- `main` 分支：`latest`、`main`、`sha-xxxxxxx`
-- `dev` 分支：`dev`、`dev-latest`、`sha-xxxxxxx`
-- `v*` tag：例如 `v1.2.3`
-
-拉取示例：
+#### 常用命令
 
 ```bash
-# 稳定版
-docker pull ghcr.io/<owner>/telegram-panel:latest
+# 查看日志
+docker compose logs -f
 
-# 开发版
-docker pull ghcr.io/<owner>/telegram-panel:dev-latest
+# 更新到当前 .env 指定的镜像版本
+docker compose pull
+docker compose up -d
 
-# 指定版本
-docker pull ghcr.io/<owner>/telegram-panel:v1.2.3
+# 重启 / 停止
+docker compose restart
+docker compose down
 ```
 
-## 自动发布与 Changelog
+## Docker 一键更新（面板内）
 
-已内置工作流：`.github/workflows/release.yml`
+面板已支持在 Docker 部署场景下一键更新（左上角版本号 -> 版本信息弹窗）：
 
-触发规则：
-- 推送 `v*` tag（如 `v1.2.3`）后，自动创建 GitHub Release
-- Release 内容自动生成 changelog（基于提交/PR），并读取 `.github/release.yml` 分类规则
+1. 点击“检查更新”，读取 GitHub 最新 Release。
+2. 点击“一键更新并重启”，自动下载对应架构的 Linux 更新包到 `/data/app-current`。
+3. 程序触发重启后，容器会优先从 `/data/app-current` 启动新版本（无需手动 `docker compose pull`）。
 
-发布示例：
-
-```bash
-git checkout main
-git pull --ff-only origin main
-git tag v1.2.3
-git push origin v1.2.3
-```
+说明：
+- 当前仅支持 Docker 容器内执行一键更新。
+- 更新资产依赖 `release.yml` 工作流产物；若 Release 没有 `linux-x64/linux-arm64` zip 资产，则一键更新会提示不可用。
 
 ## 截图
 

@@ -33,6 +33,54 @@ jobs:
           fi
           echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
 
+      - name: Checkout source at tag
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ steps.vars.outputs.tag }}
+
+      - name: Set up .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.x
+
+      - name: Restore
+        run: dotnet restore TelegramPanel.sln
+
+      - name: Publish Linux update packages
+        shell: bash
+        run: |
+          set -euo pipefail
+          dotnet publish src/TelegramPanel.Web/TelegramPanel.Web.csproj \
+            -c Release \
+            -r linux-x64 \
+            --self-contained false \
+            -p:UseAppHost=false \
+            -o artifacts/linux-x64
+
+          dotnet publish src/TelegramPanel.Web/TelegramPanel.Web.csproj \
+            -c Release \
+            -r linux-arm64 \
+            --self-contained false \
+            -p:UseAppHost=false \
+            -o artifacts/linux-arm64
+
+      - name: Pack release assets
+        id: pack
+        shell: bash
+        run: |
+          set -euo pipefail
+          TAG="${{ steps.vars.outputs.tag }}"
+          mkdir -p dist
+
+          X64_ZIP="telegram-panel-${TAG}-linux-x64.zip"
+          ARM64_ZIP="telegram-panel-${TAG}-linux-arm64.zip"
+
+          (cd artifacts/linux-x64 && zip -rq "../../dist/${X64_ZIP}" .)
+          (cd artifacts/linux-arm64 && zip -rq "../../dist/${ARM64_ZIP}" .)
+
+          echo "x64=dist/${X64_ZIP}" >> "$GITHUB_OUTPUT"
+          echo "arm64=dist/${ARM64_ZIP}" >> "$GITHUB_OUTPUT"
+
       - name: Create GitHub Release with auto changelog
         uses: softprops/action-gh-release@v2
         with:
@@ -40,6 +88,9 @@ jobs:
           generate_release_notes: true
           append_body: true
           prerelease: ${{ contains(steps.vars.outputs.tag, '-') }}
+          files: |
+            ${{ steps.pack.outputs.x64 }}
+            ${{ steps.pack.outputs.arm64 }}
           body: |
             ## Docker 镜像
 
@@ -47,5 +98,9 @@ jobs:
             docker pull ghcr.io/${{ github.repository }}:${{ steps.vars.outputs.tag }}
             ```
 
-            > 提示：该版本对应的多架构镜像由 `Docker Build & Publish` 工作流自动构建并推送。
+            ## 应用内一键更新资产
 
+            - `${{ steps.pack.outputs.x64 }}`
+            - `${{ steps.pack.outputs.arm64 }}`
+
+            > 提示：面板内「系统设置 -> 应用更新（Docker）」会自动匹配并下载对应架构的更新包。

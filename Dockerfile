@@ -32,8 +32,10 @@ RUN mkdir -p /data /data/sessions /data/logs \
 COPY --from=build /app/publish .
 COPY --from=tdata-runtime /usr/local /usr/local
 COPY --from=tdata-runtime /opt/telegram-panel-tdata-runtime /app/tdata-runtime
+COPY docker/entrypoint.sh /entrypoint.sh
+RUN chmod +x /entrypoint.sh
 
 RUN node -v && npm -v
 
-ENTRYPOINT ["dotnet", "TelegramPanel.Web.dll"]
+ENTRYPOINT ["/entrypoint.sh"]
 

@@ -50,12 +50,13 @@
 @using TelegramPanel.Web.Services
 @inject UiPreferencesService UiPreferences
 @inject IDialogService DialogService
-@inject UpdateCheckService UpdateCheck
+@inject AppSelfUpdateService SelfUpdate
 
 @code {
     private bool _drawerOpen = true;
     private bool _isDarkMode = true;
-    private UpdateCheckInfo? _updateInfo;
+    private AppSelfUpdateInfo? _updateInfo;
+    private bool _autoPromptShown;
 
     private MudTheme _theme = new()
     {
@@ -100,6 +101,11 @@
 
     private async Task ShowVersionInfo()
     {
+        await ShowVersionInfo(autoPrompt: false);
+    }
+
+    private async Task ShowVersionInfo(bool autoPrompt)
+    {
         var options = new DialogOptions
         {
             CloseOnEscapeKey = true,
@@ -107,16 +113,31 @@
             FullWidth = true
         };
 
-        DialogService.Show<TelegramPanel.Web.Components.Dialogs.VersionInfoDialog>("版本信息", new DialogParameters(), options);
-        await Task.CompletedTask;
+        var parameters = new DialogParameters
+        {
+            [nameof(TelegramPanel.Web.Components.Dialogs.VersionInfoDialog.AutoPrompt)] = autoPrompt
+        };
+
+        var dialog = DialogService.Show<TelegramPanel.Web.Components.Dialogs.VersionInfoDialog>("版本信息", parameters, options);
+        await dialog.Result;
+
+        // 弹窗可能已触发更新/重启，关闭后刷新一次顶部状态
+        _updateInfo = await SelfUpdate.CheckLatestAsync(forceRefresh: true);
+        await InvokeAsync(StateHasChanged);
     }
 
     private async Task LoadUpdateInfoAsync()
     {
         try
         {
-            _updateInfo = await UpdateCheck.GetLatestAsync(forceRefresh: false);
+            _updateInfo = await SelfUpdate.CheckLatestAsync(forceRefresh: false);
             await InvokeAsync(StateHasChanged);
+
+            if (_updateInfo is { Success: true, UpdateAvailable: true } && !_autoPromptShown)
+            {
+                _autoPromptShown = true;
+                await InvokeAsync(async () => await ShowVersionInfo(autoPrompt: true));
+            }
         }
         catch
         {
