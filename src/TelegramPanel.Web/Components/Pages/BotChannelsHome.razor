@@ -17,7 +17,7 @@
         <MudSelect T="int" Value="@selectedBotId" ValueChanged="@(async (int id) => await OnSelectedBotChanged(id))" Label="选择机器人"
                    Variant="Variant.Outlined" Dense="true" Class="tp-input-full-xs"
                    Style="min-width: 200px; flex: 1; max-width: 400px;">
-            <MudSelectItem Value="0">-- 请选择机器人 --</MudSelectItem>
+            <MudSelectItem Value="0">全部机器人</MudSelectItem>
             @foreach (var b in bots)
             {
                 <MudSelectItem Value="@b.Id">@b.Name</MudSelectItem>
@@ -26,7 +26,7 @@
 
         <MudSelect @bind-Value="filterCategoryId" @bind-Value:after="OnFiltersChanged" Label="分类" Variant="Variant.Outlined" Dense="true"
                    Class="tp-input-full-xs"
-                   Style="min-width: 160px; flex: 0 1 200px;" Disabled="@(selectedBotId <= 0)">
+                   Style="min-width: 160px; flex: 0 1 200px;" Disabled="@(bots.Count == 0)">
             <MudSelectItem Value="0">全部分类</MudSelectItem>
             <MudSelectItem Value="-1">未分类</MudSelectItem>
             @foreach (var c in categories)
@@ -37,7 +37,7 @@
 
         <MudSelect @bind-Value="filterStatus" @bind-Value:after="OnFiltersChanged" Label="频道状态" Variant="Variant.Outlined" Dense="true"
                    Class="tp-input-full-xs"
-                   Style="min-width: 160px; flex: 0 1 200px;" Disabled="@(selectedBotId <= 0)">
+                   Style="min-width: 160px; flex: 0 1 200px;" Disabled="@(bots.Count == 0)">
             <MudSelectItem Value="0">全部状态</MudSelectItem>
             <MudSelectItem Value="1">正常</MudSelectItem>
             <MudSelectItem Value="2">异常</MudSelectItem>
@@ -46,31 +46,31 @@
 
         <MudIconButton Icon="@Icons.Material.Filled.Add" Color="Color.Primary" Size="Size.Small"
                        Title="新建分类" OnClick="OpenCreateCategoryDialog"
-                       Disabled="@(selectedBotId <= 0)" />
+                       Disabled="@(bots.Count == 0)" />
 
         <MudIconButton Icon="@Icons.Material.Filled.Edit" Color="Color.Default" Size="Size.Small"
                        Title="编辑当前分类" OnClick="OpenEditCategoryDialog"
-                       Disabled="@(selectedBotId <= 0 || filterCategoryId <= 0)" />
+                       Disabled="@(bots.Count == 0 || filterCategoryId <= 0)" />
 
         <MudIconButton Icon="@Icons.Material.Filled.Delete" Color="Color.Error" Size="Size.Small"
                        Title="删除当前分类" OnClick="DeleteSelectedCategoryAsync"
-                       Disabled="@(selectedBotId <= 0 || filterCategoryId <= 0)" />
+                       Disabled="@(bots.Count == 0 || filterCategoryId <= 0)" />
 
         <MudTextField @bind-Value="search" Placeholder="搜索频道..." Adornment="Adornment.Start"
                       AdornmentIcon="@Icons.Material.Filled.Search" IconSize="Size.Medium" Class="mt-0 tp-input-full-xs"
                       Style="min-width: 200px; flex: 1; max-width: 400px;"
-                      Immediate="true" Disabled="@(selectedBotId <= 0)" @bind-Value:after="OnSearchChanged" />
+                      Immediate="true" Disabled="@(bots.Count == 0)" @bind-Value:after="OnSearchChanged" />
     </MudStack>
 </MudPaper>
 
 <MudStack Row="true" Spacing="2" AlignItems="AlignItems.Center" Class="mb-2" Style="flex-wrap: wrap;">
     <MudButton Variant="Variant.Filled" Color="Color.Primary" StartIcon="@Icons.Material.Filled.Refresh"
-               Disabled="@(loading || selectedBotId <= 0)" OnClick="ReloadTable" Size="Size.Small">
+               Disabled="@(loading || bots.Count == 0)" OnClick="ReloadTable" Size="Size.Small">
         刷新
     </MudButton>
     
     <MudButton Variant="Variant.Outlined" Color="Color.Primary" StartIcon="@SelectionToggleIcon"
-               Disabled="@(loading || selectedBotId <= 0 || channels.Count == 0)" OnClick="CycleSelectionToggle" Size="Size.Small">
+               Disabled="@(loading || channels.Count == 0)" OnClick="CycleSelectionToggle" Size="Size.Small">
         @SelectionToggleText
     </MudButton>
     
@@ -80,14 +80,14 @@
     </MudButton>
 
     <MudMenu Label="批量操作" Variant="Variant.Outlined" Color="Color.Default" StartIcon="@Icons.Material.Filled.MoreHoriz"
-               Size="Size.Small" Disabled="@(loading || selectedBotId <= 0)" Dense="true" EndIcon="@Icons.Material.Filled.KeyboardArrowDown">
-        <MudMenuItem Disabled="@(selected.Count == 0)" OnClick="CheckSelectedChannelsStatus">检测状态（已选）</MudMenuItem>
-        <MudMenuItem Disabled="@(selected.Count == 0)" OnClick="ExportInvites">导出邀请（已选）</MudMenuItem>
-        <MudMenuItem Disabled="@(selected.Count == 0)" OnClick="OpenBatchInviteMembers">批量邀请成员（已选）</MudMenuItem>
-        <MudMenuItem Disabled="@(selected.Count == 0)" OnClick="OpenBatchSetAdminsByAccount">批量设置管理员（账号执行）</MudMenuItem>
-        <MudMenuItem Disabled="@(selected.Count == 0)" OnClick="OpenSetAdmins">批量设置管理员（机器人/ID）</MudMenuItem>
-        <MudMenuItem Disabled="@(selected.Count == 0)" OnClick="OpenBatchSetCategory">批量设置分类（已选）</MudMenuItem>
-        <MudMenuItem Disabled="@(selected.Count == 0)" OnClick="OpenBanMember">踢出用户（已选）</MudMenuItem>
+               Size="Size.Small" Disabled="@(loading || bots.Count == 0)" Dense="true" EndIcon="@Icons.Material.Filled.KeyboardArrowDown">
+        <MudMenuItem Disabled="@(selected.Count == 0 || selectedBotId <= 0)" OnClick="CheckSelectedChannelsStatus">检测状态（已选）</MudMenuItem>
+        <MudMenuItem Disabled="@(selected.Count == 0 || selectedBotId <= 0)" OnClick="ExportInvites">导出邀请（已选）</MudMenuItem>
+        <MudMenuItem Disabled="@(selected.Count == 0 || selectedBotId <= 0)" OnClick="OpenBatchInviteMembers">批量邀请成员（已选）</MudMenuItem>
+        <MudMenuItem Disabled="@(selected.Count == 0 || selectedBotId <= 0)" OnClick="OpenBatchSetAdminsByAccount">批量设置管理员（账号执行）</MudMenuItem>
+        <MudMenuItem Disabled="@(selected.Count == 0 || selectedBotId <= 0)" OnClick="OpenSetAdmins">批量设置管理员（机器人/ID）</MudMenuItem>
+        <MudMenuItem Disabled="@(selected.Count == 0 || selectedBotId <= 0)" OnClick="OpenBatchSetCategory">批量设置分类（已选）</MudMenuItem>
+        <MudMenuItem Disabled="@(selected.Count == 0 || selectedBotId <= 0)" OnClick="OpenBanMember">踢出用户（已选）</MudMenuItem>
         <MudMenuItem Disabled="@(selected.Count == 0)" OnClick="DeleteSelectedChannelsAsync">删除频道（已选）</MudMenuItem>
     </MudMenu>
 
@@ -149,12 +149,16 @@
                 <MudTd DataLabel="操作">
                     <MudStack Row="true" Spacing="1" AlignItems="AlignItems.Center" Style="flex-wrap: wrap;">
                         <MudIconButton Icon="@Icons.Material.Filled.Refresh" Size="Size.Small" Color="Color.Success"
+                                       Disabled="@(selectedBotId <= 0)"
                                        OnClick="@(async () => await CheckSingleChannelStatus(context))" title="检测状态" />
                         <MudIconButton Icon="@Icons.Material.Filled.Link" Size="Size.Small" Color="Color.Info"
+                                       Disabled="@(selectedBotId <= 0)"
                                        OnClick="@(async () => await CopyLinkAsync(context))" Title="复制链接" />
                         <MudIconButton Icon="@Icons.Material.Filled.Info" Size="Size.Small" Color="Color.Default"
+                                       Disabled="@(selectedBotId <= 0)"
                                        OnClick="@(async () => await ShowDetailsAsync(context))" Title="查看详情" />
                         <MudIconButton Icon="@Icons.Material.Filled.Edit" Size="Size.Small" Color="Color.Primary"
+                                       Disabled="@(selectedBotId <= 0)"
                                        OnClick="@(async () => await EditChannelAsync(context))" Title="编辑频道" />
                         <MudIconButton Icon="@Icons.Material.Filled.Delete" Size="Size.Small" Color="Color.Error"
                                        OnClick="@(async () => await DeleteSingleChannelAsync(context))" title="删除频道" />
@@ -162,9 +166,9 @@
                 </MudTd>
             </RowTemplate>
             <NoRecordsContent>
-                @if (selectedBotId <= 0)
+                @if (bots.Count == 0)
                 {
-                    <MudText>请先选择机器人</MudText>
+                    <MudText>暂无机器人</MudText>
                 }
                 else
                 {
@@ -226,13 +230,9 @@
             if (BotIdQuery is > 0 && bots.Any(x => x.Id == BotIdQuery.Value))
             {
                 selectedBotId = BotIdQuery.Value;
-                await LoadBotData();
             }
-            else if (bots.Count == 1)
-            {
-                selectedBotId = bots[0].Id;
-                await LoadBotData();
-            }
+
+            await LoadBotData();
         }
         catch (Exception ex)
         {
@@ -258,10 +258,8 @@
         if (selectedBotId <= 0)
         {
             selectedBot = null;
-            categories.Clear();
-            channels.Clear();
-            totalCount = 0;
             Navigation.NavigateTo("/bots/channels", replace: true);
+            await LoadBotData();
             return;
         }
 
@@ -271,18 +269,21 @@
 
     private async Task LoadBotData()
     {
-        if (selectedBotId <= 0)
-            return;
-
         loading = true;
         try
         {
-            selectedBot = await BotManagement.GetBotAsync(selectedBotId);
-            if (selectedBot == null)
+            if (selectedBotId > 0)
             {
-                Snackbar.Add("机器人不存在", Severity.Error);
-                selectedBotId = 0;
-                return;
+                selectedBot = await BotManagement.GetBotAsync(selectedBotId);
+                if (selectedBot == null)
+                {
+                    Snackbar.Add("机器人不存在，已切回全部机器人视图", Severity.Warning);
+                    selectedBotId = 0;
+                }
+            }
+            else
+            {
+                selectedBot = null;
             }
 
             categories = (await BotManagement.GetCategoriesAsync()).ToList();
@@ -303,9 +304,6 @@
         loading = true;
         try
         {
-            if (selectedBotId <= 0)
-                return new TableData<BotChannel> { Items = Array.Empty<BotChannel>(), TotalItems = 0 };
-
             var (items, total) = await BotManagement.QueryChannelsPagedAsync(
                 botId: selectedBotId,
                 categoryId: filterCategoryId == -1 ? -1 : (filterCategoryId > 0 ? filterCategoryId : null),
@@ -480,9 +478,6 @@
 
     private async Task DeleteSingleChannelAsync(BotChannel channel)
     {
-        if (selectedBotId <= 0)
-            return;
-
         var channelName = string.IsNullOrWhiteSpace(channel.Title) ? channel.TelegramId.ToString() : channel.Title;
         var selectedBotIds = await SelectBotsForDeleteAsync(new[] { channel.TelegramId }, channelName);
         if (selectedBotIds == null || selectedBotIds.Count == 0)
@@ -510,9 +505,6 @@
 
     private async Task DeleteSelectedChannelsAsync()
     {
-        if (selectedBotId <= 0)
-            return;
-
         if (selected.Count == 0)
         {
             Snackbar.Add("请先选择频道", Severity.Info);
@@ -615,7 +607,7 @@
 
     private async Task OpenCreateCategoryDialog()
     {
-        if (selectedBotId <= 0)
+        if (bots.Count == 0)
             return;
 
         var parameters = new DialogParameters();
@@ -640,7 +632,7 @@
 
     private async Task OpenEditCategoryDialog()
     {
-        if (selectedBotId <= 0)
+        if (bots.Count == 0)
             return;
 
         var cat = GetSelectedCategory();
@@ -666,7 +658,7 @@
 
     private async Task DeleteSelectedCategoryAsync()
     {
-        if (selectedBotId <= 0)
+        if (bots.Count == 0)
             return;
 
         var cat = GetSelectedCategory();

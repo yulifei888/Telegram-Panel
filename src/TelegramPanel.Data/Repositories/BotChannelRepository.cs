@@ -15,10 +15,13 @@ public class BotChannelRepository : Repository<BotChannel>, IBotChannelRepositor
         if (categoryId == 0)
             categoryId = null;
 
-        var query = _dbSet
+        IQueryable<BotChannel> query = _dbSet
             .AsNoTracking()
-            .Include(x => x.Category)
-            .Where(x => x.Members.Any(m => m.BotId == botId));
+            .Include(x => x.Category);
+
+        query = botId > 0
+            ? query.Where(x => x.Members.Any(m => m.BotId == botId))
+            : query.Where(x => x.Members.Any());
 
         // 约定：categoryId = -1 表示“未分类”（CategoryId == null）
         if (categoryId.HasValue)
@@ -67,9 +70,12 @@ public class BotChannelRepository : Repository<BotChannel>, IBotChannelRepositor
         if (categoryId == 0)
             categoryId = null;
 
-        var query = _dbSet
-            .Include(x => x.Category)
-            .Where(x => x.Members.Any(m => m.BotId == botId));
+        IQueryable<BotChannel> query = _dbSet
+            .Include(x => x.Category);
+
+        query = botId > 0
+            ? query.Where(x => x.Members.Any(m => m.BotId == botId))
+            : query.Where(x => x.Members.Any());
 
         // 约定：categoryId = -1 表示“未分类”（CategoryId == null）
         if (categoryId.HasValue)
