@@ -92,12 +92,12 @@
                                    OnClick="@(() => ShowTaskDetails(context))" />
                     @if (CanPauseUserChatActiveTask(context))
                     {
-                        <MudIconButton Icon="@Icons.Material.Filled.PauseCircle" Size="Size.Small" Color="Color.Warning"
+                        <MudIconButton Icon="@Icons.Material.Filled.Pause" Size="Size.Small" Color="Color.Warning"
                                        OnClick="@(() => PauseTask(context))" />
                     }
                     @if (CanResumeUserChatActiveTask(context))
                     {
-                        <MudIconButton Icon="@Icons.Material.Filled.PlayCircle" Size="Size.Small" Color="Color.Success"
+                        <MudIconButton Icon="@Icons.Material.Filled.PlayArrow" Size="Size.Small" Color="Color.Success"
                                        OnClick="@(() => ResumeTask(context))" />
                     }
                     @if (CanEditUserChatActiveTask(context))
@@ -447,8 +447,7 @@
 
     private static bool CanEditUserChatActiveTask(BatchTask task)
     {
-        return IsUserChatActiveTask(task.TaskType)
-               && !string.Equals(task.Status, "running", StringComparison.OrdinalIgnoreCase);
+        return IsUserChatActiveTask(task.TaskType);
     }
 
     private static bool CanRerunUserChatActiveTask(BatchTask task)
@@ -776,10 +775,17 @@
 
     private async Task OpenEditUserChatActiveTask(BatchTask task)
     {
-        if (!CanEditUserChatActiveTask(task))
+        if (!IsUserChatActiveTask(task.TaskType))
         {
             Snackbar.Add("该任务当前不可编辑", Severity.Warning);
             return;
+        }
+
+        if (string.Equals(GetDisplayStatus(task), "running", StringComparison.OrdinalIgnoreCase))
+        {
+            await TaskManagement.PauseTaskAsync(task.Id);
+            await LoadTasks();
+            Snackbar.Add("已自动暂停任务，正在打开编辑窗口", Severity.Info);
         }
 
         var parameters = new DialogParameters
@@ -895,4 +901,7 @@
             : UserChatActiveTaskModes.Random;
     }
 }
+
+
+
 
