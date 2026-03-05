@@ -1,4 +1,4 @@
-@page "/tasks"
+﻿@page "/tasks"
 @inject BatchTaskManagementService TaskManagement
 @inject TelegramPanel.Web.Modules.ModuleContributionRegistry Contributions
 @inject PanelTimeZoneService TimeZone
@@ -436,13 +436,13 @@
     private static bool CanPauseUserChatActiveTask(BatchTask task)
     {
         return IsUserChatActiveTask(task.TaskType)
-               && string.Equals(task.Status, "running", StringComparison.OrdinalIgnoreCase);
+               && string.Equals(GetDisplayStatus(task), "running", StringComparison.OrdinalIgnoreCase);
     }
 
     private static bool CanResumeUserChatActiveTask(BatchTask task)
     {
         return IsUserChatActiveTask(task.TaskType)
-               && string.Equals(task.Status, "paused", StringComparison.OrdinalIgnoreCase);
+               && string.Equals(GetDisplayStatus(task), "paused", StringComparison.OrdinalIgnoreCase);
     }
 
     private static bool CanEditUserChatActiveTask(BatchTask task)
@@ -895,3 +895,4 @@
             : UserChatActiveTaskModes.Random;
     }
 }
+
