@@ -257,6 +257,51 @@ public sealed class MyHandler : IModuleTaskHandler
 }
 ```
 
+## 账号导出下载（Telethon / Tdata）
+
+如果模块需要“下载某个账号的数据包”，建议优先使用宿主服务直接生成 Zip（同进程内调用），避免绕 HTTP 鉴权与 Cookie。
+
+### 推荐方式：模块内直接调用导出服务
+
+可注入：
+
+- `TelegramPanel.Web.Services.AccountExportService`
+- `TelegramPanel.Core.Services.AccountManagementService`
+
+核心调用链：
+
+1. 先通过 `AccountManagementService` 获取目标账号（或账号列表）
+2. 调用 `AccountExportService.BuildAccountsZipAsync(accounts, ct, format)`
+3. 将 `byte[]` 按模块自己的场景返回/落盘/上传
+
+其中 `format`：
+
+- `AccountExportFormat.Telethon`：导出 `.json + .session (+2fa.txt)`
+- `AccountExportFormat.Tdata`：在以上基础上额外导出 `tdata/`
+
+### HTTP 方式（备选）
+
+宿主现有下载接口：
+
+- `GET /downloads/accounts.zip`
+- Query:
+  - `ids=1,2,3`（可选，不传则导出全部）
+  - `format=telethon|tdata`（不传默认 `telethon`）
+  - `ts=<timestamp>`（可选，建议带上，避免浏览器缓存旧包）
+
+注意：
+
+- 若开启后台登录，接口受登录态保护（需带管理端 Cookie）
+- 响应已设置 `no-store/no-cache`，但调用方仍建议加 `ts`
+
+### Tdata 导出的实现要点（后续扩展必须保持）
+
+1. `session -> telethon string` 时必须保留 Base64 padding（尾部 `=`）
+2. `telethon string -> tdata` 时必须注入 `session.self.userId`
+3. 生成 `telethon string` 时要优先选择“已授权 DCSession”（不是任意 DC）
+
+否则会出现“包结构看似正常，但 Telegram Desktop 仍要求重新登录”。
+
 ## UI 模块项目模板（Razor 组件）
 
 如果你的模块需要提供页面（`IModuleUiProvider.GetPages`），推荐把模块做成 `Microsoft.NET.Sdk.Razor` 项目（类似 Razor Class Library），例如：
@@ -418,6 +463,7 @@ public IEnumerable<ModuleTaskDefinition> GetTasks(ModuleHostContext context)
 - 在编辑器里做基础校验：未选择账号、未填写链接时 `CanSubmit=false` 并给出 `ValidationError`
 - `Total` 建议按“账号数 × 链接数”或“账号数 × 用户名数”等可预估的总步数计算，便于任务中心展示进度
 - 支持筛选：例如“账号分类筛选/搜索”，减少用户选择成本
+- 遵循宿主的账号排除规则：默认不展示 `Category.ExcludeFromOperations=true` 的账号（常用于“工作账号”）；如你的模块确实需要，也可以提供“包含工作账号”的开关
 
 ## 外部 API 扩展（API）
 

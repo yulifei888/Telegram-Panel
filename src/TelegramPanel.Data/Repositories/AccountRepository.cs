@@ -64,6 +64,10 @@ public class AccountRepository : Repository<Account>, IAccountRepository
                     // Session 失效/损坏
                     || EF.Functions.Like(a.TelegramStatusSummary, "%Session 失效%")
                     || EF.Functions.Like(a.TelegramStatusSummary, "%AUTH_KEY_UNREGISTERED%")
+                    || EF.Functions.Like(a.TelegramStatusSummary, "%Session 冲突%")
+                    || EF.Functions.Like(a.TelegramStatusSummary, "%AUTH_KEY_DUPLICATED%")
+                    || EF.Functions.Like(a.TelegramStatusSummary, "%Session 已被撤销%")
+                    || EF.Functions.Like(a.TelegramStatusSummary, "%SESSION_REVOKED%")
                     || EF.Functions.Like(a.TelegramStatusSummary, "%Session 无法读取%")
                     || EF.Functions.Like(a.TelegramStatusSummary, "%Can't read session block%")
 
@@ -147,7 +151,7 @@ public class AccountRepository : Repository<Account>, IAccountRepository
     {
         return await _dbSet
             .Include(a => a.Category)
-            .Where(a => a.IsActive)
+            .Where(a => a.IsActive && (a.Category == null || !a.Category.ExcludeFromOperations))
             .ToListAsync();
     }
 

@@ -1,3 +1,4 @@
+using System.Linq;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Configuration;
 using TelegramPanel.Core.Interfaces;
@@ -66,7 +67,16 @@ public class GroupService : IGroupService
                 }
                 catch (Exception ex)
                 {
-                    _logger.LogWarning(ex, "Failed to get full chat info for {ChatId}", basicChat.id);
+                    if (TryGetFloodWaitSeconds(ex.Message, out var seconds))
+                    {
+                        _logger.LogWarning("GetFullChat hit rate limit, retry after {Seconds}s (chatId={ChatId})", seconds, basicChat.id);
+                        await Task.Delay(TimeSpan.FromSeconds(seconds));
+                    }
+                    else
+                    {
+                        _logger.LogWarning("Failed to get full chat info for {ChatId}: {Error}", basicChat.id, ex.Message);
+                        _logger.LogDebug(ex, "GetFullChat debug details (chatId={ChatId})", basicChat.id);
+                    }
                 }
             }
             // 处理超级群组（Channel类型但megagroup=true, 即 !IsChannel）
@@ -96,13 +106,48 @@ public class GroupService : IGroupService
                 }
                 catch (Exception ex)
                 {
-                    _logger.LogWarning(ex, "Failed to get full group info for {GroupId}", channel.id);
+                    if (ex.Message.Contains("CHANNEL_MONOFORUM_UNSUPPORTED", StringComparison.OrdinalIgnoreCase))
+                    {
+                        // 该错误通常不影响账号本身，仅表示 Telegram 不支持对这类“论坛/话题”群组调用某些接口
+                        _logger.LogDebug("Skipping group {GroupId}: {Error}", channel.id, ex.Message);
+                    }
+                    else if (TryGetFloodWaitSeconds(ex.Message, out var seconds))
+                    {
+                        _logger.LogWarning("GetFullGroup hit rate limit, retry after {Seconds}s (groupId={GroupId})", seconds, channel.id);
+                        await Task.Delay(TimeSpan.FromSeconds(seconds));
+                    }
+                    else
+                    {
+                        _logger.LogWarning("Failed to get full group info for {GroupId}: {Error}", channel.id, ex.Message);
+                        _logger.LogDebug(ex, "GetFullGroup debug details (groupId={GroupId})", channel.id);
+                    }
                 }
             }
         }
 
         _logger.LogInformation("Found {Count} owned groups for account {AccountId}", ownedGroups.Count, accountId);
         return ownedGroups;
+    }
+
+    private static bool TryGetFloodWaitSeconds(string message, out int seconds)
+    {
+        seconds = 0;
+        if (string.IsNullOrWhiteSpace(message))
+            return false;
+
+        // 典型：FLOOD_WAIT_13
+        var idx = message.IndexOf("FLOOD_WAIT_", StringComparison.OrdinalIgnoreCase);
+        if (idx < 0)
+            return false;
+
+        var tail = message.Substring(idx + "FLOOD_WAIT_".Length);
+        var num = new string(tail.TakeWhile(char.IsDigit).ToArray());
+        if (!int.TryParse(num, out seconds))
+            return false;
+
+        if (seconds < 1) seconds = 1;
+        if (seconds > 120) seconds = 120;
+        return true;
     }
 
     public async Task<GroupInfo?> GetGroupInfoAsync(int accountId, long groupId)

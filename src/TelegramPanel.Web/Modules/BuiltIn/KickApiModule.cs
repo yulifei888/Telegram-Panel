@@ -2,12 +2,14 @@ using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Routing;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
+using MudBlazor;
 using TelegramPanel.Modules;
+using TelegramPanel.Web.Components.ModulePages;
 using TelegramPanel.Web.ExternalApi;
 
 namespace TelegramPanel.Web.Modules.BuiltIn;
 
-public sealed class KickApiModule : ITelegramPanelModule, IModuleApiProvider
+public sealed class KickApiModule : ITelegramPanelModule, IModuleApiProvider, IModuleUiProvider
 {
     public KickApiModule(string version)
     {
@@ -25,7 +27,7 @@ public sealed class KickApiModule : ITelegramPanelModule, IModuleApiProvider
 
     public void ConfigureServices(IServiceCollection services, ModuleHostContext context)
     {
-        // built-in：无需额外注入
+        services.AddScoped<IModuleTaskHandler, ExternalApiKickTaskHandler>();
     }
 
     public void MapEndpoints(IEndpointRouteBuilder endpoints, ModuleHostContext context)
@@ -47,6 +49,24 @@ public sealed class KickApiModule : ITelegramPanelModule, IModuleApiProvider
             Route = "/api/kick",
             Description = "从配置的 Bot 管理的频道/群组中踢出或封禁指定用户（按 X-API-Key 匹配配置项）。",
             Order = 10
+        };
+    }
+
+    public IEnumerable<ModuleNavItem> GetNavItems(ModuleHostContext context)
+    {
+        yield break;
+    }
+
+    public IEnumerable<ModulePageDefinition> GetPages(ModuleHostContext context)
+    {
+        yield return new ModulePageDefinition
+        {
+            Key = "kick",
+            Title = "踢人/封禁",
+            Icon = Icons.Material.Filled.PersonRemove,
+            Group = "外部 API",
+            Order = 10,
+            ComponentType = typeof(KickApiPage).AssemblyQualifiedName ?? ""
         };
     }
 }

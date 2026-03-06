@@ -1,4 +1,4 @@
-@page "/tasks"
+﻿@page "/tasks"
 @inject BatchTaskManagementService TaskManagement
 @inject TelegramPanel.Web.Modules.ModuleContributionRegistry Contributions
 @inject PanelTimeZoneService TimeZone
@@ -6,38 +6,50 @@
 @inject IDialogService DialogService
 @using TelegramPanel.Data.Entities
 @using TelegramPanel.Core.BatchTasks
+@using System.Text.Json
+@using TelegramPanel.Web.Services
 @implements IDisposable
 
 <PageTitle>任务中心 - Telegram Panel</PageTitle>
 
 <MudText Typo="Typo.h4" Class="mb-4">任务中心</MudText>
 
-<MudCard>
+<MudCard Class="mb-4">
     <MudCardContent>
-        <MudTable Items="@filteredTasks" Hover="true" Breakpoint="Breakpoint.Sm" Loading="@loading">
+        <MudStack Row="true" Spacing="2" AlignItems="AlignItems.Center" Wrap="Wrap.Wrap">
+            <MudText Typo="Typo.h6">总任务数 (@tasks.Count)</MudText>
+            <MudSpacer />
+            <MudIconButton Icon="@Icons.Material.Filled.Refresh" Color="Color.Default" Size="Size.Small"
+                           Disabled="@loading" OnClick="@(async (MouseEventArgs _) => await LoadTasks())" />
+            <MudButton Variant="Variant.Outlined" Color="Color.Primary" StartIcon="@Icons.Material.Filled.AddTask"
+                       Disabled="@loading" OnClick="OpenCreateTaskDialog">
+                新建任务
+            </MudButton>
+            <MudButton Variant="Variant.Outlined" Color="Color.Error" StartIcon="@Icons.Material.Filled.DeleteSweep"
+                       Disabled="@(loading || tasks.Count == 0)" OnClick="ClearAllTasks">
+                清理全部任务
+            </MudButton>
+            <MudSelect @bind-Value="filterCategory" Label="任务分类" Variant="Variant.Outlined" Dense="true" Style="min-width: 140px;">
+                <MudSelectItem Value='@("all")'>全部</MudSelectItem>
+                @foreach (var c in AvailableCategories)
+                {
+                    <MudSelectItem Value="@c">@GetCategoryDisplayName(c)</MudSelectItem>
+                }
+            </MudSelect>
+            <MudSelect @bind-Value="historyStatusFilter" Label="历史状态" Variant="Variant.Outlined" Dense="true" Style="min-width: 120px;">
+                <MudSelectItem Value='@("all")'>全部</MudSelectItem>
+                <MudSelectItem Value='@("completed")'>已完成</MudSelectItem>
+                <MudSelectItem Value='@("failed")'>失败</MudSelectItem>
+            </MudSelect>
+        </MudStack>
+    </MudCardContent>
+</MudCard>
+
+<MudCard Class="mb-4">
+    <MudCardContent>
+        <MudTable Items="@activeTasks" Hover="true" Breakpoint="Breakpoint.Sm" Loading="@loading">
             <ToolBarContent>
-                <MudText Typo="Typo.h6">任务列表 (@tasks.Count)</MudText>
-                <MudSpacer />
-                <MudIconButton Icon="@Icons.Material.Filled.Refresh" Color="Color.Default" Size="Size.Small"
-                               Disabled="@loading" OnClick="@(async (MouseEventArgs _) => await LoadTasks())" />
-                <MudButton Variant="Variant.Outlined" Color="Color.Primary" StartIcon="@Icons.Material.Filled.AddTask"
-                           Disabled="@loading" OnClick="OpenCreateTaskDialog" Class="ml-2">
-                    新建任务
-                </MudButton>
-                <MudSelect @bind-Value="filterCategory" Label="任务分类" Variant="Variant.Outlined" Dense="true" Class="ml-2" Style="min-width: 140px;">
-                    <MudSelectItem Value='@("all")'>全部</MudSelectItem>
-                    @foreach (var c in AvailableCategories)
-                    {
-                        <MudSelectItem Value="@c">@GetCategoryDisplayName(c)</MudSelectItem>
-                    }
-                </MudSelect>
-                <MudSelect @bind-Value="filterStatus" Label="状态筛选" Variant="Variant.Outlined" Dense="true" Style="min-width: 120px;">
-                    <MudSelectItem Value='@("all")'>全部</MudSelectItem>
-                    <MudSelectItem Value='@("pending")'>待执行</MudSelectItem>
-                    <MudSelectItem Value='@("running")'>执行中</MudSelectItem>
-                    <MudSelectItem Value='@("completed")'>已完成</MudSelectItem>
-                    <MudSelectItem Value='@("failed")'>失败</MudSelectItem>
-                </MudSelect>
+                <MudText Typo="Typo.h6">执行中任务 (@activeTasks.Count())</MudText>
             </ToolBarContent>
             <HeaderContent>
                 <MudTh>任务ID</MudTh>
@@ -58,10 +70,10 @@
                     <MudChip T="string" Size="Size.Small" Icon="@GetTaskIcon(context.TaskType)">@GetTaskTypeName(context.TaskType)</MudChip>
                 </MudTd>
                 <MudTd DataLabel="状态">
-                    <MudChip T="string" Size="Size.Small" Color="@GetStatusColor(context.Status)">@GetStatusName(context.Status)</MudChip>
+                    <MudChip T="string" Size="Size.Small" Color="@GetStatusColor(GetDisplayStatus(context))">@GetStatusName(GetDisplayStatus(context))</MudChip>
                 </MudTd>
                 <MudTd DataLabel="进度">
-                    <MudProgressLinear Value="@GetProgress(context)" Color="@GetProgressColor(context.Status)" />
+                    <MudProgressLinear Value="@GetProgress(context)" Color="@GetProgressColor(GetDisplayStatus(context))" />
                     <MudText Typo="Typo.caption">@context.Completed / @context.Total (@context.Failed 失败)</MudText>
                 </MudTd>
                 <MudTd DataLabel="创建时间"><PanelTime Value="context.CreatedAt" /></MudTd>
@@ -78,20 +90,96 @@
                 <MudTd DataLabel="操作">
                     <MudIconButton Icon="@Icons.Material.Filled.Info" Size="Size.Small" Color="Color.Info"
                                    OnClick="@(() => ShowTaskDetails(context))" />
-                    @if (context.Status == "pending" || context.Status == "running")
+                    @if (CanPauseUserChatActiveTask(context))
+                    {
+                        <MudIconButton Icon="@Icons.Material.Filled.Pause" Size="Size.Small" Color="Color.Warning"
+                                       OnClick="@(() => PauseTask(context))" />
+                    }
+                    @if (CanResumeUserChatActiveTask(context))
+                    {
+                        <MudIconButton Icon="@Icons.Material.Filled.PlayArrow" Size="Size.Small" Color="Color.Success"
+                                       OnClick="@(() => ResumeTask(context))" />
+                    }
+                    @if (CanEditUserChatActiveTask(context))
+                    {
+                        <MudIconButton Icon="@Icons.Material.Filled.Edit" Size="Size.Small" Color="Color.Primary"
+                                       OnClick="@(() => OpenEditUserChatActiveTask(context))" />
+                    }
+                    @if (CanCancelTask(context))
                     {
                         <MudIconButton Icon="@Icons.Material.Filled.Cancel" Size="Size.Small" Color="Color.Warning"
                                        OnClick="@(() => CancelTask(context.Id))" />
                     }
-                    @if (context.Status == "completed" || context.Status == "failed")
-                    {
-                        <MudIconButton Icon="@Icons.Material.Filled.Delete" Size="Size.Small" Color="Color.Error"
-                                       OnClick="@(() => DeleteTask(context.Id))" />
-                    }
                 </MudTd>
             </RowTemplate>
             <NoRecordsContent>
-                <MudText>暂无任务</MudText>
+                <MudText>暂无执行中任务</MudText>
+            </NoRecordsContent>
+        </MudTable>
+    </MudCardContent>
+</MudCard>
+
+<MudCard>
+    <MudCardContent>
+        <MudTable Items="@historyTasks" Hover="true" Breakpoint="Breakpoint.Sm" Loading="@loading">
+            <ToolBarContent>
+                <MudText Typo="Typo.h6">历史任务 (@historyTasks.Count())</MudText>
+            </ToolBarContent>
+            <HeaderContent>
+                <MudTh>任务ID</MudTh>
+                <MudTh>归属</MudTh>
+                <MudTh>任务类型</MudTh>
+                <MudTh>状态</MudTh>
+                <MudTh>进度</MudTh>
+                <MudTh>创建时间</MudTh>
+                <MudTh>完成时间</MudTh>
+                <MudTh>操作</MudTh>
+            </HeaderContent>
+            <RowTemplate>
+                <MudTd DataLabel="任务ID">@context.Id</MudTd>
+                <MudTd DataLabel="归属">
+                    <MudChip T="string" Size="Size.Small" Color="@GetCategoryColor(context.TaskType)">@GetCategoryName(context.TaskType)</MudChip>
+                </MudTd>
+                <MudTd DataLabel="任务类型">
+                    <MudChip T="string" Size="Size.Small" Icon="@GetTaskIcon(context.TaskType)">@GetTaskTypeName(context.TaskType)</MudChip>
+                </MudTd>
+                <MudTd DataLabel="状态">
+                    <MudChip T="string" Size="Size.Small" Color="@GetStatusColor(GetDisplayStatus(context))">@GetStatusName(GetDisplayStatus(context))</MudChip>
+                </MudTd>
+                <MudTd DataLabel="进度">
+                    <MudProgressLinear Value="@GetProgress(context)" Color="@GetProgressColor(GetDisplayStatus(context))" />
+                    <MudText Typo="Typo.caption">@context.Completed / @context.Total (@context.Failed 失败)</MudText>
+                </MudTd>
+                <MudTd DataLabel="创建时间"><PanelTime Value="context.CreatedAt" /></MudTd>
+                <MudTd DataLabel="完成时间">
+                    @if (context.CompletedAt.HasValue)
+                    {
+                        <PanelTime Value="context.CompletedAt.Value" />
+                    }
+                    else
+                    {
+                        <span>-</span>
+                    }
+                </MudTd>
+                <MudTd DataLabel="操作">
+                    <MudIconButton Icon="@Icons.Material.Filled.Info" Size="Size.Small" Color="Color.Info"
+                                   OnClick="@(() => ShowTaskDetails(context))" />
+                    @if (CanEditUserChatActiveTask(context))
+                    {
+                        <MudIconButton Icon="@Icons.Material.Filled.Edit" Size="Size.Small" Color="Color.Primary"
+                                       OnClick="@(() => OpenEditUserChatActiveTask(context))" />
+                    }
+                    @if (CanRerunTask(context))
+                    {
+                        <MudIconButton Icon="@Icons.Material.Filled.Replay" Size="Size.Small" Color="Color.Success"
+                                       OnClick="@(() => RerunTask(context))" />
+                    }
+                    <MudIconButton Icon="@Icons.Material.Filled.Delete" Size="Size.Small" Color="Color.Error"
+                                   OnClick="@(() => DeleteTask(context.Id))" />
+                </MudTd>
+            </RowTemplate>
+            <NoRecordsContent>
+                <MudText>暂无历史任务</MudText>
             </NoRecordsContent>
         </MudTable>
     </MudCardContent>
@@ -100,16 +188,25 @@
 @code {
     private List<BatchTask> tasks = new();
     private bool loading = true;
-    private string filterStatus = "all";
+    private string historyStatusFilter = "all";
     private string filterCategory = "all";
 
     private PeriodicTimer? refreshTimer;
     private CancellationTokenSource? refreshCts;
 
-    private IEnumerable<BatchTask> filteredTasks =>
-        tasks.Where(t =>
-            (filterStatus == "all" || t.Status == filterStatus) &&
-            (filterCategory == "all" || GetCategory(t.TaskType) == filterCategory));
+    private IEnumerable<BatchTask> categoryFilteredTasks =>
+        tasks.Where(t => filterCategory == "all" || GetCategory(t.TaskType) == filterCategory);
+
+    private IEnumerable<BatchTask> activeTasks =>
+        categoryFilteredTasks
+            .Where(t => IsActiveStatus(GetDisplayStatus(t)))
+            .OrderBy(t => t.CreatedAt);
+
+    private IEnumerable<BatchTask> historyTasks =>
+        categoryFilteredTasks
+            .Where(t => IsHistoryStatus(GetDisplayStatus(t)))
+            .Where(t => historyStatusFilter == "all" || GetDisplayStatus(t) == historyStatusFilter)
+            .OrderByDescending(t => t.CompletedAt ?? t.CreatedAt);
 
     private IEnumerable<string> AvailableCategories =>
         Contributions.Tasks
@@ -194,7 +291,13 @@
         }
 
         // fallback：兼容历史任务
-        return "other";
+        return taskType switch
+        {
+            BatchTaskTypes.UserChatActive => "user",
+            BatchTaskTypes.BotChannelSetAdminsByAccount => "bot",
+            BatchTaskTypes.BotSetAdmins => "bot",
+            _ => "other"
+        };
     }
 
     private string GetCategoryName(string taskType) => GetCategoryDisplayName(GetCategory(taskType));
@@ -234,13 +337,20 @@
             && !string.IsNullOrWhiteSpace(reg.Definition.DisplayName))
             return reg.Definition.DisplayName;
 
-        return type;
+        return type switch
+        {
+            BatchTaskTypes.UserChatActive => "账号持续活跃（群组/频道）",
+            BatchTaskTypes.BotChannelSetAdminsByAccount => "Bot频道批量设置管理员（账号执行）",
+            BatchTaskTypes.BotSetAdmins => "Bot频道批量设置管理员（机器人执行）",
+            _ => type
+        };
     }
 
     private string GetStatusName(string status) => status switch
     {
         "pending" => "待执行",
         "running" => "执行中",
+        "paused" => "已暂停",
         "completed" => "已完成",
         "failed" => "失败",
         _ => status
@@ -250,6 +360,7 @@
     {
         "completed" => Color.Success,
         "running" => Color.Info,
+        "paused" => Color.Warning,
         "pending" => Color.Default,
         "failed" => Color.Error,
         _ => Color.Default
@@ -259,15 +370,38 @@
     {
         "completed" => Color.Success,
         "running" => Color.Primary,
+        "paused" => Color.Warning,
         "failed" => Color.Error,
         _ => Color.Default
     };
 
+    private static string GetDisplayStatus(BatchTask task)
+    {
+        if (task.Status == "pending"
+            && IsUserChatActiveTask(task.TaskType)
+            && task.Total == 0)
+        {
+            return "running";
+        }
+
+        if (task.Status == "failed" && task.CompletedAt.HasValue && task.Total > 0 && task.Completed >= task.Total)
+            return "completed";
+
+        return task.Status;
+    }
+
+    private static bool IsActiveStatus(string status) =>
+        status is "pending" or "running" or "paused";
+
+    private static bool IsHistoryStatus(string status) =>
+        status is "completed" or "failed";
+
     private void ShowTaskDetails(BatchTask task)
     {
         var createdAt = TimeZone.Format(task.CreatedAt, "yyyy-MM-dd HH:mm");
+        var displayStatus = GetDisplayStatus(task);
         var details = $"任务类型: {GetTaskTypeName(task.TaskType)}\n" +
-                     $"状态: {GetStatusName(task.Status)}\n" +
+                     $"状态: {GetStatusName(displayStatus)}\n" +
                      $"总数: {task.Total}\n" +
                      $"已完成: {task.Completed}\n" +
                      $"失败: {task.Failed}\n" +
@@ -279,10 +413,257 @@
         if (task.CompletedAt.HasValue)
             details += $"完成时间: {TimeZone.Format(task.CompletedAt.Value, "yyyy-MM-dd HH:mm")}\n";
 
-        if (!string.IsNullOrEmpty(task.Config))
+        var failureLines = ExtractBotAdminFailureLines(task);
+        if (failureLines.Count > 0)
+            details += $"\n失败频道:\n{string.Join('\n', failureLines)}";
+        else if (IsUserChatActiveTask(task.TaskType) && TryBuildUserChatActiveDetails(task, out var activeDetails))
+            details += activeDetails;
+        else if (!IsBotAdminTask(task.TaskType) && !string.IsNullOrEmpty(task.Config))
             details += $"\n配置信息:\n{task.Config}";
 
-        DialogService.ShowMessageBox("任务详情", details);
+        var html = System.Net.WebUtility.HtmlEncode(details)
+            .Replace("\r\n", "\n", StringComparison.Ordinal)
+            .Replace("\n", "<br/>", StringComparison.Ordinal);
+        DialogService.ShowMessageBox("任务详情", (MarkupString)html);
+    }
+
+    private static bool IsBotAdminTask(string taskType) =>
+        taskType is BatchTaskTypes.BotChannelSetAdminsByAccount or BatchTaskTypes.BotSetAdmins;
+
+    private static bool IsUserChatActiveTask(string taskType) =>
+        string.Equals((taskType ?? string.Empty).Trim(), BatchTaskTypes.UserChatActive, StringComparison.OrdinalIgnoreCase);
+
+    private static bool CanPauseUserChatActiveTask(BatchTask task)
+    {
+        return IsUserChatActiveTask(task.TaskType)
+               && string.Equals(GetDisplayStatus(task), "running", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static bool CanResumeUserChatActiveTask(BatchTask task)
+    {
+        return IsUserChatActiveTask(task.TaskType)
+               && string.Equals(GetDisplayStatus(task), "paused", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static bool CanEditUserChatActiveTask(BatchTask task)
+    {
+        return IsUserChatActiveTask(task.TaskType);
+    }
+
+    private bool CanRerunTask(BatchTask task)
+    {
+        if (!IsHistoryStatus(GetDisplayStatus(task)))
+            return false;
+
+        var taskType = (task.TaskType ?? string.Empty).Trim();
+        return taskType.Length > 0 && Contributions.TaskTypeToDefinition.ContainsKey(taskType);
+    }
+
+    private static bool CanCancelTask(BatchTask task)
+    {
+        var status = GetDisplayStatus(task);
+        if (status is not ("pending" or "running"))
+            return false;
+
+        // 持续活跃任务运行中优先使用“暂停”，避免直接进入历史任务导致不能快速调整配置。
+        return !CanPauseUserChatActiveTask(task);
+    }
+
+    private static List<string> ExtractBotAdminFailureLines(BatchTask task)
+    {
+        var lines = new List<string>();
+        if (!IsBotAdminTask(task.TaskType) || string.IsNullOrWhiteSpace(task.Config) || task.Failed <= 0)
+            return lines;
+
+        try
+        {
+            using var doc = JsonDocument.Parse(task.Config);
+            var root = doc.RootElement;
+
+            if (root.TryGetProperty("FailureLines", out var failureLinesElement)
+                && failureLinesElement.ValueKind == JsonValueKind.Array)
+            {
+                foreach (var lineElement in failureLinesElement.EnumerateArray())
+                {
+                    var line = (lineElement.GetString() ?? string.Empty).Trim();
+                    if (line.Length > 0)
+                        lines.Add(line);
+                }
+
+                if (lines.Count > 0)
+                    return lines;
+            }
+
+            if (root.TryGetProperty("Failures", out var failuresElement)
+                && failuresElement.ValueKind == JsonValueKind.Array)
+            {
+                var failures = new List<BotAdminTaskFailureItem>();
+                foreach (var item in failuresElement.EnumerateArray())
+                {
+                    if (item.ValueKind != JsonValueKind.Object)
+                        continue;
+
+                    var failure = new BotAdminTaskFailureItem
+                    {
+                        ChannelTelegramId = item.TryGetProperty("ChannelTelegramId", out var channelId) && channelId.TryGetInt64(out var id) ? id : 0,
+                        ChannelTitle = item.TryGetProperty("ChannelTitle", out var channelTitle) ? channelTitle.GetString() ?? string.Empty : string.Empty,
+                        Username = item.TryGetProperty("Username", out var username) ? username.GetString() : null,
+                        UserId = item.TryGetProperty("UserId", out var userId) && userId.TryGetInt64(out var uid) ? uid : null,
+                        Reason = item.TryGetProperty("Reason", out var reason) ? reason.GetString() ?? string.Empty : string.Empty
+                    };
+
+                    failures.Add(failure);
+                }
+
+                if (failures.Count > 0)
+                    lines = BotAdminTaskFailureFormatter.BuildLines(failures);
+            }
+        }
+        catch
+        {
+            // 配置异常时回退到默认展示，不中断详情弹窗。
+        }
+
+        return lines;
+    }
+
+    private static bool TryBuildUserChatActiveDetails(BatchTask task, out string details)
+    {
+        details = string.Empty;
+        if (!IsUserChatActiveTask(task.TaskType) || string.IsNullOrWhiteSpace(task.Config))
+            return false;
+
+        try
+        {
+            using var doc = JsonDocument.Parse(task.Config);
+            var root = doc.RootElement;
+
+            var categoryName = root.TryGetProperty("category_name", out var categoryNameEl) ? (categoryNameEl.GetString() ?? "").Trim() : "";
+            var categoryId = root.TryGetProperty("category_id", out var categoryIdEl) && categoryIdEl.TryGetInt32(out var cid) ? cid : 0;
+            var maxMessages = root.TryGetProperty("max_messages", out var maxMessagesEl) && maxMessagesEl.TryGetInt32(out var mm) ? mm : 0;
+            var accountMode = root.TryGetProperty("account_mode", out var accountModeEl) ? (accountModeEl.GetString() ?? "").Trim() : "";
+            var targetMode = root.TryGetProperty("target_mode", out var targetModeEl) ? (targetModeEl.GetString() ?? "").Trim() : "";
+            var messageMode = root.TryGetProperty("message_mode", out var messageModeEl) ? (messageModeEl.GetString() ?? "").Trim() : "";
+            var delayMin = root.TryGetProperty("delay_min_ms", out var delayMinEl) && delayMinEl.TryGetInt32(out var dmin) ? dmin : 0;
+            var delayMax = root.TryGetProperty("delay_max_ms", out var delayMaxEl) && delayMaxEl.TryGetInt32(out var dmax) ? dmax : 0;
+            var targetCount = root.TryGetProperty("targets", out var targetsEl) && targetsEl.ValueKind == JsonValueKind.Array
+                ? targetsEl.GetArrayLength()
+                : 0;
+            var dictCount = root.TryGetProperty("dictionary", out var dictEl) && dictEl.ValueKind == JsonValueKind.Array
+                ? dictEl.GetArrayLength()
+                : 0;
+
+            var lines = new List<string>();
+            if (root.TryGetProperty("recent_failures", out var failuresEl) && failuresEl.ValueKind == JsonValueKind.Array)
+            {
+                foreach (var item in failuresEl.EnumerateArray())
+                {
+                    if (item.ValueKind != JsonValueKind.Object)
+                        continue;
+
+                    var account = item.TryGetProperty("account", out var accountEl) ? (accountEl.GetString() ?? "").Trim() : "";
+                    var target = item.TryGetProperty("target", out var targetEl) ? (targetEl.GetString() ?? "").Trim() : "";
+                    var reason = item.TryGetProperty("reason", out var reasonEl) ? (reasonEl.GetString() ?? "").Trim() : "";
+                    var time = item.TryGetProperty("time_utc", out var timeEl) ? (timeEl.GetString() ?? "").Trim() : "";
+
+                    var line = $"{(account.Length == 0 ? "-" : account)} -> {(target.Length == 0 ? "-" : target)}：{(reason.Length == 0 ? "失败" : reason)}";
+                    if (time.Length > 0)
+                        line = $"{line}（{time}）";
+                    lines.Add(line);
+                }
+            }
+
+            var categoryText = categoryName.Length > 0 ? $"{categoryName} (#{categoryId})" : $"#{categoryId}";
+            details += "\n配置摘要:\n";
+            details += $"分类: {categoryText}\n";
+            details += $"目标数: {targetCount}\n";
+            details += $"词典数: {dictCount}\n";
+            details += $"账号模式: {NormalizeTaskModeDisplay(accountMode)}\n";
+            details += $"目标模式: {NormalizeTaskModeDisplay(targetMode)}\n";
+            details += $"词典模式: {NormalizeTaskModeDisplay(messageMode)}\n";
+            details += $"间隔: {FormatDelaySeconds(delayMin)} ~ {FormatDelaySeconds(delayMax)} 秒\n";
+            details += $"最多发送: {(maxMessages <= 0 ? "持续运行（直到取消）" : maxMessages.ToString())}\n";
+
+            if (lines.Count > 0)
+            {
+                details += "\n最近失败:\n";
+                details += string.Join('\n', lines.TakeLast(20));
+            }
+
+            return true;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    private static string FormatDelaySeconds(int milliseconds)
+    {
+        if (milliseconds <= 0)
+            return "0";
+
+        var seconds = milliseconds / 1000d;
+        return seconds.ToString("0.###");
+    }
+
+    private static string NormalizeTaskModeDisplay(string? mode)
+    {
+        var text = (mode ?? "").Trim();
+        return text switch
+        {
+            "random" => "随机",
+            "queue" => "队列循环",
+            _ => string.IsNullOrWhiteSpace(text) ? "-" : text
+        };
+    }
+
+    private async Task PauseTask(BatchTask task)
+    {
+        if (!CanPauseUserChatActiveTask(task))
+        {
+            Snackbar.Add("该任务当前不可暂停", Severity.Warning);
+            return;
+        }
+
+        bool? result = await DialogService.ShowMessageBox(
+            "确认暂停",
+            $"确定要暂停任务 #{task.Id} 吗？暂停后可直接编辑配置并继续运行。",
+            yesText: "暂停", cancelText: "返回");
+
+        if (result != true)
+            return;
+
+        try
+        {
+            await TaskManagement.PauseTaskAsync(task.Id);
+            await LoadTasks();
+            Snackbar.Add("任务已暂停，可编辑后继续运行", Severity.Success);
+        }
+        catch (Exception ex)
+        {
+            Snackbar.Add($"暂停失败：{ex.Message}", Severity.Error);
+        }
+    }
+
+    private async Task ResumeTask(BatchTask task)
+    {
+        if (!CanResumeUserChatActiveTask(task))
+        {
+            Snackbar.Add("该任务当前不可继续运行", Severity.Warning);
+            return;
+        }
+
+        try
+        {
+            await TaskManagement.ResumeTaskAsync(task.Id);
+            await LoadTasks();
+            Snackbar.Add("任务已恢复为待执行", Severity.Success);
+        }
+        catch (Exception ex)
+        {
+            Snackbar.Add($"继续运行失败：{ex.Message}", Severity.Error);
+        }
     }
 
     private async Task CancelTask(int id)
@@ -329,6 +710,69 @@
         }
     }
 
+    private async Task ClearAllTasks()
+    {
+        var hasActive = tasks.Any(t => t.Status is "pending" or "running" or "paused");
+
+        var parameters = new DialogParameters
+        {
+            ["HasActiveTasks"] = hasActive
+        };
+        var options = new DialogOptions { CloseOnEscapeKey = true, MaxWidth = MaxWidth.Medium, FullWidth = true };
+        var dialog = DialogService.Show<TelegramPanel.Web.Components.Dialogs.TaskCleanupDialog>("确认清理", parameters, options)!;
+        var result = await dialog.Result;
+        if (result.Canceled || result.Data is not string mode)
+            return;
+
+        var historyOnly = string.Equals(mode, "history", StringComparison.OrdinalIgnoreCase);
+
+        try
+        {
+            var allTasks = (await TaskManagement.GetAllTasksAsync()).ToList();
+            if (allTasks.Count == 0)
+            {
+                tasks.Clear();
+                Snackbar.Add("没有可清理的任务记录", Severity.Info);
+                return;
+            }
+
+            if (historyOnly)
+            {
+                var historyTaskList = allTasks
+                    .Where(t => IsHistoryStatus(GetDisplayStatus(t)))
+                    .ToList();
+
+                if (historyTaskList.Count == 0)
+                {
+                    Snackbar.Add("没有可清理的历史任务记录", Severity.Info);
+                    return;
+                }
+
+                foreach (var task in historyTaskList)
+                    await TaskManagement.DeleteTaskAsync(task.Id);
+
+                Snackbar.Add($"已清理 {historyTaskList.Count} 条历史任务记录", Severity.Success);
+            }
+            else
+            {
+                foreach (var activeTask in allTasks.Where(t => t.Status is "pending" or "running" or "paused"))
+                    await TaskManagement.CompleteTaskAsync(activeTask.Id, success: false);
+
+                foreach (var task in allTasks)
+                    await TaskManagement.DeleteTaskAsync(task.Id);
+
+                tasks.Clear();
+                Snackbar.Add($"已清理 {allTasks.Count} 条任务记录", Severity.Success);
+            }
+
+            await LoadTasks();
+        }
+        catch (Exception ex)
+        {
+            Snackbar.Add($"清理失败：{ex.Message}", Severity.Error);
+        }
+    }
+
     private async Task OpenCreateTaskDialog()
     {
         var options = new DialogOptions { CloseOnEscapeKey = true, MaxWidth = MaxWidth.Large, FullWidth = true };
@@ -337,4 +781,159 @@
         if (result is { Canceled: false })
             await LoadTasks();
     }
+
+    private async Task OpenEditUserChatActiveTask(BatchTask task)
+    {
+        if (!IsUserChatActiveTask(task.TaskType))
+        {
+            Snackbar.Add("该任务当前不可编辑", Severity.Warning);
+            return;
+        }
+
+        if (string.Equals(GetDisplayStatus(task), "running", StringComparison.OrdinalIgnoreCase))
+        {
+            await TaskManagement.PauseTaskAsync(task.Id);
+            await LoadTasks();
+            Snackbar.Add("已自动暂停任务，正在打开编辑窗口", Severity.Info);
+        }
+
+        var parameters = new DialogParameters
+        {
+            ["TaskId"] = task.Id
+        };
+        var options = new DialogOptions { CloseOnEscapeKey = true, MaxWidth = MaxWidth.Large, FullWidth = true };
+        var dialog = DialogService.Show<TelegramPanel.Web.Components.Dialogs.EditUserChatActiveTaskDialog>($"编辑持续任务 #{task.Id}", parameters, options)!;
+        var result = await dialog.Result;
+        if (result is { Canceled: false })
+            await LoadTasks();
+    }
+
+    private async Task RerunTask(BatchTask task)
+    {
+        if (!CanRerunTask(task))
+        {
+            Snackbar.Add("该任务当前不可重新运行", Severity.Warning);
+            return;
+        }
+
+        bool? confirm = await DialogService.ShowMessageBox(
+            "确认重新运行",
+            $"将基于任务 #{task.Id} 的配置创建一个新任务，是否继续？",
+            yesText: "继续", cancelText: "取消");
+
+        if (confirm != true)
+            return;
+
+        try
+        {
+            var created = await TaskManagement.CreateTaskAsync(BuildRerunTask(task));
+            Snackbar.Add($"已创建重跑任务 #{created.Id}", Severity.Success);
+            await LoadTasks();
+        }
+        catch (Exception ex)
+        {
+            Snackbar.Add($"重新运行失败：{ex.Message}", Severity.Error);
+        }
+    }
+
+    private static BatchTask BuildRerunTask(BatchTask task)
+    {
+        var taskType = (task.TaskType ?? string.Empty).Trim();
+        if (taskType.Length == 0)
+            throw new InvalidOperationException("任务类型为空，无法重新运行");
+
+        if (IsUserChatActiveTask(taskType))
+        {
+            var rerunConfig = BuildRerunConfig(task.Config);
+            var total = rerunConfig.MaxMessages > 0 ? rerunConfig.MaxMessages : 0;
+            var configJson = JsonSerializer.Serialize(rerunConfig, new JsonSerializerOptions { WriteIndented = true });
+
+            return new BatchTask
+            {
+                TaskType = BatchTaskTypes.UserChatActive,
+                Total = total,
+                Completed = 0,
+                Failed = 0,
+                Config = configJson
+            };
+        }
+
+        return new BatchTask
+        {
+            TaskType = taskType,
+            Total = Math.Max(0, task.Total),
+            Completed = 0,
+            Failed = 0,
+            Config = string.IsNullOrWhiteSpace(task.Config) ? null : task.Config.Trim()
+        };
+    }
+
+    private static UserChatActiveTaskConfig BuildRerunConfig(string? rawConfig)
+    {
+        var raw = (rawConfig ?? string.Empty).Trim();
+        if (raw.Length == 0)
+            throw new InvalidOperationException("任务配置为空，无法重新运行");
+
+        UserChatActiveTaskConfig cfg;
+        try
+        {
+            cfg = JsonSerializer.Deserialize<UserChatActiveTaskConfig>(raw)
+                  ?? throw new InvalidOperationException("任务配置解析结果为空");
+        }
+        catch (Exception ex)
+        {
+            throw new InvalidOperationException($"任务配置 JSON 无效：{ex.Message}");
+        }
+
+        if (cfg.CategoryId <= 0)
+            throw new InvalidOperationException("任务缺少账号分类，无法重新运行");
+
+        cfg.Targets = (cfg.Targets ?? new List<string>())
+            .Select(x => (x ?? string.Empty).Trim())
+            .Where(x => x.Length > 0)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+
+        cfg.Dictionary = (cfg.Dictionary ?? new List<string>())
+            .Select(x => (x ?? string.Empty).Trim())
+            .Where(x => x.Length > 0)
+            .ToList();
+
+        if (cfg.Targets.Count == 0)
+            throw new InvalidOperationException("任务缺少目标群组/频道，无法重新运行");
+
+        if (cfg.Dictionary.Count == 0)
+            throw new InvalidOperationException("任务缺少词典消息，无法重新运行");
+
+        if (cfg.DelayMinMs < 0) cfg.DelayMinMs = 0;
+        if (cfg.DelayMaxMs < 0) cfg.DelayMaxMs = 0;
+        if (cfg.DelayMinMs > 600000) cfg.DelayMinMs = 600000;
+        if (cfg.DelayMaxMs > 600000) cfg.DelayMaxMs = 600000;
+        if (cfg.DelayMaxMs < cfg.DelayMinMs) cfg.DelayMaxMs = cfg.DelayMinMs;
+        if (cfg.MaxMessages < 0) cfg.MaxMessages = 0;
+
+        cfg.AccountMode = NormalizeModeValue(cfg.AccountMode);
+        cfg.TargetMode = NormalizeModeValue(cfg.TargetMode);
+        cfg.MessageMode = NormalizeModeValue(cfg.MessageMode);
+
+        cfg.Canceled = false;
+        cfg.Error = null;
+        cfg.RecentFailures = new List<UserChatActiveTaskRuntimeFailure>();
+
+        return cfg;
+    }
+
+    private static string NormalizeModeValue(string? mode)
+    {
+        return string.Equals((mode ?? string.Empty).Trim(), UserChatActiveTaskModes.Queue, StringComparison.OrdinalIgnoreCase)
+            ? UserChatActiveTaskModes.Queue
+            : UserChatActiveTaskModes.Random;
+    }
 }
+
+
+
+
+
+
+

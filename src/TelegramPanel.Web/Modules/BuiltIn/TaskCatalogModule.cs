@@ -34,6 +34,17 @@ public sealed class TaskCatalogModule : ITelegramPanelModule, IModuleTaskProvide
     {
         yield return new ModuleTaskDefinition
         {
+            Category = "user",
+            TaskType = BatchTaskTypes.UserChatActive,
+            DisplayName = "账号持续活跃（群组/频道）",
+            Description = "按账号分类持续向指定目标发送词典内容，支持间隔抖动、随机/队列循环。",
+            Icon = Icons.Material.Filled.Chat,
+            EditorComponentType = typeof(TelegramPanel.Web.Components.Dialogs.UserChatActiveTaskEditor).AssemblyQualifiedName ?? "",
+            Order = 120
+        };
+
+        yield return new ModuleTaskDefinition
+        {
             Category = "system",
             TaskType = BatchTaskTypes.ExternalApiKick,
             DisplayName = "外部 API：踢人/封禁",

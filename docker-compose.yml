@@ -1,8 +1,7 @@
 services:
   telegram-panel:
-    build:
-      context: .
-      dockerfile: ${TP_DOCKERFILE:-Dockerfile}
+    image: ${TP_IMAGE:-ghcr.io/moeacgx/telegram-panel:latest}
+    pull_policy: always
     container_name: telegram-panel
     restart: unless-stopped
     ports:

@@ -1,5 +1,6 @@
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging;
+using System.Globalization;
 using System.Net.Mail;
 using SixLabors.ImageSharp;
 using SixLabors.ImageSharp.Formats.Jpeg;
@@ -830,6 +831,269 @@ public class AccountTelegramToolsService
         }
     }
 
+    /// <summary>
+    /// 启用外部 Bot（向 Bot 发送 /start，可带参数）。
+    /// 支持：@xxxbot、xxxbot、https://t.me/xxxbot、tg://resolve?domain=xxxbot&start=abc
+    /// </summary>
+    public async Task<(bool Success, string? Error, string? BotUsername)> StartExternalBotAsync(
+        int accountId,
+        string botLinkOrUsername,
+        string? startParameter = null,
+        CancellationToken cancellationToken = default,
+        bool assumeBotUsername = false)
+    {
+        try
+        {
+            var (username, startFromLink) = NormalizeTelegramBotUsername(botLinkOrUsername, assumeBotUsername);
+            var normalizedManualStart = NormalizeBotStartParameter(startParameter);
+            var finalStart = string.IsNullOrWhiteSpace(normalizedManualStart) ? startFromLink : normalizedManualStart;
+
+            if (finalStart.Length > 64)
+                return (false, "启动参数过长（最多 64 字符）", null);
+
+            var client = await GetOrCreateConnectedClientAsync(accountId, cancellationToken);
+            cancellationToken.ThrowIfCancellationRequested();
+
+            var resolved = await client.Contacts_ResolveUsername(username);
+            var user = resolved.User;
+            if (user.access_hash == 0)
+                return (false, "无法获取 Bot access_hash", null);
+
+            var inputUser = new InputUser(user.id, user.access_hash);
+            var randomId = Random.Shared.NextInt64();
+            await client.Messages_StartBot(
+                bot: inputUser,
+                peer: new InputPeerSelf(),
+                random_id: randomId,
+                start_param: finalStart);
+
+            return (true, null, "@" + username);
+        }
+        catch (RpcException ex) when (ex.Code == 400 && string.Equals(ex.Message, "BOT_APP_INVALID", StringComparison.OrdinalIgnoreCase))
+        {
+            return (false, "目标不是可启动的 Bot（BOT_APP_INVALID）", null);
+        }
+        catch (RpcException ex) when (ex.Code == 400 && string.Equals(ex.Message, "PEER_FLOOD", StringComparison.OrdinalIgnoreCase))
+        {
+            return (false, "触发风控（PEER_FLOOD），请降低频率后重试", null);
+        }
+        catch (Exception ex)
+        {
+            var (summary, details) = MapTelegramException(ex);
+            var msg = string.IsNullOrWhiteSpace(details) ? summary : $"{summary}：{details}";
+            return (false, msg, null);
+        }
+    }
+
+    /// <summary>
+    /// 停用外部 Bot（通过拉黑 Bot 实现）。
+    /// 支持：@xxxbot、xxxbot、https://t.me/xxxbot、tg://resolve?domain=xxxbot
+    /// </summary>
+    public async Task<(bool Success, string? Error, string? BotUsername)> StopExternalBotAsync(
+        int accountId,
+        string botLinkOrUsername,
+        CancellationToken cancellationToken = default,
+        bool assumeBotUsername = false)
+    {
+        try
+        {
+            var (username, _) = NormalizeTelegramBotUsername(botLinkOrUsername, assumeBotUsername);
+
+            var client = await GetOrCreateConnectedClientAsync(accountId, cancellationToken);
+            cancellationToken.ThrowIfCancellationRequested();
+
+            var resolved = await client.Contacts_ResolveUsername(username);
+            var user = resolved.User;
+            if (user.access_hash == 0)
+                return (false, "无法获取 Bot access_hash", null);
+
+            await client.Contacts_Block(new InputPeerUser(user.id, user.access_hash));
+            return (true, null, "@" + username);
+        }
+        catch (RpcException ex) when (ex.Code == 400 && string.Equals(ex.Message, "USER_NOT_MUTUAL_CONTACT", StringComparison.OrdinalIgnoreCase))
+        {
+            // 某些账号状态下会返回该错误，按“已停用”处理可避免批量任务中断。
+            return (true, null, null);
+        }
+        catch (Exception ex)
+        {
+            var (summary, details) = MapTelegramException(ex);
+            var msg = string.IsNullOrWhiteSpace(details) ? summary : $"{summary}：{details}";
+            return (false, msg, null);
+        }
+    }
+
+    public sealed record ResolvedChatTarget(InputPeer Peer, string Title, string CanonicalId);
+
+    /// <summary>
+    /// 解析群组/频道目标，支持：
+    /// - 用户名/链接：@username、username、https://t.me/xxx、t.me/xxx、tg://join?invite=hash
+    /// - 频道/群组 ID：123456、-123456、-1001234567890
+    /// </summary>
+    public async Task<(bool Success, string? Error, ResolvedChatTarget? Target)> ResolveChatTargetAsync(
+        int accountId,
+        string target,
+        CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            var raw = (target ?? string.Empty).Trim();
+            if (raw.Length == 0)
+                return (false, "目标为空", null);
+
+            var client = await GetOrCreateConnectedClientAsync(accountId, cancellationToken);
+            cancellationToken.ThrowIfCancellationRequested();
+
+            if (TryParseChatIdCandidate(raw, out var normalizedId))
+            {
+                var resolvedById = await TryResolveChatByIdFromDialogsAsync(client, normalizedId, cancellationToken);
+                if (resolvedById != null)
+                    return (true, null, resolvedById);
+
+                return (false, $"未找到 chatId={raw} 对应的群组/频道（请确认该账号已加入目标）", null);
+            }
+
+            var url = NormalizeTelegramJoinUrl(raw);
+            var chat = await client.AnalyzeInviteLink(url, join: false);
+            cancellationToken.ThrowIfCancellationRequested();
+
+            var peer = chat switch
+            {
+                TL.Channel c => c.ToInputPeer(),
+                TL.Chat c => c.ToInputPeer(),
+                _ => null
+            };
+
+            if (peer == null)
+                return (false, "无法解析目标群组/频道", null);
+
+            return chat switch
+            {
+                TL.Channel channel => (true, null, new ResolvedChatTarget(peer, NormalizeChatTitle(channel.title, channel.id.ToString(CultureInfo.InvariantCulture)), BuildChannelBotApiChatId(channel.id).ToString(CultureInfo.InvariantCulture))),
+                TL.Chat basic => (true, null, new ResolvedChatTarget(peer, NormalizeChatTitle(basic.title, basic.id.ToString(CultureInfo.InvariantCulture)), basic.id.ToString(CultureInfo.InvariantCulture))),
+                _ => (true, null, new ResolvedChatTarget(peer, raw, raw))
+            };
+        }
+        catch (Exception ex)
+        {
+            var (summary, details) = MapTelegramException(ex);
+            var msg = string.IsNullOrWhiteSpace(details) ? summary : $"{summary}：{details}";
+            return (false, msg, null);
+        }
+    }
+
+    /// <summary>
+    /// 向已解析的群组/频道目标发送文本消息。
+    /// </summary>
+    public async Task<(bool Success, string? Error)> SendMessageToResolvedChatAsync(
+        int accountId,
+        ResolvedChatTarget target,
+        string message,
+        CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            var text = (message ?? string.Empty).Trim();
+            if (text.Length == 0)
+                return (false, "消息内容为空");
+
+            var client = await GetOrCreateConnectedClientAsync(accountId, cancellationToken);
+            cancellationToken.ThrowIfCancellationRequested();
+
+            _ = await client.SendMessageAsync(target.Peer, text);
+            return (true, null);
+        }
+        catch (Exception ex)
+        {
+            var (summary, details) = MapTelegramException(ex);
+            var msg = string.IsNullOrWhiteSpace(details) ? summary : $"{summary}：{details}";
+            return (false, msg);
+        }
+    }
+
+    private async Task<ResolvedChatTarget?> TryResolveChatByIdFromDialogsAsync(
+        Client client,
+        long normalizedId,
+        CancellationToken cancellationToken)
+    {
+        var dialogs = await client.Messages_GetAllDialogs();
+        cancellationToken.ThrowIfCancellationRequested();
+
+        foreach (var chat in dialogs.chats.Values)
+        {
+            switch (chat)
+            {
+                case TL.Channel channel when channel.IsActive:
+                {
+                    var rawId = channel.id;
+                    var botApiId = BuildChannelBotApiChatId(rawId);
+                    if (normalizedId != rawId && normalizedId != botApiId)
+                        continue;
+
+                    return new ResolvedChatTarget(
+                        channel.ToInputPeer(),
+                        NormalizeChatTitle(channel.title, rawId.ToString(CultureInfo.InvariantCulture)),
+                        botApiId.ToString(CultureInfo.InvariantCulture));
+                }
+                case TL.Chat basic when basic.IsActive:
+                {
+                    var rawId = basic.id;
+                    var negativeId = -rawId;
+                    if (normalizedId != rawId && normalizedId != negativeId)
+                        continue;
+
+                    return new ResolvedChatTarget(
+                        basic.ToInputPeer(),
+                        NormalizeChatTitle(basic.title, rawId.ToString(CultureInfo.InvariantCulture)),
+                        rawId.ToString(CultureInfo.InvariantCulture));
+                }
+            }
+        }
+
+        return null;
+    }
+
+    private static bool TryParseChatIdCandidate(string raw, out long normalizedId)
+    {
+        normalizedId = 0;
+        var s = (raw ?? string.Empty).Trim();
+        if (s.Length == 0)
+            return false;
+
+        if (s.StartsWith("+", StringComparison.Ordinal))
+            return false;
+
+        if (!long.TryParse(s, NumberStyles.Integer, CultureInfo.InvariantCulture, out var parsed))
+            return false;
+
+        if (parsed < 0 && s.StartsWith("-100", StringComparison.Ordinal))
+        {
+            var suffix = s[4..];
+            if (suffix.Length > 0 && long.TryParse(suffix, NumberStyles.Integer, CultureInfo.InvariantCulture, out var channelId) && channelId > 0)
+            {
+                normalizedId = parsed;
+                return true;
+            }
+        }
+
+        normalizedId = parsed;
+        return true;
+    }
+
+    private static long BuildChannelBotApiChatId(long channelId)
+    {
+        var text = "-100" + channelId.ToString(CultureInfo.InvariantCulture);
+        if (long.TryParse(text, NumberStyles.Integer, CultureInfo.InvariantCulture, out var parsed))
+            return parsed;
+        return channelId;
+    }
+
+    private static string NormalizeChatTitle(string? title, string fallback)
+    {
+        var text = (title ?? string.Empty).Trim();
+        return text.Length == 0 ? fallback : text;
+    }
+
     private static string NormalizeTelegramJoinUrl(string input)
     {
         var s = (input ?? string.Empty).Trim();
@@ -865,6 +1129,130 @@ public class AccountTelegramToolsService
             return $"https://t.me/{s}";
 
         return s;
+    }
+
+    private static (string Username, string StartFromLink) NormalizeTelegramBotUsername(string input, bool assumeBotUsername = false)
+    {
+        var s = (input ?? string.Empty).Trim();
+        if (string.IsNullOrWhiteSpace(s))
+            throw new ArgumentException("Bot 用户名为空", nameof(input));
+
+        string startFromLink = string.Empty;
+
+        // tg://resolve?domain=xxxbot&start=abc
+        if (s.StartsWith("tg://", StringComparison.OrdinalIgnoreCase)
+            && Uri.TryCreate(s, UriKind.Absolute, out var tgUri))
+        {
+            var query = ParseQueryString(tgUri.Query);
+            if (query.TryGetValue("domain", out var domain) && !string.IsNullOrWhiteSpace(domain))
+                s = domain.Trim();
+            if (query.TryGetValue("start", out var start) && !string.IsNullOrWhiteSpace(start))
+                startFromLink = NormalizeBotStartParameter(start);
+        }
+
+        // https://t.me/xxxbot?start=abc 或 t.me/xxxbot?start=abc
+        if (s.StartsWith("http://", StringComparison.OrdinalIgnoreCase)
+            || s.StartsWith("https://", StringComparison.OrdinalIgnoreCase)
+            || s.StartsWith("t.me/", StringComparison.OrdinalIgnoreCase)
+            || s.StartsWith("telegram.me/", StringComparison.OrdinalIgnoreCase))
+        {
+            var url = s.Contains("://", StringComparison.Ordinal) ? s : "https://" + s;
+            if (!Uri.TryCreate(url, UriKind.Absolute, out var uri))
+                throw new ArgumentException("Bot 链接格式无效", nameof(input));
+
+            var path = (uri.AbsolutePath ?? string.Empty).Trim('/');
+            var firstSeg = path.Split('/', StringSplitOptions.RemoveEmptyEntries).FirstOrDefault() ?? string.Empty;
+            if (string.IsNullOrWhiteSpace(firstSeg))
+                throw new ArgumentException("Bot 链接中缺少用户名", nameof(input));
+
+            s = firstSeg;
+
+            var query = ParseQueryString(uri.Query);
+            if (query.TryGetValue("start", out var start) && !string.IsNullOrWhiteSpace(start))
+                startFromLink = NormalizeBotStartParameter(start);
+        }
+
+        s = s.Trim().TrimStart('@');
+
+        // 支持：@username?start=abc（无 http/tg 协议）
+        var question = s.IndexOf('?');
+        if (question >= 0)
+        {
+            var query = ParseQueryString(s[(question + 1)..]);
+            if (query.TryGetValue("start", out var start) && !string.IsNullOrWhiteSpace(start))
+                startFromLink = NormalizeBotStartParameter(start);
+
+            s = s[..question];
+        }
+
+        var slash = s.IndexOf('/');
+        if (slash >= 0)
+            s = s[..slash];
+
+        if (string.IsNullOrWhiteSpace(s))
+            throw new ArgumentException("Bot 用户名为空", nameof(input));
+
+        if (s.StartsWith("+", StringComparison.Ordinal))
+            throw new ArgumentException("邀请链接不是 Bot 用户名，请输入 @xxxbot 或 t.me/xxxbot", nameof(input));
+
+        if (!System.Text.RegularExpressions.Regex.IsMatch(s, "^[A-Za-z0-9_]{5,64}$"))
+            throw new ArgumentException("Bot 用户名格式无效", nameof(input));
+
+        // 常规情况：要求以 bot 结尾
+        // 例外：
+        // 1) 显式给了 start 参数（常见于 t.me/xxx?start=abc 或 @xxx?start=abc）
+        // 2) 调用方明确“按 Bot 处理”
+        if (!s.EndsWith("bot", StringComparison.OrdinalIgnoreCase)
+            && string.IsNullOrWhiteSpace(startFromLink)
+            && !assumeBotUsername)
+            throw new ArgumentException("目标看起来不是 Bot 用户名（需以 bot 结尾）", nameof(input));
+
+        return (s, startFromLink);
+    }
+
+    private static string NormalizeBotStartParameter(string? input)
+    {
+        var s = (input ?? string.Empty).Trim();
+        if (string.IsNullOrWhiteSpace(s))
+            return string.Empty;
+
+        if (s.StartsWith("/start", StringComparison.OrdinalIgnoreCase))
+            s = s[6..].Trim();
+
+        if (s.StartsWith("@", StringComparison.Ordinal))
+        {
+            var idx = s.IndexOf(' ');
+            s = idx > 0 ? s[(idx + 1)..].Trim() : string.Empty;
+        }
+
+        return s;
+    }
+
+    private static Dictionary<string, string> ParseQueryString(string query)
+    {
+        var map = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        if (string.IsNullOrWhiteSpace(query))
+            return map;
+
+        var raw = query.StartsWith("?", StringComparison.Ordinal) ? query[1..] : query;
+        foreach (var part in raw.Split('&', StringSplitOptions.RemoveEmptyEntries))
+        {
+            var idx = part.IndexOf('=');
+            if (idx < 0)
+            {
+                var kOnly = Uri.UnescapeDataString(part).Trim();
+                if (!string.IsNullOrWhiteSpace(kOnly))
+                    map[kOnly] = string.Empty;
+                continue;
+            }
+
+            var key = Uri.UnescapeDataString(part[..idx]).Trim();
+            var val = Uri.UnescapeDataString(part[(idx + 1)..]).Trim();
+            if (!string.IsNullOrWhiteSpace(key))
+                map[key] = val;
+        }
+
+        return map;
     }
 
     /// <summary>
@@ -1175,6 +1563,12 @@ public class AccountTelegramToolsService
 
         if (msg.Contains("FROZEN_METHOD_INVALID", StringComparison.OrdinalIgnoreCase))
             return ("账号被冻结（FROZEN_METHOD_INVALID）", "Telegram 提示该账号/ApiId 的某些接口被冻结（常见为创建频道接口）。" + Environment.NewLine + msg);
+
+        if (msg.Contains("FLOOD_WAIT", StringComparison.OrdinalIgnoreCase))
+            return ("触发限流（FLOOD_WAIT）", msg);
+
+        if (msg.Contains("CHANNEL_MONOFORUM_UNSUPPORTED", StringComparison.OrdinalIgnoreCase))
+            return ("群组接口不支持（CHANNEL_MONOFORUM_UNSUPPORTED）", msg);
 
         if (msg.Contains("AUTH_KEY_UNREGISTERED", StringComparison.OrdinalIgnoreCase))
             return ("Session 失效（AUTH_KEY_UNREGISTERED）", msg);

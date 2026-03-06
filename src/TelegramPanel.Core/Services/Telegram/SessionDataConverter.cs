@@ -19,6 +19,12 @@ public static class SessionDataConverter
         public static SessionConvertResult Fail(string? reason) => new(false, string.IsNullOrWhiteSpace(reason) ? "未知原因" : reason.Trim());
     }
 
+    public readonly record struct TelethonStringSessionResult(bool Ok, string? SessionString, string? Reason)
+    {
+        public static TelethonStringSessionResult Success(string sessionString) => new(true, sessionString, null);
+        public static TelethonStringSessionResult Fail(string? reason) => new(false, null, string.IsNullOrWhiteSpace(reason) ? "未知原因" : reason.Trim());
+    }
+
     public static async Task<SessionConvertResult> TryConvertSqliteSessionFromJsonAsync(
         string phone,
         int apiId,
@@ -395,6 +401,14 @@ public static class SessionDataConverter
         }
     }
 
+    private static string Base64UrlEncode(byte[] bytes)
+    {
+        var base64 = Convert.ToBase64String(bytes);
+        // 注意：@mtcute/convert 在 Telethon->tdata 转换时，要求保留 base64 padding（尾部 '='）。
+        // 若去掉 padding，可能会把 auth key 解析成 248 字节，导致导出的 tdata 无法被官方客户端使用。
+        return base64.Replace('+', '-').Replace('/', '_');
+    }
+
     private readonly record struct TelethonSessionData(int DcId, string IpAddress, ushort Port, byte[] AuthKey);
 
     private static bool TryParseTelethonStringSession(string sessionString, out TelethonSessionData data)
@@ -434,6 +448,181 @@ public static class SessionDataConverter
         catch
         {
             data = default;
+            return false;
+        }
+    }
+
+    public static TelethonStringSessionResult TryCreateTelethonStringSessionFromWTelegramSessionFile(
+        string sessionPath,
+        int apiId,
+        string apiHash,
+        string? phone,
+        long? userId,
+        ILogger logger)
+    {
+        try
+        {
+            var absoluteSessionPath = Path.GetFullPath(sessionPath);
+            if (!File.Exists(absoluteSessionPath))
+                return TelethonStringSessionResult.Fail($"session 文件不存在：{absoluteSessionPath}");
+
+            string Config(string what) => what switch
+            {
+                "api_id" => apiId.ToString(),
+                "api_hash" => apiHash,
+                "session_key" => apiHash,
+                "session_pathname" => absoluteSessionPath,
+                "phone_number" => NormalizePhone(phone),
+                "user_id" => userId.HasValue && userId.Value > 0 ? userId.Value.ToString() : null!,
+                _ => null!
+            };
+
+            using var client = new Client(Config);
+            var clientType = typeof(Client);
+            var currentDcSessionField = clientType.GetField("_dcSession", BindingFlags.Instance | BindingFlags.NonPublic);
+            var sessionField = clientType.GetField("_session", BindingFlags.Instance | BindingFlags.NonPublic)
+                ?? throw new InvalidOperationException("无法访问 WTelegram.Client._session");
+            var sessionObj = sessionField.GetValue(client) ?? throw new InvalidOperationException("WTelegram session 未初始化");
+            var sessionType = sessionObj.GetType();
+
+            var mainDc = (int?)sessionType.GetField("MainDC")?.GetValue(sessionObj) ?? 0;
+            var dcSessionsField = sessionType.GetField("DCSessions");
+            var dcSessions = dcSessionsField?.GetValue(sessionObj) as System.Collections.IDictionary;
+            if (dcSessions == null || dcSessions.Count == 0)
+                return TelethonStringSessionResult.Fail("session 中未找到任何 DC 会话数据");
+
+            var candidateSessions = new List<(object DcSessionObj, bool IsCurrentDc)>();
+            var currentDcSessionObj = currentDcSessionField?.GetValue(client);
+            if (currentDcSessionObj != null)
+                candidateSessions.Add((currentDcSessionObj, true));
+
+            if (mainDc > 0 && dcSessions.Contains(mainDc) && dcSessions[mainDc] != null)
+                candidateSessions.Add((dcSessions[mainDc]!, false));
+
+            foreach (System.Collections.DictionaryEntry entry in dcSessions)
+            {
+                if (entry.Value != null)
+                    candidateSessions.Add((entry.Value, false));
+            }
+
+            byte[]? authKey = null;
+            DcOption? dataCenterObj = null;
+            long pickedDcUserId = 0;
+            var bestScore = int.MinValue;
+
+            foreach (var (dcSessionObj, isCurrentDc) in candidateSessions)
+            {
+                if (!TryExtractDcSessionInfo(dcSessionObj, out var candidateAuthKey, out var candidateDataCenter, out var dcUserId))
+                    continue;
+                if (candidateAuthKey == null || candidateAuthKey.Length != 256)
+                    continue;
+                if (candidateDataCenter == null)
+                    continue;
+
+                var score = 0;
+                if (isCurrentDc)
+                    score += 100;
+                if (dcUserId > 0)
+                    score += 50;
+                if (userId.HasValue && userId.Value > 0 && dcUserId == userId.Value)
+                    score += 40;
+                if (mainDc > 0 && candidateDataCenter.id == mainDc)
+                    score += 20;
+
+                if (score <= bestScore)
+                    continue;
+
+                bestScore = score;
+                authKey = candidateAuthKey;
+                dataCenterObj = candidateDataCenter;
+                pickedDcUserId = dcUserId;
+            }
+
+            if (authKey == null || authKey.Length != 256 || dataCenterObj == null)
+                return TelethonStringSessionResult.Fail("无法从 session 中解析有效的已授权 DCSession（AuthKey/DataCenter）");
+
+            if (dataCenterObj.id <= 0 || dataCenterObj.id > byte.MaxValue)
+                return TelethonStringSessionResult.Fail($"DataCenter ID 无效：{dataCenterObj.id}");
+
+            if (string.IsNullOrWhiteSpace(dataCenterObj.ip_address))
+                return TelethonStringSessionResult.Fail("DataCenter IP 为空");
+
+            if (dataCenterObj.port <= 0 || dataCenterObj.port > ushort.MaxValue)
+                return TelethonStringSessionResult.Fail($"DataCenter 端口无效：{dataCenterObj.port}");
+
+            if (!IPAddress.TryParse(dataCenterObj.ip_address.Trim(), out var ip))
+                return TelethonStringSessionResult.Fail($"DataCenter IP 无法解析：{dataCenterObj.ip_address}");
+
+            var ipBytes = ip.GetAddressBytes();
+            if (ipBytes.Length is not (4 or 16))
+                return TelethonStringSessionResult.Fail($"DataCenter IP 字节长度无效：{ipBytes.Length}");
+
+            var packed = new byte[1 + ipBytes.Length + 2 + 256];
+            packed[0] = (byte)dataCenterObj.id;
+            Buffer.BlockCopy(ipBytes, 0, packed, 1, ipBytes.Length);
+            BinaryPrimitives.WriteUInt16BigEndian(packed.AsSpan(1 + ipBytes.Length, 2), (ushort)dataCenterObj.port);
+            Buffer.BlockCopy(authKey, 0, packed, 1 + ipBytes.Length + 2, 256);
+
+            var sessionString = "1" + Base64UrlEncode(packed);
+            logger.LogInformation(
+                "Picked DCSession for Telethon export: mainDc={MainDc}, dcId={DcId}, dcUserId={DcUserId}, targetUserId={TargetUserId}, isIpV6={IsIpV6}",
+                mainDc,
+                dataCenterObj.id,
+                pickedDcUserId,
+                userId,
+                ipBytes.Length == 16);
+            return TelethonStringSessionResult.Success(sessionString);
+        }
+        catch (Exception ex)
+        {
+            logger.LogWarning(ex, "Failed to create telethon string session from WTelegram session file: {SessionPath}", sessionPath);
+            return TelethonStringSessionResult.Fail($"{ex.GetType().Name}: {ex.Message}");
+        }
+    }
+
+    private static bool TryExtractDcSessionInfo(
+        object dcSessionObj,
+        out byte[]? authKey,
+        out DcOption? dataCenter,
+        out long dcUserId)
+    {
+        try
+        {
+            var dcSessionType = dcSessionObj.GetType();
+            authKey = dcSessionType.GetField("AuthKey")?.GetValue(dcSessionObj) as byte[];
+            dataCenter = dcSessionType.GetField("DataCenter")?.GetValue(dcSessionObj) as DcOption;
+
+            dcUserId = 0;
+            var userIdObj = dcSessionType.GetField("UserId")?.GetValue(dcSessionObj);
+            switch (userIdObj)
+            {
+                case int i:
+                    dcUserId = i;
+                    break;
+                case long l:
+                    dcUserId = l;
+                    break;
+                case uint ui:
+                    dcUserId = ui;
+                    break;
+                case ulong ul:
+                    dcUserId = (long)Math.Min(ul, long.MaxValue);
+                    break;
+                case short s:
+                    dcUserId = s;
+                    break;
+                case ushort us:
+                    dcUserId = us;
+                    break;
+            }
+
+            return authKey != null && dataCenter != null;
+        }
+        catch
+        {
+            authKey = null;
+            dataCenter = null;
+            dcUserId = 0;
             return false;
         }
     }

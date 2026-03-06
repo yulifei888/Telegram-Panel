@@ -68,6 +68,18 @@ public class BatchTaskManagementService
         }
     }
 
+    public async Task UpdateTaskDraftAsync(int taskId, int total, string? config)
+    {
+        var task = await _batchTaskRepository.GetByIdAsync(taskId);
+        if (task != null)
+        {
+            if (total < 0) total = 0;
+            task.Total = total;
+            task.Config = config;
+            await _batchTaskRepository.UpdateAsync(task);
+        }
+    }
+
     public async Task StartTaskAsync(int taskId)
     {
         var task = await _batchTaskRepository.GetByIdAsync(taskId);
@@ -75,6 +87,35 @@ public class BatchTaskManagementService
         {
             task.Status = "running";
             task.StartedAt = DateTime.UtcNow;
+            await _batchTaskRepository.UpdateAsync(task);
+        }
+    }
+
+    public async Task PauseTaskAsync(int taskId)
+    {
+        var task = await _batchTaskRepository.GetByIdAsync(taskId);
+        if (task == null)
+            return;
+
+        if (task.Status is "running" or "pending")
+        {
+            task.Status = "paused";
+            task.CompletedAt = null;
+            await _batchTaskRepository.UpdateAsync(task);
+        }
+    }
+
+    public async Task ResumeTaskAsync(int taskId)
+    {
+        var task = await _batchTaskRepository.GetByIdAsync(taskId);
+        if (task == null)
+            return;
+
+        if (task.Status == "paused")
+        {
+            task.Status = "pending";
+            task.StartedAt = null;
+            task.CompletedAt = null;
             await _batchTaskRepository.UpdateAsync(task);
         }
     }

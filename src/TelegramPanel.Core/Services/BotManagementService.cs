@@ -273,6 +273,7 @@ public class BotManagementService
         int botId,
         int? categoryId,
         string? search,
+        int statusFilter,
         int pageIndex,
         int pageSize,
         CancellationToken cancellationToken = default)
@@ -282,6 +283,7 @@ public class BotManagementService
             categoryId: categoryId,
             broadcastOnly: true,
             search: search,
+            statusFilter: statusFilter,
             pageIndex: pageIndex,
             pageSize: pageSize,
             cancellationToken: cancellationToken);
@@ -346,6 +348,75 @@ public class BotManagementService
         var remains = await _memberRepository.CountForChannelAsync(ch.Id);
         if (remains == 0)
             await _botChannelRepository.DeleteAsync(ch);
+    }
+
+    /// <summary>
+    /// 获取指定频道绑定的 Bot 列表（按名称排序）。
+    /// </summary>
+    public async Task<IReadOnlyList<Bot>> GetChannelBoundBotsAsync(long telegramId)
+    {
+        var ch = await _botChannelRepository.GetGlobalByTelegramIdAsync(telegramId);
+        if (ch == null)
+            return Array.Empty<Bot>();
+
+        var members = await _memberRepository.FindAsync(x => x.BotChannelId == ch.Id);
+        var botIdSet = members
+            .Select(x => x.BotId)
+            .Where(x => x > 0)
+            .Distinct()
+            .ToHashSet();
+
+        if (botIdSet.Count == 0)
+            return Array.Empty<Bot>();
+
+        var bots = (await _botRepository.GetAllAsync())
+            .Where(x => botIdSet.Contains(x.Id))
+            .OrderBy(x => x.Name, StringComparer.OrdinalIgnoreCase)
+            .ToList();
+
+        return bots;
+    }
+
+    /// <summary>
+    /// 删除指定频道上选中 Bot 的绑定关系；若无剩余绑定，会自动清理频道本体。
+    /// 返回实际删除的绑定条数。
+    /// </summary>
+    public async Task<int> DeleteChannelBindingsByBotIdsAsync(long telegramId, IReadOnlyCollection<int> botIds)
+    {
+        var selected = botIds
+            .Where(x => x > 0)
+            .Distinct()
+            .ToList();
+        if (selected.Count == 0)
+            return 0;
+
+        var ch = await _botChannelRepository.GetGlobalByTelegramIdAsync(telegramId);
+        if (ch == null)
+            return 0;
+
+        var removed = await _memberRepository.DeleteByChannelAndBotsAsync(ch.Id, selected);
+        var remains = await _memberRepository.CountForChannelAsync(ch.Id);
+        if (remains == 0)
+            await _botChannelRepository.DeleteAsync(ch);
+
+        return removed;
+    }
+
+    public async Task UpdateChannelStatusAsync(int botId, long telegramId, bool ok, string? error, DateTime checkedAtUtc)
+    {
+        var ch = await _botChannelRepository.GetByTelegramIdAsync(botId, telegramId);
+        if (ch == null)
+            return;
+
+        ch.ChannelStatusOk = ok;
+        ch.ChannelStatusCheckedAtUtc = checkedAtUtc;
+        ch.ChannelStatusError = ok
+            ? null
+            : string.IsNullOrWhiteSpace(error)
+                ? "检测失败"
+                : error.Trim()[..Math.Min(error.Trim().Length, 500)];
+
+        await _botChannelRepository.UpdateAsync(ch);
     }
 
     public async Task SetChannelCategoryAsync(int botChannelId, int? categoryId)

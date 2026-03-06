@@ -71,6 +71,11 @@ public interface IChannelService
     /// 从频道踢出用户（通过 username），可选是否永久封禁
     /// </summary>
     Task<bool> KickUserAsync(int accountId, long channelId, string username, bool permanentBan = false);
+
+    /// <summary>
+    /// 从频道踢出用户（通过 userId），可选是否永久封禁
+    /// </summary>
+    Task<bool> KickUserByUserIdAsync(int accountId, long channelId, long userId, bool permanentBan = false);
 }
 
 /// <summary>

@@ -135,7 +135,11 @@
         loading = true;
         try
         {
-            await BotManagement.CreateBotAsync(newName, newToken, newUsername);
+            var name = (newName ?? string.Empty).Trim();
+            var tokenToRegister = (newToken ?? string.Empty).Trim();
+            var username = string.IsNullOrWhiteSpace(newUsername) ? null : newUsername.Trim();
+            await BotManagement.CreateBotAsync(name, tokenToRegister, username);
+            await TryRegisterWebhookForBotAsync(tokenToRegister, showSuccessToast: false);
             newName = "";
             newToken = "";
             newUsername = "";
@@ -192,6 +196,10 @@
         {
             await BotManagement.SetBotActiveStatusAsync(bot.Id, isActive);
             bot.IsActive = isActive;
+            if (isActive)
+                await TryRegisterWebhookForBotAsync(bot.Token, showSuccessToast: false);
+            else
+                await TryDeleteWebhookForBotAsync(bot.Token, showSuccessToast: false);
             Snackbar.Add(isActive ? "已启用 Bot" : "已停用 Bot", Severity.Success);
         }
         catch (Exception ex)
@@ -239,7 +247,7 @@
                 newToken: model.NewToken);
 
             if (!string.IsNullOrWhiteSpace(model.NewToken))
-                await TryRegisterWebhookForBotAsync(model.NewToken);
+                await TryRegisterWebhookForBotAsync(model.NewToken, showSuccessToast: true);
 
             await LoadBots();
             Snackbar.Add("已保存", Severity.Success);
@@ -254,7 +262,7 @@
         }
     }
 
-    private async Task TryRegisterWebhookForBotAsync(string token)
+    private async Task TryRegisterWebhookForBotAsync(string token, bool showSuccessToast)
     {
         var webhookEnabled = string.Equals(
             Configuration["Telegram:WebhookEnabled"]?.Trim(),
@@ -264,7 +272,11 @@
         if (!webhookEnabled)
             return;
 
-        var baseUrl = (Configuration["Telegram:WebhookBaseUrl"] ?? "").Trim();
+        var normalizedToken = (token ?? string.Empty).Trim();
+        if (string.IsNullOrWhiteSpace(normalizedToken))
+            return;
+
+        var baseUrl = (Configuration["Telegram:WebhookBaseUrl"] ?? "").Trim().TrimEnd('/');
         var secretToken = (Configuration["Telegram:WebhookSecretToken"] ?? "").Trim();
 
         if (string.IsNullOrWhiteSpace(baseUrl) || string.IsNullOrWhiteSpace(secretToken))
@@ -275,19 +287,47 @@
 
         try
         {
-            var webhookUrl = $"{baseUrl.TrimEnd('/')}/api/bot/webhook/{Uri.EscapeDataString(token.Trim())}";
+            var pathToken = WebhookTokenHelper.ToWebhookPathToken(normalizedToken);
+            var webhookUrl = $"{baseUrl}/api/bot/webhook/{pathToken}";
             await BotApi.SetWebhookAsync(
-                token: token.Trim(),
+                token: normalizedToken,
                 url: webhookUrl,
                 secretToken: secretToken,
                 allowedUpdates: BotUpdateHub.AllowedUpdatesJson,
                 cancellationToken: CancellationToken.None);
 
-            Snackbar.Add("Webhook 已重新注册", Severity.Success);
+            if (showSuccessToast)
+                Snackbar.Add("Webhook 已重新注册", Severity.Success);
         }
         catch (Exception ex)
         {
             Snackbar.Add($"Token 已更换，但重新注册 Webhook 失败：{ex.Message}", Severity.Warning);
+        }
+    }
+
+    private async Task TryDeleteWebhookForBotAsync(string token, bool showSuccessToast)
+    {
+        var webhookEnabled = string.Equals(
+            Configuration["Telegram:WebhookEnabled"]?.Trim(),
+            "true",
+            StringComparison.OrdinalIgnoreCase);
+
+        if (!webhookEnabled)
+            return;
+
+        var normalizedToken = (token ?? string.Empty).Trim();
+        if (string.IsNullOrWhiteSpace(normalizedToken))
+            return;
+
+        try
+        {
+            await BotApi.DeleteWebhookAsync(normalizedToken, dropPendingUpdates: false, cancellationToken: CancellationToken.None);
+            if (showSuccessToast)
+                Snackbar.Add("Webhook 已删除", Severity.Info);
+        }
+        catch (Exception ex)
+        {
+            Snackbar.Add($"停用 Bot 后删除 Webhook 失败：{ex.Message}", Severity.Warning);
         }
     }
 }

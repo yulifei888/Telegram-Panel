@@ -98,9 +98,10 @@ public sealed class WebhookRegistrationService : BackgroundService
             {
                 var token = bot.Token!.Trim();
 
-                // 构建 Webhook URL：baseUrl + /api/bot/webhook/{token}
-                // 注意：这里用 bot token 作为 URL 中的 secretToken，Telegram 会在请求头中发送配置的 secretToken
-                var webhookUrl = $"{baseUrl.TrimEnd('/')}/api/bot/webhook/{Uri.EscapeDataString(token)}";
+                // 构建 Webhook URL：baseUrl + /api/bot/webhook/{SHA256(token)}
+                // 说明：避免在反向代理/access log 中泄露真实 bot token。
+                var pathToken = WebhookTokenHelper.ToWebhookPathToken(token);
+                var webhookUrl = $"{baseUrl.TrimEnd('/')}/api/bot/webhook/{pathToken}";
 
                 await botApi.SetWebhookAsync(
                     token: token,

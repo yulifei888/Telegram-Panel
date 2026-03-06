@@ -26,9 +26,15 @@ public sealed class BotUpdateHub : IAsyncDisposable
 
     private readonly SemaphoreSlim _gate = new(1, 1);
     private readonly Dictionary<string, BotPoller> _pollersByToken = new(StringComparer.Ordinal);
+    private readonly HashSet<string> _pollingWebhookClearedTokens = new(StringComparer.Ordinal);
 
     // Webhook 模式下的接收器（token -> receiver），不启动轮询
-    private readonly Dictionary<string, BotWebhookReceiver> _webhookReceivers = new(StringComparer.Ordinal);
+    private readonly ConcurrentDictionary<string, BotWebhookReceiver> _webhookReceivers = new(StringComparer.Ordinal);
+
+    private static readonly TimeSpan WebhookTokenCacheTtl = TimeSpan.FromMinutes(5);
+    private readonly SemaphoreSlim _webhookTokenCacheGate = new(1, 1);
+    private DateTimeOffset _webhookTokenCacheBuiltAtUtc = DateTimeOffset.MinValue;
+    private Dictionary<string, string> _botTokenByWebhookPathToken = new(StringComparer.Ordinal);
 
     public BotUpdateHub(
         IServiceScopeFactory scopeFactory,
@@ -57,10 +63,19 @@ public sealed class BotUpdateHub : IAsyncDisposable
         if (string.IsNullOrWhiteSpace(token))
             return false;
 
+        if (_webhookReceivers.TryGetValue(token, out var fastReceiver))
+        {
+            fastReceiver.Inject(update);
+            return true;
+        }
+
+        BotWebhookReceiver receiver;
+
+        // 仅在“首次遇到某个 token”时加全局锁，避免高频 webhook 进入串行瓶颈。
         await _gate.WaitAsync(cancellationToken);
         try
         {
-            if (!_webhookReceivers.TryGetValue(token, out var receiver))
+            if (!_webhookReceivers.TryGetValue(token, out receiver!))
             {
                 // 验证 token 有效性并创建 receiver
                 using var scope = _scopeFactory.CreateScope();
@@ -72,14 +87,76 @@ public sealed class BotUpdateHub : IAsyncDisposable
                 receiver = new BotWebhookReceiver(bot.Id, token, _scopeFactory, _logger);
                 _webhookReceivers[token] = receiver;
             }
-
-            receiver.Inject(update);
-            return true;
         }
         finally
         {
             _gate.Release();
         }
+
+        receiver.Inject(update);
+        return true;
+    }
+
+    /// <summary>
+    /// 将 Webhook 路径中的 token（推荐为 SHA256(token)）解析为真实的 bot token。
+    /// </summary>
+    public async Task<string?> ResolveBotTokenFromWebhookPathAsync(string pathToken, CancellationToken cancellationToken)
+    {
+        pathToken = (pathToken ?? "").Trim();
+        if (string.IsNullOrWhiteSpace(pathToken))
+            return null;
+
+        // 兼容：若仍使用明文 bot token 作为路径（不推荐），直接返回。
+        if (WebhookTokenHelper.IsLikelyPlainBotToken(pathToken))
+            return pathToken;
+
+        if (!WebhookTokenHelper.IsSha256Hex(pathToken))
+            return null;
+
+        var builtAt = _webhookTokenCacheBuiltAtUtc;
+        if (builtAt != DateTimeOffset.MinValue
+            && DateTimeOffset.UtcNow - builtAt < WebhookTokenCacheTtl
+            && _botTokenByWebhookPathToken.TryGetValue(pathToken, out var cached))
+        {
+            return cached;
+        }
+
+        await _webhookTokenCacheGate.WaitAsync(cancellationToken);
+        try
+        {
+            builtAt = _webhookTokenCacheBuiltAtUtc;
+            if (builtAt == DateTimeOffset.MinValue || DateTimeOffset.UtcNow - builtAt >= WebhookTokenCacheTtl)
+                await RebuildWebhookTokenCacheAsync(cancellationToken);
+
+            return _botTokenByWebhookPathToken.TryGetValue(pathToken, out var token) ? token : null;
+        }
+        finally
+        {
+            _webhookTokenCacheGate.Release();
+        }
+    }
+
+    private async Task RebuildWebhookTokenCacheAsync(CancellationToken cancellationToken)
+    {
+        using var scope = _scopeFactory.CreateScope();
+        var botRepo = scope.ServiceProvider.GetRequiredService<IBotRepository>();
+        var bots = await botRepo.GetAllAsync();
+
+        var map = new Dictionary<string, string>(StringComparer.Ordinal);
+        foreach (var bot in bots)
+        {
+            if (!bot.IsActive || string.IsNullOrWhiteSpace(bot.Token))
+                continue;
+
+            var token = bot.Token.Trim();
+            if (string.IsNullOrWhiteSpace(token))
+                continue;
+
+            map[WebhookTokenHelper.ToWebhookPathToken(token)] = token;
+        }
+
+        _botTokenByWebhookPathToken = map;
+        _webhookTokenCacheBuiltAtUtc = DateTimeOffset.UtcNow;
     }
 
     /// <summary>
@@ -148,6 +225,10 @@ public sealed class BotUpdateHub : IAsyncDisposable
             if (string.IsNullOrWhiteSpace(token))
                 throw new InvalidOperationException("Bot Token 为空");
 
+            // 重要：切回 Long Polling 时，Telegram 侧若残留 webhook，会导致 getUpdates 持续 409。
+            // 这里在首次订阅时兜底删一次 webhook（不丢 pending updates），避免“切模式后一直收不到更新”。
+            await EnsurePollingModeReadyAsync(token, cancellationToken);
+
             if (!_pollersByToken.TryGetValue(token, out var poller))
             {
                 poller = await BotPoller.CreateAsync(botId, token, bot.LastUpdateId, _scopeFactory, _botApi, _logger, cancellationToken);
@@ -172,6 +253,7 @@ public sealed class BotUpdateHub : IAsyncDisposable
         {
             pollers = _pollersByToken.Values.ToList();
             _pollersByToken.Clear();
+            _pollingWebhookClearedTokens.Clear();
 
             receivers = _webhookReceivers.Values.ToList();
             _webhookReceivers.Clear();
@@ -192,6 +274,33 @@ public sealed class BotUpdateHub : IAsyncDisposable
             try { r.Dispose(); }
             catch (Exception ex) { _logger.LogWarning(ex, "Dispose webhook receiver failed: {BotId}", r.BotId); }
         }
+    }
+
+    private async Task EnsurePollingModeReadyAsync(string token, CancellationToken cancellationToken)
+    {
+        if (_pollingWebhookClearedTokens.Contains(token))
+            return;
+
+        try
+        {
+            await _botApi.DeleteWebhookAsync(token, dropPendingUpdates: false, cancellationToken);
+            _pollingWebhookClearedTokens.Add(token);
+            _logger.LogInformation("Polling mode ensured: webhook deleted for bot token {TokenHint}", MaskToken(token));
+        }
+        catch (Exception ex)
+        {
+            // 不中断订阅流程：即使删 webhook 失败，也允许继续尝试轮询；
+            // 下次订阅会再次尝试，便于网络抖动后的自恢复。
+            _logger.LogWarning(ex, "Failed to delete webhook before polling (token={TokenHint}), will retry later", MaskToken(token));
+        }
+    }
+
+    private static string MaskToken(string token)
+    {
+        token = (token ?? string.Empty).Trim();
+        if (token.Length <= 8)
+            return "***";
+        return $"{token[..4]}...{token[^4..]}";
     }
 
     public sealed class BotUpdateSubscription : IAsyncDisposable

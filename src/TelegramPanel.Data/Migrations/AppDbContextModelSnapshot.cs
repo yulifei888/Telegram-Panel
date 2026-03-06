@@ -266,6 +266,16 @@ namespace TelegramPanel.Data.Migrations
                     b.Property<int?>("CategoryId")
                         .HasColumnType("INTEGER");
 
+                    b.Property<DateTime?>("ChannelStatusCheckedAtUtc")
+                        .HasColumnType("TEXT");
+
+                    b.Property<string>("ChannelStatusError")
+                        .HasMaxLength(500)
+                        .HasColumnType("TEXT");
+
+                    b.Property<bool?>("ChannelStatusOk")
+                        .HasColumnType("INTEGER");
+
                     b.Property<DateTime?>("CreatedAt")
                         .HasColumnType("TEXT");
 
@@ -293,6 +303,8 @@ namespace TelegramPanel.Data.Migrations
                     b.HasKey("Id");
 
                     b.HasIndex("CategoryId");
+
+                    b.HasIndex("ChannelStatusOk");
 
                     b.HasIndex("TelegramId")
                         .IsUnique();

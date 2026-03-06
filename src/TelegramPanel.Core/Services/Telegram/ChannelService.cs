@@ -443,6 +443,15 @@ public class ChannelService : IChannelService
             }
         }
 
+        static bool IsAdminsLimitError(string? message)
+        {
+            if (string.IsNullOrWhiteSpace(message))
+                return false;
+
+            return message.Contains("ADMINS_TOO_MUCH", StringComparison.OrdinalIgnoreCase)
+                || message.Contains("USERS_TOO_MUCH", StringComparison.OrdinalIgnoreCase);
+        }
+
         async Task<bool> TryPromoteWithFallbackAsync(Interfaces.AdminRights toGrant)
         {
             try
@@ -472,9 +481,39 @@ public class ChannelService : IChannelService
             }
         }
 
+        async Task TryPromoteOrReuseExistingAdminAsync(Interfaces.AdminRights toGrant)
+        {
+            try
+            {
+                await TryPromoteWithFallbackAsync(toGrant);
+            }
+            catch (RpcException ex) when (IsAdminsLimitError(ex.Message))
+            {
+                var granted = await TryGetGrantedAdminRightsAsync(client, channel, resolved.User.id);
+                if (!granted.HasValue)
+                    throw;
+
+                if (granted.Value == toGrant)
+                {
+                    effectiveRights = toGrant;
+                    _logger.LogInformation(
+                        "EditAdmin hit admins-limit error but target already has requested rights, treat as success: channel={ChannelId} user={UserId} error={Error}",
+                        channelId, resolved.User.id, ex.Message);
+                    return;
+                }
+
+                var missing = toGrant & ~granted.Value;
+                var extra = granted.Value & ~toGrant;
+                var missingText = missing == Interfaces.AdminRights.None ? "无" : FormatAdminRights(missing);
+                var extraText = extra == Interfaces.AdminRights.None ? "无" : FormatAdminRights(extra);
+                throw new InvalidOperationException(
+                    $"目标已是管理员，但权限未对齐（缺少：{missingText}；多余：{extraText}）。Telegram 返回：{ex.Message}", ex);
+            }
+        }
+
         try
         {
-            await TryPromoteWithFallbackAsync(requestedRights);
+            await TryPromoteOrReuseExistingAdminAsync(requestedRights);
         }
         catch (RpcException ex) when (ex.Message.Contains("USER_NOT_PARTICIPANT", StringComparison.OrdinalIgnoreCase))
         {
@@ -500,7 +539,7 @@ public class ChannelService : IChannelService
 
             try
             {
-                await TryPromoteWithFallbackAsync(requestedRights);
+                await TryPromoteOrReuseExistingAdminAsync(requestedRights);
             }
             catch (RpcException ex2) when (ex2.Message.Contains("RIGHT_FORBIDDEN", StringComparison.OrdinalIgnoreCase))
             {
@@ -732,17 +771,35 @@ public class ChannelService : IChannelService
             throw new InvalidOperationException("无法获取用户 access_hash，无法执行踢人");
 
         var peer = new InputPeerUser(user.id, user.access_hash);
-
-        // 非永久：用短时间 ban 达到“踢出但可再加入”的效果
-        var until = permanentBan ? DateTime.UtcNow.AddYears(100) : DateTime.UtcNow.AddSeconds(60);
-        var rights = new ChatBannedRights
-        {
-            flags = ChatBannedRights.Flags.view_messages,
-            until_date = until
-        };
+        var rights = BuildKickRights(permanentBan);
 
         await client.Channels_EditBanned(channel, peer, rights);
         return true;
+    }
+
+    public async Task<bool> KickUserByUserIdAsync(int accountId, long channelId, long userId, bool permanentBan = false)
+    {
+        var client = await GetOrCreateConnectedClientAsync(accountId);
+        var channel = await GetChannelByIdAsync(client, channelId)
+            ?? throw new InvalidOperationException($"Channel {channelId} not found");
+
+        if (userId <= 0)
+            throw new ArgumentException("请输入要踢出的用户 ID", nameof(userId));
+
+        var peer = new InputPeerUser(userId, 0);
+        var rights = BuildKickRights(permanentBan);
+
+        try
+        {
+            await client.Channels_EditBanned(channel, peer, rights);
+            return true;
+        }
+        catch (RpcException ex) when (
+            ex.Message.Contains("USER_ID_INVALID", StringComparison.OrdinalIgnoreCase) ||
+            ex.Message.Contains("PEER_ID_INVALID", StringComparison.OrdinalIgnoreCase))
+        {
+            throw new InvalidOperationException("该用户 ID 无法直接解析，请改用 @username 执行账号踢人。", ex);
+        }
     }
 
     #region Private Methods
@@ -876,6 +933,17 @@ public class ChannelService : IChannelService
     private static bool LooksLikeSqliteSession(string filePath)
     {
         return SessionDataConverter.LooksLikeSqliteSession(filePath);
+    }
+
+    private static ChatBannedRights BuildKickRights(bool permanentBan)
+    {
+        // 非永久：用短时间 ban 达到“踢出但可再加入”的效果
+        var until = permanentBan ? DateTime.UtcNow.AddYears(100) : DateTime.UtcNow.AddSeconds(60);
+        return new ChatBannedRights
+        {
+            flags = ChatBannedRights.Flags.view_messages,
+            until_date = until
+        };
     }
 
     private static ChatAdminRights ConvertAdminRights(Interfaces.AdminRights rights)

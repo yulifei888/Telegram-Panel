@@ -245,6 +245,15 @@ public class AccountImportService
             var jsonFiles = Directory.EnumerateFiles(extractDir, "*.json", SearchOption.AllDirectories).ToList();
             if (jsonFiles.Count == 0)
             {
+                var tdataDirs = FindTdataDirectories(extractDir);
+                if (tdataDirs.Count > 0)
+                {
+                    results.AddRange(await ImportFromTdataDirectoriesAsync(tdataDirs, categoryId, twoFactorPassword));
+                    var tdataSuccess = results.Count(r => r.Success);
+                    _logger.LogInformation("Tdata import completed: {Success}/{Total} successful", tdataSuccess, results.Count);
+                    return results;
+                }
+
                 results.Add(new ImportResult(false, null, null, null, null, "压缩包内未找到任何 .json 文件"));
                 return results;
             }
@@ -475,6 +484,231 @@ public class AccountImportService
         }
 
         string extractDirFallback() => Path.GetTempPath();
+    }
+
+    private async Task<List<ImportResult>> ImportFromTdataDirectoriesAsync(
+        IReadOnlyCollection<string> tdataDirectories,
+        int? categoryId,
+        string? twoFactorPassword)
+    {
+        var results = new List<ImportResult>();
+
+        if (!TryGetGlobalTelegramApi(out var apiId, out var apiHash))
+        {
+            results.Add(new ImportResult(
+                false,
+                null,
+                null,
+                null,
+                null,
+                "检测到 tdata 数据包，但系统未配置全局 Telegram API（ApiId/ApiHash）；请先到【系统设置】配置后再导入"));
+            return results;
+        }
+
+        var importedPhones = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var tdataDir in tdataDirectories.Distinct(StringComparer.OrdinalIgnoreCase))
+        {
+            var result = await ImportFromTdataDirectoryAsync(tdataDir, apiId, apiHash, categoryId, twoFactorPassword);
+            var normalizedPhone = PhoneNumberFormatter.NormalizeToDigits(result.Phone);
+            if (!string.IsNullOrWhiteSpace(normalizedPhone))
+            {
+                result = result with { Phone = normalizedPhone };
+                if (!importedPhones.Add(normalizedPhone))
+                {
+                    results.Add(new ImportResult(false, normalizedPhone, result.UserId, result.Username, result.SessionPath, "重复账号已跳过"));
+                    continue;
+                }
+            }
+
+            results.Add(result);
+        }
+
+        return results;
+    }
+
+    private async Task<ImportResult> ImportFromTdataDirectoryAsync(
+        string tdataDir,
+        int apiId,
+        string apiHash,
+        int? categoryId,
+        string? twoFactorPassword)
+    {
+        string? tempSessionPath = null;
+        try
+        {
+            var converted = await TdataSessionBridge.TryConvertToTelethonStringSessionAsync(tdataDir, _logger);
+            if (!converted.Ok || string.IsNullOrWhiteSpace(converted.SessionString))
+            {
+                return new ImportResult(false, null, converted.UserId, null, null,
+                    $"tdata 解析失败（{tdataDir}）：{converted.Error ?? "未知原因"}");
+            }
+
+            var phoneSeed = converted.UserId?.ToString() ?? Path.GetFileName(tdataDir);
+            if (string.IsNullOrWhiteSpace(phoneSeed))
+                phoneSeed = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds().ToString();
+
+            tempSessionPath = Path.Combine(Path.GetTempPath(), $"telegram-panel-tdata-{Guid.NewGuid():N}.session");
+            var writeResult = await SessionDataConverter.TryCreateWTelegramSessionFromSessionStringAsync(
+                sessionString: converted.SessionString,
+                apiId: apiId,
+                apiHash: apiHash,
+                targetSessionPath: tempSessionPath,
+                phone: phoneSeed,
+                userId: converted.UserId,
+                logger: _logger);
+            if (!writeResult.Ok)
+            {
+                return new ImportResult(false, null, converted.UserId, null, null,
+                    $"tdata 会话转换失败：{writeResult.Reason ?? "未知原因"}");
+            }
+
+            var imported = await _sessionImporter.ImportFromSessionFileAsync(
+                tempSessionPath,
+                apiId,
+                apiHash,
+                userId: converted.UserId,
+                phoneHint: phoneSeed,
+                sessionKey: apiHash);
+            if (!imported.Success)
+            {
+                return new ImportResult(
+                    false,
+                    imported.Phone,
+                    imported.UserId ?? converted.UserId,
+                    imported.Username,
+                    imported.SessionPath,
+                    $"tdata 导入失败：{imported.Error ?? "未知原因"}");
+            }
+
+            return await PersistImportedSessionAsync(imported, apiId, apiHash, categoryId, twoFactorPassword);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Failed to import tdata directory: {TdataDir}", tdataDir);
+            return new ImportResult(false, null, null, null, null, $"tdata 导入异常：{FormatException(ex)}");
+        }
+        finally
+        {
+            try
+            {
+                if (!string.IsNullOrWhiteSpace(tempSessionPath) && File.Exists(tempSessionPath))
+                    File.Delete(tempSessionPath);
+            }
+            catch
+            {
+                // 忽略临时文件删除失败
+            }
+        }
+    }
+
+    private async Task<ImportResult> PersistImportedSessionAsync(
+        ImportResult result,
+        int apiId,
+        string apiHash,
+        int? categoryId,
+        string? twoFactorPassword)
+    {
+        if (!result.Success || !result.UserId.HasValue)
+            return result;
+
+        try
+        {
+            var phone = PhoneNumberFormatter.NormalizeToDigits(result.Phone);
+            if (string.IsNullOrWhiteSpace(phone))
+                throw new InvalidOperationException("导入结果缺少有效手机号");
+
+            var existing = await _accountManagement.GetAccountByPhoneAsync(phone);
+            if (existing != null)
+            {
+                existing.UserId = result.UserId.Value;
+                existing.Username = result.Username;
+                existing.SessionPath = result.SessionPath!;
+                existing.ApiId = apiId;
+                existing.ApiHash = apiHash.Trim();
+                existing.IsActive = true;
+                existing.CategoryId = categoryId ?? existing.CategoryId;
+                existing.LastSyncAt = DateTime.UtcNow;
+                if (!string.IsNullOrWhiteSpace(twoFactorPassword))
+                    existing.TwoFactorPassword = twoFactorPassword.Trim();
+                await _accountManagement.UpdateAccountAsync(existing);
+            }
+            else
+            {
+                var account = new Account
+                {
+                    Phone = phone,
+                    UserId = result.UserId.Value,
+                    Username = result.Username,
+                    SessionPath = result.SessionPath!,
+                    ApiId = apiId,
+                    ApiHash = apiHash.Trim(),
+                    IsActive = true,
+                    CategoryId = categoryId,
+                    TwoFactorPassword = string.IsNullOrWhiteSpace(twoFactorPassword) ? null : twoFactorPassword.Trim(),
+                    CreatedAt = DateTime.UtcNow,
+                    LastSyncAt = DateTime.UtcNow
+                };
+
+                await _accountManagement.CreateAccountAsync(account);
+            }
+
+            _logger.LogInformation("Account saved to database: {Phone}", phone);
+            return result with { Phone = phone };
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Failed to save account to database: {Phone}", result.Phone);
+            return new ImportResult(
+                false,
+                result.Phone,
+                result.UserId,
+                result.Username,
+                result.SessionPath,
+                $"Session 已导入，但数据库保存失败：{FormatException(ex)}");
+        }
+    }
+
+    private bool TryGetGlobalTelegramApi(out int apiId, out string apiHash)
+    {
+        apiHash = (_configuration["Telegram:ApiHash"] ?? string.Empty).Trim();
+        return int.TryParse(_configuration["Telegram:ApiId"], out apiId)
+               && apiId > 0
+               && !string.IsNullOrWhiteSpace(apiHash);
+    }
+
+    private static List<string> FindTdataDirectories(string rootDirectory)
+    {
+        var result = new List<string>();
+        if (LooksLikeTdataDirectory(rootDirectory))
+            result.Add(rootDirectory);
+
+        foreach (var dir in Directory.EnumerateDirectories(rootDirectory, "*", SearchOption.AllDirectories))
+        {
+            if (LooksLikeTdataDirectory(dir))
+                result.Add(dir);
+        }
+
+        return result
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+    }
+
+    private static bool LooksLikeTdataDirectory(string directory)
+    {
+        try
+        {
+            if (!Directory.Exists(directory))
+                return false;
+
+            var hasKeyFile = File.Exists(Path.Combine(directory, "key_datas"))
+                             || File.Exists(Path.Combine(directory, "key_data"));
+            var hasTdataData = Directory.EnumerateFileSystemEntries(directory, "D877F783D5D3EF8C*", SearchOption.TopDirectoryOnly).Any();
+            return hasKeyFile || hasTdataData;
+        }
+        catch
+        {
+            return false;
+        }
     }
 
     /// <summary>

@@ -1,3 +1,4 @@
+using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging;
 using TelegramPanel.Core.Interfaces;
 using TelegramPanel.Core.Services;
@@ -17,6 +18,7 @@ public class DataSyncService
     private readonly IChannelService _channelService;
     private readonly IGroupService _groupService;
     private readonly AccountTelegramToolsService _telegramTools;
+    private readonly IConfiguration _configuration;
     private readonly ILogger<DataSyncService> _logger;
 
     public DataSyncService(
@@ -26,6 +28,7 @@ public class DataSyncService
         IChannelService channelService,
         IGroupService groupService,
         AccountTelegramToolsService telegramTools,
+        IConfiguration configuration,
         ILogger<DataSyncService> logger)
     {
         _accountManagement = accountManagement;
@@ -34,6 +37,7 @@ public class DataSyncService
         _channelService = channelService;
         _groupService = groupService;
         _telegramTools = telegramTools;
+        _configuration = configuration;
         _logger = logger;
     }
 
@@ -55,8 +59,14 @@ public class DataSyncService
     {
         var summary = new SyncSummary();
 
-        foreach (var account in accounts)
+        var accountList = accounts.ToList();
+        var delayMs = _configuration.GetValue("Telegram:DefaultDelayMs", 2000);
+        if (delayMs < 0) delayMs = 0;
+        if (delayMs > 60000) delayMs = 60000;
+
+        for (var index = 0; index < accountList.Count; index++)
         {
+            var account = accountList[index];
             cancellationToken.ThrowIfCancellationRequested();
 
             try
@@ -113,13 +123,24 @@ public class DataSyncService
             }
             catch (Exception ex)
             {
-                _logger.LogWarning(ex, "Account sync failed: {AccountId}", account.Id);
+                _logger.LogDebug(ex, "Account sync failed (debug details): {AccountId}", account.Id);
                 summary.AccountFailures.Add((account.Id, account.Phone, ex.Message));
 
                 // 同步失败时更新账号的 Telegram 状态
                 try
                 {
                     var (statusSummary, statusDetails) = AccountTelegramToolsService.MapTelegramException(ex);
+                    _logger.LogWarning("Account sync failed: {Phone} {Summary}", account.Phone, statusSummary);
+
+                    // FLOOD_WAIT 之类属于“限流/临时状态”，不代表账号异常：避免把正常账号标红。
+                    // 同理：某些群组接口不支持也不应影响账号状态。
+                    var shouldPersistStatus = true;
+                    if (statusSummary.Contains("FLOOD_WAIT", StringComparison.OrdinalIgnoreCase)
+                        || statusSummary.Contains("CHANNEL_MONOFORUM_UNSUPPORTED", StringComparison.OrdinalIgnoreCase))
+                    {
+                        shouldPersistStatus = false;
+                    }
+
                     var updatedByProbe = false;
                     if (string.Equals(statusSummary, "连接失败", StringComparison.OrdinalIgnoreCase))
                     {
@@ -140,7 +161,7 @@ public class DataSyncService
                         }
                     }
 
-                    if (!updatedByProbe)
+                    if (!updatedByProbe && shouldPersistStatus)
                     {
                         account.TelegramStatusOk = false;
                         account.TelegramStatusSummary = statusSummary;
@@ -153,6 +174,13 @@ public class DataSyncService
                 {
                     _logger.LogWarning(statusEx, "Failed to update Telegram status for account {AccountId}", account.Id);
                 }
+            }
+
+            // 降速：同步多个账号时插入延迟，降低触发 FLOOD_WAIT 的概率
+            if (delayMs > 0 && index < accountList.Count - 1)
+            {
+                var jitter = Random.Shared.Next(0, Math.Min(500, delayMs + 1));
+                await Task.Delay(delayMs + jitter, cancellationToken);
             }
         }
 
