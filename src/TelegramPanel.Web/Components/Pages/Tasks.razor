@@ -710,21 +710,18 @@
     private async Task ClearAllTasks()
     {
         var hasActive = tasks.Any(t => t.Status is "pending" or "running" or "paused");
-        var message = hasActive
-            ? "可选择仅清理历史任务（已完成/失败），或清理全部任务（包含进行中/待执行/暂停）。若清理全部，进行中的任务会先标记为失败再删除。"
-            : "可选择仅清理历史任务（已完成/失败），或清理全部任务。";
 
-        bool? result = await DialogService.ShowMessageBox(
-            "确认清理",
-            message,
-            yesText: "清理全部",
-            noText: "仅清理历史任务",
-            cancelText: "取消");
-
-        if (result is null)
+        var parameters = new DialogParameters
+        {
+            ["HasActiveTasks"] = hasActive
+        };
+        var options = new DialogOptions { CloseOnEscapeKey = true, MaxWidth = MaxWidth.Small, FullWidth = true };
+        var dialog = DialogService.Show<TelegramPanel.Web.Components.Dialogs.TaskCleanupDialog>("确认清理", parameters, options)!;
+        var result = await dialog.Result;
+        if (result.Canceled || result.Data is not string mode)
             return;
 
-        var historyOnly = result == false;
+        var historyOnly = string.Equals(mode, "history", StringComparison.OrdinalIgnoreCase);
 
         try
         {

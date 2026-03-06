@@ -1,0 +1,36 @@
+﻿@namespace TelegramPanel.Web.Components.Dialogs
+@using Microsoft.AspNetCore.Components
+
+<MudDialog>
+    <DialogContent>
+        <MudStack Spacing="2">
+            <MudText Typo="Typo.body1">@Message</MudText>
+            @if (HasActiveTasks)
+            {
+                <MudAlert Severity="Severity.Warning" Variant="Variant.Outlined" Dense="true">
+                    清理全部会把进行中/待执行/暂停任务先标记为失败，再删除记录。
+                </MudAlert>
+            }
+        </MudStack>
+    </DialogContent>
+    <DialogActions>
+        <MudButton Variant="Variant.Text" Color="Color.Default" OnClick="Cancel">取消</MudButton>
+        <MudButton Variant="Variant.Outlined" Color="Color.Warning" OnClick="ClearHistoryOnly">仅清理历史任务</MudButton>
+        <MudButton Variant="Variant.Filled" Color="Color.Error" OnClick="ClearAll">清理全部</MudButton>
+    </DialogActions>
+</MudDialog>
+
+@code {
+    [CascadingParameter] private MudDialogInstance MudDialog { get; set; } = default!;
+    [Parameter] public bool HasActiveTasks { get; set; }
+
+    private string Message => HasActiveTasks
+        ? "可选择仅清理历史任务（已完成/失败），或清理全部任务（包含进行中/待执行/暂停）。"
+        : "可选择仅清理历史任务（已完成/失败），或清理全部任务。";
+
+    private void Cancel() => MudDialog.Close();
+
+    private void ClearHistoryOnly() => MudDialog.Close(DialogResult.Ok("history"));
+
+    private void ClearAll() => MudDialog.Close(DialogResult.Ok("all"));
+}
