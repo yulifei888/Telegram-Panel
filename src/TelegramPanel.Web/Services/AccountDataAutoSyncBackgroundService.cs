@@ -67,15 +67,23 @@ public sealed class AccountDataAutoSyncBackgroundService : BackgroundService
                 var dataSync = scope.ServiceProvider.GetRequiredService<DataSyncService>();
 
                 _logger.LogInformation("Account auto sync started");
-                var summary = await dataSync.SyncAllActiveAccountsAsync(stoppingToken);
+                var run = await dataSync.RunAllActiveAccountsTrackedAsync("auto", stoppingToken);
+                var summary = run.Summary;
+
                 if (summary.AccountFailures.Count > 0)
                 {
                     foreach (var f in summary.AccountFailures)
                         _logger.LogWarning("Account auto sync failed: {Phone} {Error}", f.Phone, f.Error);
                 }
 
-                _logger.LogInformation("Account auto sync completed: {Channels} channels, {Groups} groups (failures={Failures})",
-                    summary.TotalChannelsSynced, summary.TotalGroupsSynced, summary.AccountFailures.Count);
+                _logger.LogInformation(
+                    "Account auto sync completed: taskId={TaskId}, accounts={Processed}/{Total}, channels={Channels}, groups={Groups}, failures={Failures}",
+                    run.TaskId,
+                    summary.ProcessedAccounts,
+                    summary.TotalAccounts,
+                    summary.TotalChannelsSynced,
+                    summary.TotalGroupsSynced,
+                    summary.AccountFailures.Count);
 
                 // 记录“上次自动同步时间”，用于容器重启后继续按间隔调度，避免“重启即跑一轮”导致限流。
                 await PersistLastAutoSyncAtUtcAsync(DateTime.UtcNow, stoppingToken);
@@ -83,6 +91,11 @@ public sealed class AccountDataAutoSyncBackgroundService : BackgroundService
             catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
             {
                 // ignore
+            }
+            catch (InvalidOperationException ex) when (ex.Message.Contains("已在运行", StringComparison.OrdinalIgnoreCase))
+            {
+                _logger.LogInformation("Account auto sync skipped: {Message}", ex.Message);
+                await Task.Delay(TimeSpan.FromSeconds(30), stoppingToken);
             }
             catch (Exception ex)
             {
@@ -151,4 +164,3 @@ public sealed class AccountDataAutoSyncBackgroundService : BackgroundService
         return created;
     }
 }
-

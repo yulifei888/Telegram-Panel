@@ -142,9 +142,13 @@
             <MudCardContent>
                 <MudAlert Severity="Severity.Info" Variant="Variant.Outlined" Dense="true" Class="mb-3">
                     <MudText Typo="Typo.body2">
-                        <strong>同步说明：</strong>将每个活跃账号“创建的频道 + 创建的群组”拉取并写入本地数据库，用于频道/群组列表展示，以及批量任务自动选择执行账号。
+                        <strong>同步说明：</strong>将每个活跃账号“当前可见的频道 + 当前可见的群组”拉取并写入本地数据库，用于频道/群组列表展示，以及批量任务自动选择执行账号。
                         <br />
-                        <strong>不包含：</strong>Telegram 状态检测（冻结/封号等）与验证码收取。
+                        <strong>任务中心：</strong>自动同步与“立即同步”都会记录到【任务中心】，可查看是否正在运行、已同步到第几个账号以及失败数量。
+                        <br />
+                        <strong>补充：</strong>同步过程中若遇到连接异常，会顺带执行一次轻量 Telegram 状态刷新（不做创建频道深度探测）。
+                        <br />
+                        <strong>不包含：</strong>深度 Telegram 状态检测（创建频道探测）与验证码收取。
                     </MudText>
                 </MudAlert>
 
@@ -633,12 +637,13 @@
 
         try
         {
-            var summary = await DataSync.SyncAllActiveAccountsAsync(CancellationToken.None);
+            var run = await DataSync.RunAllActiveAccountsTrackedAsync("manual", CancellationToken.None);
+            var summary = run.Summary;
 
             foreach (var failure in summary.AccountFailures)
                 Snackbar.Add($"账号 {failure.Phone} 同步失败：{failure.Error}", Severity.Warning);
 
-            Snackbar.Add($"同步完成：{summary.TotalChannelsSynced} 个频道，{summary.TotalGroupsSynced} 个群组", summary.AccountFailures.Count == 0 ? Severity.Success : Severity.Warning);
+            Snackbar.Add($"同步完成：{summary.TotalChannelsSynced} 个频道，{summary.TotalGroupsSynced} 个群组。任务 #{run.TaskId} 已记录到任务中心", summary.AccountFailures.Count == 0 ? Severity.Success : Severity.Warning);
         }
         catch (Exception ex)
         {

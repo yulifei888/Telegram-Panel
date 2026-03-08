@@ -31,6 +31,14 @@
             <MudSelectItem Value='@("public")'>公开</MudSelectItem>
             <MudSelectItem Value='@("private")'>私密</MudSelectItem>
         </MudSelect>
+        <MudSelect @bind-Value="filterMembershipRole" @bind-Value:after="OnFiltersChanged" Label="账号角色" Variant="Variant.Outlined" Dense="true"
+                   Disabled="@(filterAccount <= 0)"
+                   Class="tp-input-full-xs" Style="min-width: 140px; flex: 0 1 180px;">
+            <MudSelectItem Value='@("all")'>全部角色</MudSelectItem>
+            <MudSelectItem Value='@("creator")'>我创建</MudSelectItem>
+            <MudSelectItem Value='@("admin")'>我管理</MudSelectItem>
+            <MudSelectItem Value='@("member")'>非管理员</MudSelectItem>
+        </MudSelect>
         <MudTextField @bind-Value="searchString" Placeholder="搜索频道..." Adornment="Adornment.Start"
                       AdornmentIcon="@Icons.Material.Filled.Search" IconSize="Size.Medium" Class="mt-0 tp-input-full-xs"
                       Style="min-width: 200px; flex: 1; max-width: 400px;"
@@ -82,6 +90,10 @@
                 <MudTh>用户名</MudTh>
                 <MudTh>类型</MudTh>
                 <MudTh>成员数</MudTh>
+                @if (filterAccount > 0)
+                {
+                    <MudTh>当前账号角色</MudTh>
+                }
                 <MudTh>创建账号</MudTh>
                 <MudTh>最后同步</MudTh>
                 <MudTh>操作</MudTh>
@@ -115,6 +127,14 @@
                     </MudChip>
                 </MudTd>
                 <MudTd DataLabel="成员数">@context.MemberCount</MudTd>
+                @if (filterAccount > 0)
+                {
+                    <MudTd DataLabel="当前账号角色">
+                        <MudChip T="string" Size="Size.Small" Color="@GetCurrentAccountRoleColor(context)">
+                            @GetCurrentAccountRoleLabel(context)
+                        </MudChip>
+                    </MudTd>
+                }
                 <MudTd DataLabel="创建账号">
                     @if (context.CreatorAccount != null)
                     {
@@ -170,6 +190,7 @@
     private string searchString = "";
     private int filterAccount = 0;
     private string filterType = "all";
+    private string filterMembershipRole = "all";
     private HashSet<Channel> selectedChannels = new();
     private CancellationTokenSource? _searchDebounceCts;
 
@@ -230,8 +251,9 @@
         try
         {
             var (items, total) = await ChannelManagement.QueryChannelsForViewPagedAsync(
-                creatorAccountId: filterAccount,
+                accountId: filterAccount,
                 filterType: filterType,
+                membershipRole: filterAccount > 0 ? filterMembershipRole : "all",
                 search: searchString,
                 pageIndex: state.Page,
                 pageSize: state.PageSize,
@@ -288,6 +310,9 @@
 
     private async Task OnFiltersChanged()
     {
+        if (filterAccount <= 0)
+            filterMembershipRole = "all";
+
         await ReloadTable();
     }
 
@@ -347,6 +372,42 @@
         if (!string.IsNullOrWhiteSpace(username))
             return $"{namePart} (@{username})";
         return namePart;
+    }
+
+    private AccountChannel? GetCurrentAccountRelation(Channel channel)
+    {
+        if (filterAccount <= 0)
+            return null;
+
+        return channel.AccountChannels?
+            .Where(x => x.AccountId == filterAccount)
+            .OrderByDescending(x => x.IsCreator)
+            .ThenByDescending(x => x.IsAdmin)
+            .FirstOrDefault();
+    }
+
+    private string GetCurrentAccountRoleLabel(Channel channel)
+    {
+        var relation = GetCurrentAccountRelation(channel);
+        if (relation == null)
+            return "未同步";
+        if (relation.IsCreator)
+            return "创建者";
+        if (relation.IsAdmin)
+            return "管理员";
+        return "成员";
+    }
+
+    private Color GetCurrentAccountRoleColor(Channel channel)
+    {
+        var relation = GetCurrentAccountRelation(channel);
+        if (relation == null)
+            return Color.Default;
+        if (relation.IsCreator)
+            return Color.Success;
+        if (relation.IsAdmin)
+            return Color.Info;
+        return Color.Default;
     }
 
     private async Task OpenBatchInviteSelected()
@@ -513,15 +574,15 @@
 
     private int GuessDefaultExecuteAccountId(IReadOnlyList<Channel> targets)
     {
+        if (filterAccount > 0)
+            return filterAccount;
+
         if (targets.Count == 1)
         {
             var cid = targets[0].CreatorAccountId;
             if (cid != null && cid.Value > 0)
                 return cid.Value;
         }
-
-        if (filterAccount > 0)
-            return filterAccount;
 
         var ids = targets.Select(x => x.CreatorAccountId).Where(x => x != null && x.Value > 0).Select(x => x!.Value).Distinct().ToList();
         return ids.Count == 1 ? ids[0] : 0;
@@ -661,14 +722,16 @@
     {
         try
         {
-            var executeAccountId = channel.CreatorAccountId ?? filterAccount;
-            if (executeAccountId <= 0)
+            var executeAccountId = await ChannelManagement.ResolveExecuteAccountIdAsync(
+                channel,
+                preferredAccountId: filterAccount > 0 ? filterAccount : null);
+            if (executeAccountId is not > 0)
             {
-                Snackbar.Add("无法导出链接：请先选择账号或确保频道有创建账号", Severity.Warning);
+                Snackbar.Add("无法导出链接：该频道暂无可用执行账号，请先同步对应账号的频道数据", Severity.Warning);
                 return;
             }
 
-            var link = await ChannelService.ExportJoinLinkAsync(executeAccountId, channel.TelegramId);
+            var link = await ChannelService.ExportJoinLinkAsync(executeAccountId.Value, channel.TelegramId);
 
             await JS.InvokeVoidAsync("telegramPanel.copyText", link);
             Snackbar.Add("已复制链接", Severity.Success);

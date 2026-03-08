@@ -1,6 +1,6 @@
 using System.Linq;
-using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.Logging;
 using TelegramPanel.Core.Interfaces;
 using TelegramPanel.Core.Models;
 using TelegramPanel.Core.Services;
@@ -32,36 +32,42 @@ public class GroupService : IGroupService
 
     public async Task<List<GroupInfo>> GetOwnedGroupsAsync(int accountId)
     {
+        var groups = await GetVisibleGroupsAsync(accountId);
+        return groups.Where(x => x.IsCreator).ToList();
+    }
+
+    public async Task<List<GroupInfo>> GetVisibleGroupsAsync(int accountId)
+    {
         var client = await GetOrCreateConnectedClientAsync(accountId);
 
-        var ownedGroups = new List<GroupInfo>();
+        var groups = new List<GroupInfo>();
         var dialogs = await client.Messages_GetAllDialogs();
 
-        foreach (var (id, chat) in dialogs.chats)
+        foreach (var (_, chat) in dialogs.chats)
         {
-            // 处理基础群组（Chat类型，非Channel）
-            // 注意：基础 Chat 类型无法直接判断创建者，需要通过 GetFullChat 获取
+            // 基础群组（Chat 类型，非 Channel）
             if (chat is Chat basicChat && basicChat.IsActive)
             {
+                var memberCount = (int)basicChat.participants_count;
+                var about = ReadString(basicChat, null, "about", "About");
+                var username = ReadString(basicChat, null, "username", "Username", "MainUsername");
+                var isCreator = false;
+                var isAdmin = false;
+
                 try
                 {
-                    // 获取完整信息来判断是否为创建者
                     var fullChat = await client.Messages_GetFullChat(basicChat.id);
-                    if (fullChat.full_chat is ChatFull cf && cf.participants is ChatParticipants cp)
+                    if (fullChat.full_chat is ChatFull cf)
                     {
-                        // 检查当前用户是否为创建者
-                        var creator = cp.participants.OfType<ChatParticipantCreator>()
-                            .FirstOrDefault(p => p.user_id == client.User!.id);
-                        if (creator != null)
+                        about = ReadString(cf, about, "about", "About");
+                        memberCount = Math.Max(memberCount, ReadInt(cf, memberCount, "participants_count", "ParticipantsCount", "participantsCount"));
+
+                        if (cf.participants is ChatParticipants cp)
                         {
-                            ownedGroups.Add(new GroupInfo
-                            {
-                                TelegramId = basicChat.id,
-                                Title = basicChat.title,
-                                MemberCount = basicChat.participants_count,
-                                CreatorAccountId = accountId,
-                                SyncedAt = DateTime.UtcNow
-                            });
+                            memberCount = Math.Max(memberCount, cp.participants.Count());
+                            var self = cp.participants.FirstOrDefault(p => GetChatParticipantUserId(p) == client.User!.id);
+                            isCreator = self is ChatParticipantCreator;
+                            isAdmin = isCreator || self is ChatParticipantAdmin;
                         }
                     }
                 }
@@ -78,38 +84,48 @@ public class GroupService : IGroupService
                         _logger.LogDebug(ex, "GetFullChat debug details (chatId={ChatId})", basicChat.id);
                     }
                 }
+
+                groups.Add(new GroupInfo
+                {
+                    TelegramId = basicChat.id,
+                    Title = basicChat.title,
+                    Username = username,
+                    MemberCount = memberCount,
+                    About = about,
+                    CreatorAccountId = isCreator ? accountId : null,
+                    IsCreator = isCreator,
+                    IsAdmin = isAdmin,
+                    SyncedAt = DateTime.UtcNow
+                });
+
+                continue;
             }
-            // 处理超级群组（Channel类型但megagroup=true, 即 !IsChannel）
-            else if (chat is Channel channel && channel.IsActive && !channel.IsChannel)
+
+            // 超级群组（Channel 类型但 megagroup=true，即 !IsChannel）
+            if (chat is not Channel channel || !channel.IsActive || channel.IsChannel)
+                continue;
+
+            try
             {
+                var isCreator =
+                    ReadBool(channel, "creator", "Creator", "is_creator", "IsCreator")
+                    || ReadFlagsHas(channel, flagName: "creator", memberNames: new[] { "flags", "Flags" });
+                var adminRights = ReadObject(channel, "admin_rights", "AdminRights", "adminRights");
+                var isAdmin = isCreator || adminRights != null;
+
+                var memberCount = ReadInt(channel, 0, "participants_count", "ParticipantsCount", "participantsCount", "memberCount", "MemberCount");
+                string? about = null;
                 try
                 {
-                    // 通过获取管理员列表来检查当前用户是否为创建者
-                    var participants = await client.Channels_GetParticipants(channel, new ChannelParticipantsAdmins());
-                    var isCreator = participants.participants
-                        .OfType<ChannelParticipantCreator>()
-                        .Any(p => p.user_id == client.User!.id);
-
-                    if (!isCreator) continue;
-
                     var fullChannel = await client.Channels_GetFullChannel(channel);
-                    ownedGroups.Add(new GroupInfo
-                    {
-                        TelegramId = channel.id,
-                        AccessHash = channel.access_hash,
-                        Title = channel.title,
-                        Username = channel.MainUsername,
-                        MemberCount = fullChannel.full_chat.ParticipantsCount,
-                        CreatorAccountId = accountId,
-                        SyncedAt = DateTime.UtcNow
-                    });
+                    memberCount = fullChannel.full_chat.ParticipantsCount;
+                    about = (fullChannel.full_chat as ChannelFull)?.about;
                 }
                 catch (Exception ex)
                 {
                     if (ex.Message.Contains("CHANNEL_MONOFORUM_UNSUPPORTED", StringComparison.OrdinalIgnoreCase))
                     {
-                        // 该错误通常不影响账号本身，仅表示 Telegram 不支持对这类“论坛/话题”群组调用某些接口
-                        _logger.LogDebug("Skipping group {GroupId}: {Error}", channel.id, ex.Message);
+                        _logger.LogDebug("Skipping full info for group {GroupId}: {Error}", channel.id, ex.Message);
                     }
                     else if (TryGetFloodWaitSeconds(ex.Message, out var seconds))
                     {
@@ -122,11 +138,30 @@ public class GroupService : IGroupService
                         _logger.LogDebug(ex, "GetFullGroup debug details (groupId={GroupId})", channel.id);
                     }
                 }
+
+                groups.Add(new GroupInfo
+                {
+                    TelegramId = channel.id,
+                    AccessHash = channel.access_hash,
+                    Title = channel.title,
+                    Username = channel.MainUsername,
+                    MemberCount = memberCount,
+                    About = about,
+                    CreatorAccountId = isCreator ? accountId : null,
+                    IsCreator = isCreator,
+                    IsAdmin = isAdmin,
+                    CreatedAt = channel.date,
+                    SyncedAt = DateTime.UtcNow
+                });
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "Failed to get visible group info for {GroupId}", channel.id);
             }
         }
 
-        _logger.LogInformation("Found {Count} owned groups for account {AccountId}", ownedGroups.Count, accountId);
-        return ownedGroups;
+        _logger.LogInformation("Found {Count} visible groups for account {AccountId}", groups.Count, accountId);
+        return groups;
     }
 
     private static bool TryGetFloodWaitSeconds(string message, out int seconds)
@@ -135,7 +170,6 @@ public class GroupService : IGroupService
         if (string.IsNullOrWhiteSpace(message))
             return false;
 
-        // 典型：FLOOD_WAIT_13
         var idx = message.IndexOf("FLOOD_WAIT_", StringComparison.OrdinalIgnoreCase);
         if (idx < 0)
             return false;
@@ -150,9 +184,149 @@ public class GroupService : IGroupService
         return true;
     }
 
+    private static bool ReadBool(object obj, params string[] names)
+    {
+        foreach (var name in names)
+        {
+            if (TryReadMember(obj, name, out var value) && value is bool b)
+                return b;
+        }
+
+        return false;
+    }
+
+    private static bool ReadFlagsHas(object obj, string flagName, string[] memberNames)
+    {
+        foreach (var memberName in memberNames)
+        {
+            if (!TryReadMember(obj, memberName, out var value) || value == null)
+                continue;
+
+            if (value is Enum enumValue)
+            {
+                var flagEnum = TryGetEnumFlag(enumValue.GetType(), flagName);
+                if (flagEnum != null)
+                    return enumValue.HasFlag(flagEnum);
+                continue;
+            }
+
+            if (value is int intFlags)
+                return ReadNumericFlagsHas(obj, flagName, intFlags);
+            if (value is long longFlags)
+                return ReadNumericFlagsHas(obj, flagName, longFlags);
+        }
+
+        return false;
+    }
+
+    private static bool ReadNumericFlagsHas(object obj, string flagName, long flagsValue)
+    {
+        var flagsType = obj.GetType().GetNestedType("Flags");
+        if (flagsType == null || !flagsType.IsEnum)
+            return false;
+
+        var flagEnum = TryGetEnumFlag(flagsType, flagName);
+        if (flagEnum == null)
+            return false;
+
+        var flagValue = Convert.ToInt64(flagEnum);
+        return (flagsValue & flagValue) == flagValue;
+    }
+
+    private static Enum? TryGetEnumFlag(Type enumType, string flagName)
+    {
+        var names = Enum.GetNames(enumType);
+        var match = names.FirstOrDefault(n => string.Equals(n, flagName, StringComparison.OrdinalIgnoreCase));
+        if (match == null)
+            return null;
+
+        return (Enum)Enum.Parse(enumType, match);
+    }
+
+    private static int ReadInt(object obj, int fallback, params string[] names)
+    {
+        foreach (var name in names)
+        {
+            if (TryReadMember(obj, name, out var value))
+            {
+                if (value is int i) return i;
+                if (value is long l) return unchecked((int)l);
+                if (value is short s) return s;
+                if (value is byte by) return by;
+            }
+        }
+
+        return fallback;
+    }
+
+    private static long ReadLong(object obj, long fallback, params string[] names)
+    {
+        foreach (var name in names)
+        {
+            if (TryReadMember(obj, name, out var value))
+            {
+                if (value is long l) return l;
+                if (value is int i) return i;
+                if (value is short s) return s;
+                if (value is byte by) return by;
+            }
+        }
+
+        return fallback;
+    }
+
+    private static string? ReadString(object obj, string? fallback, params string[] names)
+    {
+        foreach (var name in names)
+        {
+            if (TryReadMember(obj, name, out var value) && value is string s)
+                return s;
+        }
+
+        return fallback;
+    }
+
+    private static object? ReadObject(object obj, params string[] names)
+    {
+        foreach (var name in names)
+        {
+            if (TryReadMember(obj, name, out var value) && value != null)
+                return value;
+        }
+
+        return null;
+    }
+
+    private static bool TryReadMember(object obj, string name, out object? value)
+    {
+        var type = obj.GetType();
+
+        var prop = type.GetProperty(name);
+        if (prop != null && prop.CanRead)
+        {
+            value = prop.GetValue(obj);
+            return true;
+        }
+
+        var field = type.GetField(name);
+        if (field != null)
+        {
+            value = field.GetValue(obj);
+            return true;
+        }
+
+        value = null;
+        return false;
+    }
+
+    private static long GetChatParticipantUserId(object participant)
+    {
+        return ReadLong(participant, 0, "user_id", "UserId", "userId");
+    }
+
     public async Task<GroupInfo?> GetGroupInfoAsync(int accountId, long groupId)
     {
-        var groups = await GetOwnedGroupsAsync(accountId);
+        var groups = await GetVisibleGroupsAsync(accountId);
         return groups.FirstOrDefault(g => g.TelegramId == groupId);
     }
 
@@ -161,7 +335,6 @@ public class GroupService : IGroupService
         var client = await GetOrCreateConnectedClientAsync(accountId);
         var dialogs = await client.Messages_GetAllDialogs();
 
-        // 基础群组（Chat）
         var basic = dialogs.chats.Values.OfType<Chat>().FirstOrDefault(c => c.IsActive && c.id == groupId);
         if (basic != null)
         {
@@ -178,7 +351,6 @@ public class GroupService : IGroupService
             return link;
         }
 
-        // 超级群组（Channel 但 megagroup=true，即 !IsChannel）
         var mega = dialogs.chats.Values.OfType<Channel>().FirstOrDefault(c => c.IsActive && !c.IsChannel && c.id == groupId);
         if (mega != null)
         {
@@ -206,7 +378,6 @@ public class GroupService : IGroupService
         var client = await GetOrCreateConnectedClientAsync(accountId);
         var dialogs = await client.Messages_GetAllDialogs();
 
-        // 基础群组（Chat）
         var basic = dialogs.chats.Values.OfType<Chat>().FirstOrDefault(c => c.IsActive && c.id == groupId);
         if (basic != null)
         {
@@ -250,7 +421,6 @@ public class GroupService : IGroupService
                 .ToList();
         }
 
-        // 超级群组（Channel but !IsChannel）
         var mega = dialogs.chats.Values.OfType<Channel>().FirstOrDefault(c => c.IsActive && !c.IsChannel && c.id == groupId);
         if (mega != null)
         {

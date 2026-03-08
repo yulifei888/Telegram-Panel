@@ -11,7 +11,11 @@ public record GroupInfo
     public string Title { get; init; } = string.Empty;
     public string? Username { get; init; }
     public int MemberCount { get; init; }
-    public int CreatorAccountId { get; init; }
+    public string? About { get; init; }
+    public int? CreatorAccountId { get; init; }
+    public bool IsCreator { get; init; }
+    public bool IsAdmin { get; init; }
+    public DateTime? CreatedAt { get; init; }
     public DateTime SyncedAt { get; init; }
 
     public bool IsPublic => !string.IsNullOrEmpty(Username);

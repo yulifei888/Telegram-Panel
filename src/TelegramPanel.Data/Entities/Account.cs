@@ -24,6 +24,7 @@ public class Account
     }
 
     public long UserId { get; set; }
+
     /// <summary>
     /// 账号昵称（Telegram 显示名称）
     /// </summary>
@@ -67,9 +68,22 @@ public class Account
     /// </summary>
     public string? TwoFactorPassword { get; set; }
 
+    /// <summary>
+    /// 账号当前已同步的频道数量（用于列表展示，不持久化）
+    /// </summary>
+    [NotMapped]
+    public int ChannelCount { get; set; }
+
+    /// <summary>
+    /// 账号当前已同步的群组数量（用于列表展示，不持久化）
+    /// </summary>
+    [NotMapped]
+    public int GroupCount { get; set; }
+
     // 导航属性
     public AccountCategory? Category { get; set; }
     public ICollection<Channel> Channels { get; set; } = new List<Channel>();
     public ICollection<AccountChannel> AccountChannels { get; set; } = new List<AccountChannel>();
     public ICollection<Group> Groups { get; set; } = new List<Group>();
+    public ICollection<AccountGroup> AccountGroups { get; set; } = new List<AccountGroup>();
 }

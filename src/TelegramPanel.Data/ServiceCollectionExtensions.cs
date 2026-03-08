@@ -23,6 +23,7 @@ public static class ServiceCollectionExtensions
         services.AddScoped<IAccountRepository, AccountRepository>();
         services.AddScoped<IAccountCategoryRepository, AccountCategoryRepository>();
         services.AddScoped<IAccountChannelRepository, AccountChannelRepository>();
+        services.AddScoped<IAccountGroupRepository, AccountGroupRepository>();
         services.AddScoped<IChannelRepository, ChannelRepository>();
         services.AddScoped<IChannelGroupRepository, ChannelGroupRepository>();
         services.AddScoped<IGroupRepository, GroupRepository>();

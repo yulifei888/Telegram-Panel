@@ -152,6 +152,65 @@ public class ChannelService : IChannelService
         return channels;
     }
 
+    public async Task<List<ChannelInfo>> GetVisibleChannelsAsync(int accountId)
+    {
+        var client = await GetOrCreateConnectedClientAsync(accountId);
+
+        var channels = new List<ChannelInfo>();
+        var dialogs = await client.Messages_GetAllDialogs();
+
+        foreach (var (_, chat) in dialogs.chats)
+        {
+            if (chat is not Channel channel || !channel.IsActive)
+                continue;
+
+            try
+            {
+                var isCreator =
+                    ReadBool(channel, "creator", "Creator", "is_creator", "IsCreator")
+                    || ReadFlagsHas(channel, flagName: "creator", memberNames: new[] { "flags", "Flags" });
+                var adminRights = ReadObject(channel, "admin_rights", "AdminRights", "adminRights");
+                var isAdmin = isCreator || adminRights != null;
+
+                var memberCount = ReadInt(channel, 0, "participants_count", "ParticipantsCount", "participantsCount", "memberCount", "MemberCount");
+                string? about = null;
+                try
+                {
+                    var fullChannel = await client.Channels_GetFullChannel(channel);
+                    memberCount = fullChannel.full_chat.ParticipantsCount;
+                    about = (fullChannel.full_chat as ChannelFull)?.about;
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogDebug(ex, "Failed to get full visible channel info for {ChannelId}", channel.id);
+                }
+
+                channels.Add(new ChannelInfo
+                {
+                    TelegramId = channel.id,
+                    AccessHash = channel.access_hash,
+                    Title = channel.title,
+                    Username = channel.MainUsername,
+                    IsBroadcast = channel.IsChannel,
+                    MemberCount = memberCount,
+                    About = about,
+                    CreatorAccountId = isCreator ? accountId : null,
+                    IsCreator = isCreator,
+                    IsAdmin = isAdmin,
+                    CreatedAt = channel.date,
+                    SyncedAt = DateTime.UtcNow
+                });
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "Failed to get visible channel info for {ChannelId}", channel.id);
+            }
+        }
+
+        _logger.LogInformation("Found {Count} visible channels for account {AccountId}", channels.Count, accountId);
+        return channels;
+    }
+
     private static bool ReadBool(object obj, params string[] names)
     {
         foreach (var name in names)

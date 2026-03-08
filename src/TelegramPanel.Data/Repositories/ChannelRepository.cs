@@ -12,19 +12,38 @@ public class ChannelRepository : Repository<Channel>, IChannelRepository
     {
     }
 
-    private IQueryable<Channel> BuildForViewQuery(int creatorAccountId, string? filterType, string? search)
+    private IQueryable<Channel> BuildForViewQuery(int accountId, string? filterType, string? membershipRole, string? search)
     {
         var query = _dbSet
             .AsNoTracking()
             .Include(c => c.CreatorAccount)
             .Include(c => c.Group)
+            .Include(c => c.AccountChannels)
+            .AsSplitQuery()
             .AsQueryable();
 
-        // 列表只展示“系统创建”的频道（有 CreatorAccountId）
-        if (creatorAccountId <= 0)
-            query = query.Where(c => c.CreatorAccountId != null);
+        if (accountId > 0)
+        {
+            query = query.Where(c => c.AccountChannels.Any(x => x.AccountId == accountId));
+
+            membershipRole = (membershipRole ?? "all").Trim().ToLowerInvariant();
+            if (membershipRole == "creator")
+            {
+                query = query.Where(c => c.AccountChannels.Any(x => x.AccountId == accountId && x.IsCreator));
+            }
+            else if (membershipRole == "admin")
+            {
+                query = query.Where(c => c.AccountChannels.Any(x => x.AccountId == accountId && x.IsAdmin && !x.IsCreator));
+            }
+            else if (membershipRole == "member")
+            {
+                query = query.Where(c => c.AccountChannels.Any(x => x.AccountId == accountId && !x.IsAdmin));
+            }
+        }
         else
-            query = query.Where(c => c.CreatorAccountId == creatorAccountId);
+        {
+            query = query.Where(c => c.CreatorAccountId != null || c.AccountChannels.Any());
+        }
 
         filterType = (filterType ?? "all").Trim().ToLowerInvariant();
         if (filterType == "public")
@@ -123,8 +142,9 @@ public class ChannelRepository : Repository<Channel>, IChannelRepository
     }
 
     public async Task<(IReadOnlyList<Channel> Items, int TotalCount)> QueryForViewPagedAsync(
-        int creatorAccountId,
+        int accountId,
         string? filterType,
+        string? membershipRole,
         string? search,
         int pageIndex,
         int pageSize,
@@ -134,7 +154,7 @@ public class ChannelRepository : Repository<Channel>, IChannelRepository
         if (pageSize <= 0) pageSize = 20;
         if (pageSize > 500) pageSize = 500;
 
-        var query = BuildForViewQuery(creatorAccountId, filterType, search);
+        var query = BuildForViewQuery(accountId, filterType, membershipRole, search);
         var total = await query.CountAsync(cancellationToken);
         var items = await query
             .Skip(pageIndex * pageSize)

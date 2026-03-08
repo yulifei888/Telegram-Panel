@@ -15,8 +15,9 @@ public interface IChannelRepository : IRepository<Channel>
     Task<IEnumerable<Channel>> GetBroadcastChannelsAsync();
 
     Task<(IReadOnlyList<Channel> Items, int TotalCount)> QueryForViewPagedAsync(
-        int creatorAccountId,
+        int accountId,
         string? filterType,
+        string? membershipRole,
         string? search,
         int pageIndex,
         int pageSize,

@@ -1005,6 +1005,78 @@ var channelInvitesDownload = app.MapGet("/downloads/channels/invites.txt", async
 if (adminAuthEnabled)
     channelInvitesDownload.RequireAuthorization();
 
+// 下载：导出群组加入链接（文本）
+var groupInvitesDownload = app.MapGet("/downloads/groups/invites.txt", async (
+    HttpContext http,
+    GroupManagementService groupManagement,
+    IGroupService groupService,
+    CancellationToken cancellationToken) =>
+{
+    var idsRaw = http.Request.Query["ids"].ToString();
+    IReadOnlyList<long> telegramIds;
+    if (string.IsNullOrWhiteSpace(idsRaw))
+    {
+        telegramIds = (await groupManagement.GetAllGroupsAsync()).Select(x => x.TelegramId).Where(x => x > 0).Distinct().ToList();
+    }
+    else
+    {
+        telegramIds = idsRaw
+            .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .Select(s => long.TryParse(s, out var x) ? x : 0)
+            .Where(x => x > 0)
+            .Distinct()
+            .ToList();
+    }
+
+    var preferredAccountIdRaw = http.Request.Query["accountId"].ToString();
+    var preferredAccountId = int.TryParse(preferredAccountIdRaw, out var x) ? x : 0;
+    if (preferredAccountId <= 0)
+        preferredAccountId = 0;
+
+    var lines = new List<string>
+    {
+        $"# ExportedAtUtc: {DateTime.UtcNow:O}",
+        "# Format: <TelegramId>\\t<Title>\\t<Link>",
+        ""
+    };
+
+    foreach (var telegramId in telegramIds)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+
+        var group = await groupManagement.GetGroupByTelegramIdAsync(telegramId);
+        if (group == null)
+        {
+            lines.Add($"{telegramId}\t(unknown)\t(群组不存在)");
+            continue;
+        }
+
+        var executeAccountId = await groupManagement.ResolveExecuteAccountIdAsync(group, preferredAccountId: preferredAccountId);
+        if (executeAccountId is not > 0)
+        {
+            lines.Add($"{telegramId}\t{group.Title}\t(无可用执行账号)");
+            continue;
+        }
+
+        try
+        {
+            var link = await groupService.ExportJoinLinkAsync(executeAccountId.Value, telegramId);
+            lines.Add($"{telegramId}\t{group.Title}\t{link}");
+        }
+        catch
+        {
+            lines.Add($"{telegramId}\t{group.Title}\t(无法生成/不可见/无权限)");
+        }
+    }
+
+    var text = string.Join(Environment.NewLine, lines);
+    var bytes = System.Text.Encoding.UTF8.GetBytes(text);
+    var fileName = $"telegram-panel-group-invites-{DateTime.UtcNow:yyyyMMdd-HHmmss}.txt";
+    return Results.File(bytes, "text/plain; charset=utf-8", fileName);
+}).DisableAntiforgery();
+if (adminAuthEnabled)
+    groupInvitesDownload.RequireAuthorization();
+
 // Telegram Bot Webhook 端点
 // 接收 Telegram 服务器推送的更新，用于 Webhook 模式
 app.MapPost("/api/bot/webhook/{secretToken}", async (

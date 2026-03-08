@@ -103,6 +103,7 @@
     private bool loading = true;
     private Group? group;
     private string creatorDisplay = "-";
+    private int? executeAccountId;
 
     private bool adminsLoading;
     private List<ChannelAdminInfo> admins = new();
@@ -122,10 +123,19 @@
             if (group == null)
                 return;
 
-            var creator = await AccountManagement.GetAccountAsync(group.CreatorAccountId);
-            creatorDisplay = creator == null
-                ? $"账号 {group.CreatorAccountId}"
-                : $"{creator.DisplayPhone}（{creator.Nickname ?? creator.Username ?? creator.UserId.ToString()}）";
+            if (group.CreatorAccountId.HasValue)
+            {
+                var creator = await AccountManagement.GetAccountAsync(group.CreatorAccountId.Value);
+                creatorDisplay = creator == null
+                    ? $"账号 {group.CreatorAccountId.Value}"
+                    : $"{creator.DisplayPhone}（{creator.Nickname ?? creator.Username ?? creator.UserId.ToString()}）";
+            }
+            else
+            {
+                creatorDisplay = "（非系统创建）";
+            }
+
+            executeAccountId = await GroupManagement.ResolveExecuteAccountIdAsync(group);
         }
         catch (Exception ex)
         {
@@ -142,10 +152,17 @@
         if (group == null)
             return;
 
+        if (executeAccountId is not > 0)
+        {
+            admins.Clear();
+            Snackbar.Add("该群组暂无可用的执行账号（请先同步群组关联账号，或确保至少有一个账号是管理员）", Severity.Warning);
+            return;
+        }
+
         adminsLoading = true;
         try
         {
-            admins = await GroupService.GetAdminsAsync(group.CreatorAccountId, group.TelegramId);
+            admins = await GroupService.GetAdminsAsync(executeAccountId.Value, group.TelegramId);
         }
         catch (Exception ex)
         {
@@ -163,9 +180,15 @@
         if (group == null)
             return;
 
+        if (executeAccountId is not > 0)
+        {
+            Snackbar.Add("该群组暂无可用的执行账号，无法导出链接（请先同步群组关联账号）", Severity.Warning);
+            return;
+        }
+
         try
         {
-            var link = await GroupService.ExportJoinLinkAsync(group.CreatorAccountId, group.TelegramId);
+            var link = await GroupService.ExportJoinLinkAsync(executeAccountId.Value, group.TelegramId);
             await JS.InvokeVoidAsync("telegramPanel.copyText", link);
             Snackbar.Add("已复制链接", Severity.Success);
         }

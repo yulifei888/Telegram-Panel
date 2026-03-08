@@ -15,6 +15,9 @@ public static class BatchTaskTypes
     public const string UserJoinSubscribe = "user_join_subscribe";
     public const string UserChatActive = "user_chat_active";
 
+    // System 任务（记录到任务中心）
+    public const string AccountAutoSync = "account_auto_sync";
+
     // External API（记录到任务中心）
     public const string ExternalApiKick = "external_api_kick";
 }

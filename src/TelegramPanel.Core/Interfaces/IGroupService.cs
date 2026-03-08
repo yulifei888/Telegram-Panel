@@ -13,6 +13,11 @@ public interface IGroupService
     Task<List<GroupInfo>> GetOwnedGroupsAsync(int accountId);
 
     /// <summary>
+    /// 获取账号当前可见的全部群组（创建者/管理员/普通成员）
+    /// </summary>
+    Task<List<GroupInfo>> GetVisibleGroupsAsync(int accountId);
+
+    /// <summary>
     /// 获取群组详情
     /// </summary>
     Task<GroupInfo?> GetGroupInfoAsync(int accountId, long groupId);

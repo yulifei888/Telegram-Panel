@@ -9,4 +9,12 @@ public interface IGroupRepository : IRepository<Group>
 {
     Task<Group?> GetByTelegramIdAsync(long telegramId);
     Task<IEnumerable<Group>> GetByCreatorAccountAsync(int accountId);
+    Task<(IReadOnlyList<Group> Items, int TotalCount)> QueryForViewPagedAsync(
+        int accountId,
+        string? filterType,
+        string? membershipRole,
+        string? search,
+        int pageIndex,
+        int pageSize,
+        CancellationToken cancellationToken = default);
 }

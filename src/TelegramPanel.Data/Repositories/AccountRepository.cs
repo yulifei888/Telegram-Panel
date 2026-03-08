@@ -174,6 +174,8 @@ public class AccountRepository : Repository<Account>, IAccountRepository
             .Take(pageSize)
             .ToListAsync(cancellationToken);
 
+        await PopulateStatisticsAsync(items, cancellationToken);
+
         return (items, total);
     }
 
@@ -185,5 +187,64 @@ public class AccountRepository : Repository<Account>, IAccountRepository
     {
         var query = BuildQuery(categoryId, search, onlyWaste);
         return await query.ToListAsync(cancellationToken);
+    }
+
+    private async Task PopulateStatisticsAsync(IReadOnlyList<Account> items, CancellationToken cancellationToken)
+    {
+        if (items.Count == 0)
+            return;
+
+        var accountIds = items
+            .Select(x => x.Id)
+            .Where(x => x > 0)
+            .Distinct()
+            .ToArray();
+
+        if (accountIds.Length == 0)
+            return;
+
+        var linkedChannelPairs = await _context.Set<AccountChannel>()
+            .AsNoTracking()
+            .Where(x => accountIds.Contains(x.AccountId))
+            .Select(x => new { x.AccountId, x.ChannelId })
+            .ToListAsync(cancellationToken);
+
+        var createdChannelPairs = await _context.Set<Channel>()
+            .AsNoTracking()
+            .Where(x => x.CreatorAccountId.HasValue && accountIds.Contains(x.CreatorAccountId.Value))
+            .Select(x => new { AccountId = x.CreatorAccountId!.Value, ChannelId = x.Id })
+            .ToListAsync(cancellationToken);
+
+        var channelCountMap = linkedChannelPairs
+            .Concat(createdChannelPairs)
+            .GroupBy(x => x.AccountId)
+            .ToDictionary(
+                g => g.Key,
+                g => g.Select(x => x.ChannelId).Distinct().Count());
+
+        var linkedGroupPairs = await _context.Set<AccountGroup>()
+            .AsNoTracking()
+            .Where(x => accountIds.Contains(x.AccountId))
+            .Select(x => new { x.AccountId, x.GroupId })
+            .ToListAsync(cancellationToken);
+
+        var createdGroupPairs = await _context.Set<Group>()
+            .AsNoTracking()
+            .Where(x => x.CreatorAccountId.HasValue && accountIds.Contains(x.CreatorAccountId.Value))
+            .Select(x => new { AccountId = x.CreatorAccountId!.Value, GroupId = x.Id })
+            .ToListAsync(cancellationToken);
+
+        var groupCountMap = linkedGroupPairs
+            .Concat(createdGroupPairs)
+            .GroupBy(x => x.AccountId)
+            .ToDictionary(
+                g => g.Key,
+                g => g.Select(x => x.GroupId).Distinct().Count());
+
+        foreach (var account in items)
+        {
+            account.ChannelCount = channelCountMap.TryGetValue(account.Id, out var channelCount) ? channelCount : 0;
+            account.GroupCount = groupCountMap.TryGetValue(account.Id, out var groupCount) ? groupCount : 0;
+        }
     }
 }

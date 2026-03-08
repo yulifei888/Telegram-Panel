@@ -16,6 +16,7 @@ public class AppDbContext : DbContext
     public DbSet<Account> Accounts => Set<Account>();
     public DbSet<AccountCategory> AccountCategories => Set<AccountCategory>();
     public DbSet<AccountChannel> AccountChannels => Set<AccountChannel>();
+    public DbSet<AccountGroup> AccountGroups => Set<AccountGroup>();
     public DbSet<Channel> Channels => Set<Channel>();
     public DbSet<ChannelGroup> ChannelGroups => Set<ChannelGroup>();
     public DbSet<Group> Groups => Set<Group>();
@@ -134,6 +135,25 @@ public class AppDbContext : DbContext
             entity.HasOne(e => e.CreatorAccount)
                 .WithMany(a => a.Groups)
                 .HasForeignKey(e => e.CreatorAccountId)
+                .OnDelete(DeleteBehavior.SetNull);
+        });
+
+        // AccountGroup配置
+        modelBuilder.Entity<AccountGroup>(entity =>
+        {
+            entity.HasKey(e => e.Id);
+
+            entity.HasIndex(e => new { e.AccountId, e.GroupId }).IsUnique();
+            entity.HasIndex(e => e.GroupId);
+
+            entity.HasOne(e => e.Account)
+                .WithMany(a => a.AccountGroups)
+                .HasForeignKey(e => e.AccountId)
+                .OnDelete(DeleteBehavior.Cascade);
+
+            entity.HasOne(e => e.Group)
+                .WithMany(g => g.AccountGroups)
+                .HasForeignKey(e => e.GroupId)
                 .OnDelete(DeleteBehavior.Cascade);
         });
 

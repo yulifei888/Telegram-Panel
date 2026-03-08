@@ -298,6 +298,7 @@
             BatchTaskTypes.UserChatActive => "user",
             BatchTaskTypes.BotChannelSetAdminsByAccount => "bot",
             BatchTaskTypes.BotSetAdmins => "bot",
+            BatchTaskTypes.AccountAutoSync => "system",
             _ => "other"
         };
     }
@@ -329,7 +330,11 @@
             && !string.IsNullOrWhiteSpace(reg.Definition.Icon))
             return reg.Definition.Icon;
 
-        return Icons.Material.Filled.Task;
+        return type switch
+        {
+            BatchTaskTypes.AccountAutoSync => Icons.Material.Filled.Sync,
+            _ => Icons.Material.Filled.Task
+        };
     }
 
     private string GetTaskTypeName(string type)
@@ -344,6 +349,7 @@
             BatchTaskTypes.UserChatActive => "账号持续活跃（群组/频道）",
             BatchTaskTypes.BotChannelSetAdminsByAccount => "Bot频道批量设置管理员（账号执行）",
             BatchTaskTypes.BotSetAdmins => "Bot频道批量设置管理员（机器人执行）",
+            BatchTaskTypes.AccountAutoSync => "账号数据同步",
             _ => type
         };
     }
