@@ -46,7 +46,7 @@
             </HeaderContent>
             <RowTemplate>
                 <MudTd DataLabel="显示名称">@context.DisplayName</MudTd>
-                <MudTd DataLabel="变量名"><code>@($"{" + context.Name + "}")</code></MudTd>
+                <MudTd DataLabel="变量名"><code>@($"{{{context.Name}}}")</code></MudTd>
                 <MudTd DataLabel="类型">
                     <MudChip T="string" Size="Size.Small" Color="@(IsImageDictionary(context) ? Color.Secondary : Color.Primary)">
                         @(IsImageDictionary(context) ? "图片" : "文本")
@@ -206,3 +206,4 @@
     private static bool IsQueueMode(DataDictionary dictionary) =>
         string.Equals(dictionary.ReadMode, DataDictionaryReadModes.Queue, StringComparison.OrdinalIgnoreCase);
 }
+
