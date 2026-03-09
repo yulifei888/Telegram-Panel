@@ -183,6 +183,20 @@ public class ChannelRepository : Repository<Channel>, IChannelRepository
             .ToListAsync();
     }
 
+    public async Task<int> DeleteOrphanedAsync(CancellationToken cancellationToken = default)
+    {
+        var orphanedChannels = await _dbSet
+            .Where(c => c.CreatorAccountId == null && !c.AccountChannels.Any())
+            .ToListAsync(cancellationToken);
+
+        if (orphanedChannels.Count == 0)
+            return 0;
+
+        _dbSet.RemoveRange(orphanedChannels);
+        await SaveChangesWithSqliteLockRetryAsync(cancellationToken);
+        return orphanedChannels.Count;
+    }
+
     public async Task<(IReadOnlyList<Channel> Items, int TotalCount)> QueryForViewPagedAsync(
         int accountId,
         int? groupId,

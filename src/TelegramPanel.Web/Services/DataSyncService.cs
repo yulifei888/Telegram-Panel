@@ -324,6 +324,8 @@ public class DataSyncService
 
                 await _groupManagement.DeleteStaleAccountGroupsAsync(account.Id, keepGroupIds);
 
+                await _telegramTools.EnsureEstimatedRegistrationAsync(account.Id, cancellationToken);
+
                 await _accountManagement.UpdateLastSyncTimeAsync(account.Id);
             }
             catch (Exception ex)

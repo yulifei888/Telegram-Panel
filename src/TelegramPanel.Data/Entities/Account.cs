@@ -39,6 +39,16 @@ public class Account
     public DateTime LastSyncAt { get; set; } = DateTime.UtcNow;
 
     /// <summary>
+    /// 通过 777000 系统通知最早消息时间估算的注册时间（非百分百准确）
+    /// </summary>
+    public DateTime? EstimatedRegistrationAt { get; set; }
+
+    /// <summary>
+    /// 最近一次尝试估算注册时间的时间（UTC）
+    /// </summary>
+    public DateTime? EstimatedRegistrationCheckedAtUtc { get; set; }
+
+    /// <summary>
     /// 最后一次登录 Telegram 的时间（UTC），用于风控检查
     /// </summary>
     public DateTime? LastLoginAt { get; set; }

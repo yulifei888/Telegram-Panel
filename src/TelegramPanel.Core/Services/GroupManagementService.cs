@@ -127,7 +127,30 @@ public class GroupManagementService
 
     public async Task DeleteStaleAccountGroupsAsync(int accountId, IReadOnlyCollection<int> keepGroupIds)
     {
-        await _accountGroupRepository.DeleteForAccountExceptAsync(accountId, keepGroupIds);
+        var keepSet = keepGroupIds.Count == 0
+            ? new HashSet<int>()
+            : keepGroupIds.ToHashSet();
+
+        var staleGroupIds = (await _accountGroupRepository.GetByAccountAsync(accountId))
+            .Where(x => !keepSet.Contains(x.GroupId))
+            .Select(x => x.GroupId)
+            .Distinct()
+            .ToList();
+
+        foreach (var groupId in staleGroupIds)
+            await RemoveAccountGroupAsync(groupId, accountId);
+
+        var staleGroupIdSet = staleGroupIds.ToHashSet();
+        var creatorOnlyGroupIds = (await _groupRepository.FindAsync(x => x.CreatorAccountId == accountId))
+            .Select(x => x.Id)
+            .Where(id => !keepSet.Contains(id) && !staleGroupIdSet.Contains(id))
+            .Distinct()
+            .ToList();
+
+        foreach (var groupId in creatorOnlyGroupIds)
+            await DetachCreatorFromGroupAsync(groupId, accountId);
+
+        await _groupRepository.DeleteOrphanedAsync();
     }
 
     public async Task<IReadOnlyList<AccountGroup>> GetAccountGroupMembershipsAsync(int accountId, CancellationToken cancellationToken = default)
@@ -162,6 +185,24 @@ public class GroupManagementService
 
         if (!creatorRemoved)
             return;
+
+        group.SyncedAt = DateTime.UtcNow;
+        await _groupRepository.UpdateAsync(group);
+    }
+
+    private async Task DetachCreatorFromGroupAsync(int groupId, int accountId)
+    {
+        var group = await _groupRepository.GetByIdAsync(groupId);
+        if (group == null || group.CreatorAccountId != accountId)
+            return;
+
+        group.CreatorAccountId = null;
+
+        if (group.AccountGroups.Count == 0)
+        {
+            await _groupRepository.DeleteAsync(group);
+            return;
+        }
 
         group.SyncedAt = DateTime.UtcNow;
         await _groupRepository.UpdateAsync(group);

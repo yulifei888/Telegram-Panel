@@ -131,6 +131,20 @@ public class GroupRepository : Repository<Group>, IGroupRepository
             .ToListAsync();
     }
 
+    public async Task<int> DeleteOrphanedAsync(CancellationToken cancellationToken = default)
+    {
+        var orphanedGroups = await _dbSet
+            .Where(g => g.CreatorAccountId == null && !g.AccountGroups.Any())
+            .ToListAsync(cancellationToken);
+
+        if (orphanedGroups.Count == 0)
+            return 0;
+
+        _dbSet.RemoveRange(orphanedGroups);
+        await SaveChangesWithSqliteLockRetryAsync(cancellationToken);
+        return orphanedGroups.Count;
+    }
+
     public async Task<(IReadOnlyList<Group> Items, int TotalCount)> QueryForViewPagedAsync(
         int accountId,
         int? categoryId,

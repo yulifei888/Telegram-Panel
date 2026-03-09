@@ -115,7 +115,7 @@
                 <MudTh>频道/群组</MudTh>
                 <MudTh>状态</MudTh>
                 <MudTh>Telegram 状态</MudTh>
-                <MudTh>注册时间</MudTh>
+                <MudTh>注册时间（估算，非百分百正确）</MudTh>
                 <MudTh>最后数据同步</MudTh>
                 <MudTh Style="min-width: 180px;">操作</MudTh>
             </HeaderContent>
@@ -156,7 +156,7 @@
                         <MudChip T="string" Size="Size.Small" Color="Color.Default">未检测</MudChip>
                     }
                 </MudTd>
-                <MudTd DataLabel="注册时间"><PanelTime Value="context.CreatedAt" /></MudTd>
+                <MudTd DataLabel="注册时间（估算，非百分百正确）"><PanelTime Value="context.EstimatedRegistrationAt" EmptyText="-" /></MudTd>
                 <MudTd DataLabel="最后数据同步"><PanelTime Value="context.LastSyncAt" /></MudTd>
                 <MudTd DataLabel="操作">
                     <MudStack Row="true" Spacing="1" AlignItems="AlignItems.Center" Style="flex-wrap: wrap;">

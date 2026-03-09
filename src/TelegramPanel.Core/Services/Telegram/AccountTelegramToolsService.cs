@@ -88,6 +88,7 @@ public class AccountTelegramToolsService
             if (account != null)
             {
                 profile.ApplyTo(account);
+                await TryPopulateEstimatedRegistrationAsync(account, client, accountId, cancellationToken);
             }
 
             var summary = "正常";
@@ -245,6 +246,127 @@ public class AccountTelegramToolsService
             .Take(limit)
             .ToList();
     }
+
+    public async Task EnsureEstimatedRegistrationAsync(int accountId, CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            var account = await _accountManagement.GetAccountAsync(accountId);
+            if (account == null)
+                return;
+
+            if (account.EstimatedRegistrationAt.HasValue || account.EstimatedRegistrationCheckedAtUtc.HasValue)
+                return;
+
+            var client = await GetOrCreateConnectedClientAsync(accountId, cancellationToken);
+            await TryPopulateEstimatedRegistrationAsync(account, client, accountId, cancellationToken);
+
+            if (account.EstimatedRegistrationAt.HasValue || account.EstimatedRegistrationCheckedAtUtc.HasValue)
+                await _accountManagement.UpdateAccountAsync(account);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogDebug(ex, "EnsureEstimatedRegistrationAsync skipped for account {AccountId}", accountId);
+        }
+    }
+
+    private async Task TryPopulateEstimatedRegistrationAsync(
+        Account account,
+        Client client,
+        int accountId,
+        CancellationToken cancellationToken)
+    {
+        if (account.EstimatedRegistrationAt.HasValue || account.EstimatedRegistrationCheckedAtUtc.HasValue)
+            return;
+
+        var (checkedSuccessfully, estimatedAtUtc) = await TryGetEstimatedRegistrationFromSystemMessagesAsync(client, accountId, cancellationToken);
+        if (!checkedSuccessfully)
+            return;
+
+        if (estimatedAtUtc.HasValue)
+            account.EstimatedRegistrationAt = estimatedAtUtc.Value;
+
+        account.EstimatedRegistrationCheckedAtUtc = DateTime.UtcNow;
+    }
+
+    private async Task<(bool CheckedSuccessfully, DateTime? EstimatedAtUtc)> TryGetEstimatedRegistrationFromSystemMessagesAsync(
+        Client client,
+        int accountId,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            var peer = await TryResolveSystemPeerAsync(client);
+            if (peer == null)
+                return (true, null);
+
+            const int pageSize = 100;
+            const int maxPages = 200;
+            var offsetId = 0;
+            DateTime? earliest = null;
+
+            for (var page = 0; page < maxPages; page++)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+
+                var history = await ExecuteTelegramRequestAsync(
+                    accountId,
+                    "读取 777000 系统通知历史",
+                    () => client.Messages_GetHistory(peer, offset_id: offsetId, limit: pageSize),
+                    cancellationToken,
+                    resetClientOnTimeout: true);
+
+                if (history.Messages == null || history.Messages.Length == 0)
+                    break;
+
+                foreach (var msgBase in history.Messages)
+                {
+                    if (msgBase is not Message message)
+                        continue;
+
+                    if (string.IsNullOrWhiteSpace(message.message))
+                        continue;
+
+                    var messageUtc = message.Date.ToUniversalTime();
+                    if (!earliest.HasValue || messageUtc < earliest.Value)
+                        earliest = messageUtc;
+                }
+
+                var nextOffsetId = history.Messages
+                    .Select(GetTelegramMessageId)
+                    .Where(id => id > 0)
+                    .DefaultIfEmpty(0)
+                    .Min();
+
+                if (nextOffsetId <= 0 || nextOffsetId == offsetId || history.Messages.Length < pageSize)
+                    break;
+
+                offsetId = nextOffsetId;
+            }
+
+            return (true, earliest);
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogDebug(ex, "Failed to estimate registration time from 777000 for account {AccountId}", accountId);
+            return (false, null);
+        }
+    }
+
+    private static int GetTelegramMessageId(MessageBase msgBase) => msgBase switch
+    {
+        Message message => message.id,
+        MessageService service => service.id,
+        _ => 0
+    };
 
     public async Task<IReadOnlyList<TelegramAuthorizationInfo>> GetAuthorizationsAsync(int accountId)
     {

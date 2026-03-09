@@ -184,7 +184,30 @@ public class ChannelManagementService
 
     public async Task DeleteStaleAccountChannelsAsync(int accountId, IReadOnlyCollection<int> keepChannelIds)
     {
-        await _accountChannelRepository.DeleteForAccountExceptAsync(accountId, keepChannelIds);
+        var keepSet = keepChannelIds.Count == 0
+            ? new HashSet<int>()
+            : keepChannelIds.ToHashSet();
+
+        var staleChannelIds = (await _accountChannelRepository.GetByAccountAsync(accountId))
+            .Where(x => !keepSet.Contains(x.ChannelId))
+            .Select(x => x.ChannelId)
+            .Distinct()
+            .ToList();
+
+        foreach (var channelId in staleChannelIds)
+            await RemoveAccountChannelAsync(channelId, accountId);
+
+        var staleChannelIdSet = staleChannelIds.ToHashSet();
+        var creatorOnlyChannelIds = (await _channelRepository.FindAsync(x => x.CreatorAccountId == accountId))
+            .Select(x => x.Id)
+            .Where(id => !keepSet.Contains(id) && !staleChannelIdSet.Contains(id))
+            .Distinct()
+            .ToList();
+
+        foreach (var channelId in creatorOnlyChannelIds)
+            await DetachCreatorFromChannelAsync(channelId, accountId);
+
+        await _channelRepository.DeleteOrphanedAsync();
     }
 
     public async Task<IReadOnlyList<AccountChannel>> GetAccountChannelMembershipsAsync(int accountId, CancellationToken cancellationToken = default)
@@ -219,6 +242,24 @@ public class ChannelManagementService
 
         if (!creatorRemoved)
             return;
+
+        channel.SyncedAt = DateTime.UtcNow;
+        await _channelRepository.UpdateAsync(channel);
+    }
+
+    private async Task DetachCreatorFromChannelAsync(int channelId, int accountId)
+    {
+        var channel = await _channelRepository.GetByIdAsync(channelId);
+        if (channel == null || channel.CreatorAccountId != accountId)
+            return;
+
+        channel.CreatorAccountId = null;
+
+        if (channel.AccountChannels.Count == 0)
+        {
+            await _channelRepository.DeleteAsync(channel);
+            return;
+        }
 
         channel.SyncedAt = DateTime.UtcNow;
         await _channelRepository.UpdateAsync(channel);
