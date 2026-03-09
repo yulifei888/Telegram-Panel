@@ -65,7 +65,6 @@ public sealed class TemplateRenderingService
         if (matches.Count == 0)
             return template;
 
-        var cache = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
         var builder = new StringBuilder();
         var lastIndex = 0;
 
@@ -76,12 +75,7 @@ public sealed class TemplateRenderingService
 
             builder.Append(template, lastIndex, match.Index - lastIndex);
             var tokenName = match.Groups["name"].Value;
-            if (!cache.TryGetValue(tokenName, out var resolved))
-            {
-                resolved = await ResolveTextTokenAsync(tokenName, cancellationToken);
-                cache[tokenName] = resolved;
-            }
-
+            var resolved = await ResolveTextTokenAsync(tokenName, cancellationToken);
             builder.Append(resolved);
             lastIndex = match.Index + match.Length;
         }
