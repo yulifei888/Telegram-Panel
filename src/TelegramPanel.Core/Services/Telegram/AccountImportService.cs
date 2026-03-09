@@ -242,10 +242,22 @@ public class AccountImportService
             // ZipFile.ExtractToDirectory 会直接抛异常。这里改为手动解压并容错处理。
             await ExtractZipToDirectorySafeAsync(tempZipPath, extractDir);
 
-            var jsonFiles = Directory.EnumerateFiles(extractDir, "*.json", SearchOption.AllDirectories).ToList();
+            var tdataDirs = FindTdataDirectories(extractDir);
+            var allJsonFiles = Directory.EnumerateFiles(extractDir, "*.json", SearchOption.AllDirectories).ToList();
+            var jsonFiles = allJsonFiles
+                .Where(path => !IsPathInsideAnyDirectory(path, tdataDirs))
+                .ToList();
+
+            var skippedTdataJsonCount = allJsonFiles.Count - jsonFiles.Count;
+            if (skippedTdataJsonCount > 0)
+            {
+                _logger.LogInformation(
+                    "Skipping {Count} json files inside tdata directories during zip import",
+                    skippedTdataJsonCount);
+            }
+
             if (jsonFiles.Count == 0)
             {
-                var tdataDirs = FindTdataDirectories(extractDir);
                 if (tdataDirs.Count > 0)
                 {
                     results.AddRange(await ImportFromTdataDirectoriesAsync(tdataDirs, categoryId, twoFactorPassword));
@@ -254,7 +266,7 @@ public class AccountImportService
                     return results;
                 }
 
-                results.Add(new ImportResult(false, null, null, null, null, "压缩包内未找到任何 .json 文件"));
+                results.Add(new ImportResult(false, null, null, null, null, "压缩包内未找到任何账号配置 json 或可识别的 tdata 目录"));
                 return results;
             }
 
@@ -674,6 +686,26 @@ public class AccountImportService
         return int.TryParse(_configuration["Telegram:ApiId"], out apiId)
                && apiId > 0
                && !string.IsNullOrWhiteSpace(apiHash);
+    }
+
+    private static bool IsPathInsideAnyDirectory(string filePath, IReadOnlyCollection<string> directories)
+    {
+        if (directories.Count == 0)
+            return false;
+
+        var fullFilePath = Path.GetFullPath(filePath);
+        foreach (var directory in directories)
+        {
+            var fullDirectoryPath = Path.GetFullPath(directory);
+            var fullDirectoryPathWithSep = fullDirectoryPath.EndsWith(Path.DirectorySeparatorChar)
+                ? fullDirectoryPath
+                : fullDirectoryPath + Path.DirectorySeparatorChar;
+
+            if (fullFilePath.StartsWith(fullDirectoryPathWithSep, StringComparison.OrdinalIgnoreCase))
+                return true;
+        }
+
+        return false;
     }
 
     private static List<string> FindTdataDirectories(string rootDirectory)
