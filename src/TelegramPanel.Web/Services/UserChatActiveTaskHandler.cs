@@ -24,6 +24,8 @@ public sealed class UserChatActiveTaskHandler : IModuleTaskHandler
 
         var config = DeserializeConfig(host.Config);
         ValidateAndNormalizeConfig(config);
+        config.Canceled = false;
+        config.Error = null;
 
         var selectedCategoryIds = NormalizeSelectedCategoryIds(config).ToHashSet();
         var allAccounts = (await accountManagement.GetAllAccountsAsync())
@@ -116,6 +118,12 @@ public sealed class UserChatActiveTaskHandler : IModuleTaskHandler
                 var messageIdx = SelectIndex(config.MessageMode, config.Dictionary.Count, ref messageQueueIndex);
                 var text = config.Dictionary[messageIdx];
 
+                if (!await host.IsStillRunningAsync(cancellationToken))
+                {
+                    config.Canceled = true;
+                    break;
+                }
+
                 var send = await accountTools.SendMessageToResolvedChatAsync(
                     accountSlot.Account.Id,
                     targetSlot.Resolved,
@@ -155,8 +163,11 @@ public sealed class UserChatActiveTaskHandler : IModuleTaskHandler
                     break;
 
                 var delayMs = NextDelayMilliseconds(config.DelayMinMs, config.DelayMaxMs);
-                if (delayMs > 0)
-                    await Task.Delay(delayMs, cancellationToken);
+                if (delayMs > 0 && !await DelayWithPauseCheckAsync(host, delayMs, cancellationToken))
+                {
+                    config.Canceled = true;
+                    break;
+                }
             }
         }
         catch (Exception ex)
@@ -296,6 +307,29 @@ public sealed class UserChatActiveTaskHandler : IModuleTaskHandler
             return minMs;
 
         return Random.Shared.Next(minMs, maxMs + 1);
+    }
+
+    private static async Task<bool> DelayWithPauseCheckAsync(
+        IModuleTaskExecutionHost host,
+        int delayMs,
+        CancellationToken cancellationToken)
+    {
+        if (delayMs <= 0)
+            return true;
+
+        var remaining = delayMs;
+        while (remaining > 0)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            if (!await host.IsStillRunningAsync(cancellationToken))
+                return false;
+
+            var chunk = Math.Min(remaining, 1000);
+            await Task.Delay(chunk, cancellationToken);
+            remaining -= chunk;
+        }
+
+        return true;
     }
 
     private static bool ShouldPersistProgress(int completed, bool hadFailureThisRound, DateTime lastPersistAt)

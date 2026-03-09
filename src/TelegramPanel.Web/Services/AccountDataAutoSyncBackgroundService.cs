@@ -16,6 +16,7 @@ public sealed class AccountDataAutoSyncBackgroundService : BackgroundService
     private readonly IConfiguration _configuration;
     private readonly IWebHostEnvironment _environment;
     private readonly ILogger<AccountDataAutoSyncBackgroundService> _logger;
+    private DateTime? _lastAutoSyncAtUtc;
 
     public AccountDataAutoSyncBackgroundService(
         IServiceScopeFactory scopeFactory,
@@ -48,7 +49,7 @@ public sealed class AccountDataAutoSyncBackgroundService : BackgroundService
             }
 
             var nowUtc = DateTime.UtcNow;
-            var lastUtc = ReadLastAutoSyncAtUtcFromConfig();
+            var lastUtc = GetLastAutoSyncAtUtc();
             if (lastUtc.HasValue)
             {
                 var nextUtc = lastUtc.Value.AddHours(hours);
@@ -86,7 +87,9 @@ public sealed class AccountDataAutoSyncBackgroundService : BackgroundService
                     summary.AccountFailures.Count);
 
                 // 记录“上次自动同步时间”，用于容器重启后继续按间隔调度，避免“重启即跑一轮”导致限流。
-                await PersistLastAutoSyncAtUtcAsync(DateTime.UtcNow, stoppingToken);
+                var completedAtUtc = DateTime.UtcNow;
+                _lastAutoSyncAtUtc = completedAtUtc;
+                await PersistLastAutoSyncAtUtcAsync(completedAtUtc, stoppingToken);
             }
             catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
             {
@@ -107,13 +110,43 @@ public sealed class AccountDataAutoSyncBackgroundService : BackgroundService
         }
     }
 
-    private DateTime? ReadLastAutoSyncAtUtcFromConfig()
+    private DateTime? GetLastAutoSyncAtUtc()
     {
-        var raw = (_configuration["Sync:LastAutoSyncAtUtc"] ?? "").Trim();
-        if (string.IsNullOrWhiteSpace(raw))
+        var configValue = ReadUtcValue(_configuration["Sync:LastAutoSyncAtUtc"]);
+        var fileValue = ReadLastAutoSyncAtUtcFromLocalConfig();
+        return MaxUtc(_lastAutoSyncAtUtc, fileValue, configValue);
+    }
+
+    private DateTime? ReadLastAutoSyncAtUtcFromLocalConfig()
+    {
+        try
+        {
+            var path = LocalConfigFile.ResolvePath(_configuration, _environment);
+            if (!File.Exists(path))
+                return null;
+
+            var json = File.ReadAllText(path);
+            if (string.IsNullOrWhiteSpace(json))
+                return null;
+
+            var root = JsonNode.Parse(json)?.AsObject();
+            var raw = root?["Sync"]?["LastAutoSyncAtUtc"]?.GetValue<string>();
+            return ReadUtcValue(raw);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogDebug(ex, "Failed to read Sync:LastAutoSyncAtUtc from local config (ignored)");
+            return null;
+        }
+    }
+
+    private static DateTime? ReadUtcValue(string? raw)
+    {
+        var value = (raw ?? string.Empty).Trim();
+        if (string.IsNullOrWhiteSpace(value))
             return null;
 
-        if (DateTime.TryParse(raw, CultureInfo.InvariantCulture, DateTimeStyles.RoundtripKind, out var parsed))
+        if (DateTime.TryParse(value, CultureInfo.InvariantCulture, DateTimeStyles.RoundtripKind, out var parsed))
         {
             if (parsed.Kind == DateTimeKind.Unspecified)
                 parsed = DateTime.SpecifyKind(parsed, DateTimeKind.Utc);
@@ -121,6 +154,22 @@ public sealed class AccountDataAutoSyncBackgroundService : BackgroundService
         }
 
         return null;
+    }
+
+    private static DateTime? MaxUtc(params DateTime?[] values)
+    {
+        DateTime? max = null;
+        foreach (var value in values)
+        {
+            if (!value.HasValue)
+                continue;
+
+            var utc = value.Value.Kind == DateTimeKind.Utc ? value.Value : value.Value.ToUniversalTime();
+            if (!max.HasValue || utc > max.Value)
+                max = utc;
+        }
+
+        return max;
     }
 
     private async Task PersistLastAutoSyncAtUtcAsync(DateTime utcNow, CancellationToken cancellationToken)
