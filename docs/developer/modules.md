@@ -1,4 +1,4 @@
-# 模块系统（可安装/可卸载）
+﻿# 模块系统（可安装/可卸载）
 
 本项目提供一个“模块系统”框架，用于把**任务能力**与**外部 API 能力**以模块形式分发、安装、启用与回滚，避免因为扩展功能不兼容导致主站不可用。
 
@@ -37,6 +37,7 @@
 
 - `IModuleTaskProvider`：声明模块提供的任务类型（让任务中心可动态展示/创建）
 - `IModuleTaskHandler`：实现任务中心后台执行器（让后台真正能跑该任务）
+- `IModuleTaskRerunBuilder`：为“重新运行”提供专用的配置重建逻辑（适合需要清洗旧配置的任务）
 - `IModuleApiProvider`：声明模块提供的外部 API 类型（让 API 管理页面可动态创建配置项）
 - `IModuleUiProvider`：声明模块扩展 UI 导航与页面（让面板可挂载模块自定义页面）
 
@@ -465,6 +466,109 @@ public IEnumerable<ModuleTaskDefinition> GetTasks(ModuleHostContext context)
 - 支持筛选：例如“账号分类筛选/搜索”，减少用户选择成本
 - 遵循宿主的账号排除规则：默认不展示 `Category.ExcludeFromOperations=true` 的账号（常用于“工作账号”）；如你的模块确实需要，也可以提供“包含工作账号”的开关
 
+### 4) 复用同一个编辑器做“创建 + 编辑”（推荐）
+
+最近宿主已经把“任务创建器组件”和“任务编辑弹窗”做了统一约定。推荐你的编辑器组件同时支持以下参数：
+
+- 必选：`Draft`
+- 必选：`DraftChanged`
+- 可选：`InitialConfigJson`（编辑场景下传入当前任务的原始 `Config`）
+- 可选：`TaskId`（编辑场景下传入当前任务 ID，便于你按需读取更多上下文）
+
+也就是说，一个组件既可以用于“新建任务”，也可以用于“编辑已存在任务”。最小参数示例：
+
+```razor
+@code {
+  [Parameter] public ModuleTaskDraft Draft { get; set; }
+  [Parameter] public EventCallback<ModuleTaskDraft> DraftChanged { get; set; }
+
+  [Parameter] public string? InitialConfigJson { get; set; }
+  [Parameter] public int TaskId { get; set; }
+}
+```
+
+补充说明：
+
+- 创建场景下：宿主只保证传 `Draft / DraftChanged`
+- 编辑场景下：宿主会额外尝试注入 `InitialConfigJson / TaskId`
+- 这两个可选参数如果组件未声明，宿主会自动跳过，不会报错
+
+### 5) 任务中心能力声明（建议按新约定填写）
+
+`ModuleTaskDefinition` 现在带有 `TaskCenter` 字段，可用于声明该任务在任务中心里希望暴露哪些操作能力：
+
+```csharp
+yield return new ModuleTaskDefinition
+{
+    Category = "user",
+    TaskType = "example.long-running",
+    DisplayName = "示例：持续任务",
+    Icon = MudBlazor.Icons.Material.Filled.Tune,
+    EditorComponentType = typeof(MyTaskEditor).AssemblyQualifiedName,
+    TaskCenter = new ModuleTaskCenterCapabilities
+    {
+        CanPause = true,
+        CanResume = true,
+        CanEdit = true,
+        CanRerun = true,
+        EditComponentType = typeof(MyTaskEditor).AssemblyQualifiedName,
+        AutoPauseBeforeEdit = true
+    }
+};
+```
+
+字段说明：
+
+- `CanPause`：任务支持暂停
+- `CanResume`：任务支持从暂停状态继续运行
+- `CanEdit`：任务支持在任务中心打开编辑器修改配置
+- `CanRerun`：任务支持基于历史配置重新创建一个新任务
+- `EditComponentType`：编辑时使用的组件；为空时回退到 `EditorComponentType`
+- `AutoPauseBeforeEdit`：如果任务仍在运行，宿主可先暂停再进入编辑
+
+当前建议：
+
+- 对“一次性批量任务”，通常只需要 `CanRerun = true`
+- 对“持续任务/常驻任务”，通常建议同时声明 `CanPause / CanResume / CanEdit / CanRerun`
+- 如果你把 `EditorComponentType` 或 `EditComponentType` 写成空字符串，宿主会在注册阶段自动规范为 `null`
+
+> 注意：这组字段已经进入抽象层，并且内置持续任务已按此方式声明；外部模块也建议遵循相同结构，便于后续宿主统一扩展任务中心行为。
+
+### 6) 为“重新运行”提供专用构建器（适合复杂任务）
+
+如果你的任务配置在运行过程中会写回运行态字段，或者重跑前需要清洗旧配置，建议额外实现 `IModuleTaskRerunBuilder`：
+
+```csharp
+public sealed class MyTaskRerunBuilder : IModuleTaskRerunBuilder
+{
+    public string TaskType => "example.long-running";
+
+    public ModuleTaskCreateRequest Build(ModuleTaskSnapshot task)
+    {
+        // 这里把历史任务快照重新整理为新的创建请求
+        return new ModuleTaskCreateRequest
+        {
+            TaskType = TaskType,
+            Total = Math.Max(0, task.Total),
+            Config = task.Config
+        };
+    }
+}
+
+public void ConfigureServices(IServiceCollection services, ModuleHostContext context)
+{
+    services.AddSingleton<IModuleTaskRerunBuilder, MyTaskRerunBuilder>();
+}
+```
+
+这种方式适合：
+
+- 运行中会把“最近失败/暂停标记/错误信息”等运行态字段写回 `Config`
+- 重跑前需要把旧配置从“运行态 JSON”还原为“创建态 JSON”
+- 需要在重跑时动态修正 `Total`
+
+> 说明：`IModuleTaskRerunBuilder` 已进入抽象层，适合新模块提前按该约定实现；这样后续宿主统一接入时不需要再回头改模块结构。
+
 ## 外部 API 扩展（API）
 
 ### 1) 声明 API 类型（可在“API 管理→新建 API”中出现）
@@ -558,3 +662,7 @@ public IEnumerable<ModuleApiTypeDefinition> GetApis(ModuleHostContext context)
 - 建议在生产环境使用“灰度/备份”方式试装模块
 
 后续如需更强隔离，可以把模块改为“独立进程 Module Host”模式（主站通过 HTTP/gRPC 调用），进一步降低崩溃风险。
+
+
+
+
