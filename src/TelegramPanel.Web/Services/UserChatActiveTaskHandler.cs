@@ -97,6 +97,7 @@ public sealed class UserChatActiveTaskHandler : IModuleTaskHandler
         await PersistConfigAsync(taskManagement, host.TaskId, config, configGate, cancellationToken);
 
         var progress = new TaskProgressCounter();
+        var verificationFailures = new ConcurrentQueue<VerificationFailure>();
         var verificationTasks = new ConcurrentDictionary<Guid, Task>();
         using var verificationTokenSource = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         var accountQueueIndex = 0;
@@ -116,6 +117,29 @@ public sealed class UserChatActiveTaskHandler : IModuleTaskHandler
                     return true;
 
                 return await DelayWithPauseCheckAsync(host, remaining, cancellationToken);
+            }
+
+            async Task<int> DrainVerificationFailuresAsync()
+            {
+                if (verificationFailures.IsEmpty)
+                    return 0;
+
+                var failures = new List<VerificationFailure>();
+                while (verificationFailures.TryDequeue(out var item))
+                    failures.Add(item);
+
+                if (failures.Count == 0)
+                    return 0;
+
+                await AddFailuresAndPersistAsync(
+                    taskManagement,
+                    host.TaskId,
+                    config,
+                    failures,
+                    configGate,
+                    cancellationToken);
+
+                return failures.Count;
             }
 
             while (!cancellationToken.IsCancellationRequested)
@@ -289,10 +313,7 @@ public sealed class UserChatActiveTaskHandler : IModuleTaskHandler
                             targetSlot.RawTarget,
                             send.MessageId.Value,
                             config,
-                            taskManagement,
-                            host,
-                            progress,
-                            configGate,
+                            verificationFailures,
                             logger,
                             verificationTokenSource.Token);
 
@@ -311,6 +332,14 @@ public sealed class UserChatActiveTaskHandler : IModuleTaskHandler
                     lastProgressPersistAt = DateTime.UtcNow;
                 }
 
+                var verificationFailureCount = await DrainVerificationFailuresAsync();
+                if (verificationFailureCount > 0)
+                {
+                    var failed = Interlocked.Add(ref progress.Failed, verificationFailureCount);
+                    await host.UpdateProgressAsync(progress.Completed, failed, cancellationToken);
+                    lastProgressPersistAt = DateTime.UtcNow;
+                }
+
                 if (config.MaxMessages > 0 && sendCompleted >= config.MaxMessages)
                     break;
 
@@ -324,7 +353,23 @@ public sealed class UserChatActiveTaskHandler : IModuleTaskHandler
 
             var pendingVerifications = verificationTasks.Values.ToArray();
             if (pendingVerifications.Length > 0)
-                await Task.WhenAll(pendingVerifications);
+            {
+                try
+                {
+                    await Task.WhenAll(pendingVerifications);
+                }
+                catch
+                {
+                    // 忽略验证任务中的异常，避免影响主流程。
+                }
+            }
+
+            var finalFailures = await DrainVerificationFailuresAsync();
+            if (finalFailures > 0)
+            {
+                var failed = Interlocked.Add(ref progress.Failed, finalFailures);
+                await host.UpdateProgressAsync(progress.Completed, failed, cancellationToken);
+            }
         }
         catch (Exception ex)
         {
@@ -522,12 +567,27 @@ public sealed class UserChatActiveTaskHandler : IModuleTaskHandler
 
     private static void AddFailure(UserChatActiveTaskConfig config, Account account, string rawTarget, string reason)
     {
+        AddFailure(
+            config,
+            account.Id,
+            BuildAccountDisplayName(account),
+            rawTarget,
+            reason);
+    }
+
+    private static void AddFailure(
+        UserChatActiveTaskConfig config,
+        int accountId,
+        string accountDisplayName,
+        string rawTarget,
+        string reason)
+    {
         config.RecentFailures ??= new List<UserChatActiveTaskRuntimeFailure>();
         config.RecentFailures.Add(new UserChatActiveTaskRuntimeFailure
         {
             TimeUtc = DateTime.UtcNow,
-            AccountId = account.Id,
-            Account = BuildAccountDisplayName(account),
+            AccountId = accountId,
+            Account = accountDisplayName,
             Target = (rawTarget ?? string.Empty).Trim(),
             Reason = reason
         });
@@ -603,6 +663,38 @@ public sealed class UserChatActiveTaskHandler : IModuleTaskHandler
         }
     }
 
+    private static async Task AddFailuresAndPersistAsync(
+        BatchTaskManagementService taskManagement,
+        int taskId,
+        UserChatActiveTaskConfig config,
+        IReadOnlyList<VerificationFailure> failures,
+        SemaphoreSlim gate,
+        CancellationToken cancellationToken)
+    {
+        if (failures.Count == 0)
+            return;
+
+        await gate.WaitAsync(cancellationToken);
+        try
+        {
+            foreach (var failure in failures)
+            {
+                AddFailure(
+                    config,
+                    failure.AccountId,
+                    failure.AccountDisplayName,
+                    failure.RawTarget,
+                    failure.Reason);
+            }
+
+            await taskManagement.UpdateTaskConfigAsync(taskId, SerializeIndented(config));
+        }
+        finally
+        {
+            gate.Release();
+        }
+    }
+
     private static async Task RunVerificationAsync(
         UserChatActiveAiVerificationService aiVerification,
         Account account,
@@ -610,16 +702,14 @@ public sealed class UserChatActiveTaskHandler : IModuleTaskHandler
         string rawTarget,
         int sentMessageId,
         UserChatActiveTaskConfig config,
-        BatchTaskManagementService taskManagement,
-        IModuleTaskExecutionHost host,
-        TaskProgressCounter progress,
-        SemaphoreSlim configGate,
+        ConcurrentQueue<VerificationFailure> verificationFailures,
         ILogger logger,
         CancellationToken cancellationToken)
     {
         if (cancellationToken.IsCancellationRequested)
             return;
 
+        var accountDisplayName = BuildAccountDisplayName(account);
         var timeoutSeconds = Math.Clamp(config.VerificationTimeoutSeconds, 3, 300);
         using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         timeoutCts.CancelAfter(TimeSpan.FromSeconds(timeoutSeconds + 10));
@@ -635,27 +725,19 @@ public sealed class UserChatActiveTaskHandler : IModuleTaskHandler
 
             if (!verification.Success)
             {
-                var failed = Interlocked.Increment(ref progress.Failed);
-                await AddFailureAndPersistAsync(
-                    taskManagement,
-                    host.TaskId,
-                    config,
-                    account,
-                    rawTarget,
-                    NormalizeReason(verification.Error),
-                    configGate,
-                    CancellationToken.None);
-                await host.UpdateProgressAsync(progress.Completed, failed, CancellationToken.None);
-            }
-            else
-            {
-                logger.LogInformation(
-                    "UserChatActive AI verification completed: taskId={TaskId}, accountId={AccountId}, target={Target}, action={Action}",
-                    host.TaskId,
+                verificationFailures.Enqueue(new VerificationFailure(
                     account.Id,
+                    accountDisplayName,
                     rawTarget,
-                    verification.ActionSummary ?? "(none)");
+                    NormalizeReason(verification.Error)));
+                return;
             }
+
+            logger.LogInformation(
+                "UserChatActive AI verification completed: accountId={AccountId}, target={Target}, action={Action}",
+                account.Id,
+                rawTarget,
+                verification.ActionSummary ?? "(none)");
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
@@ -663,31 +745,19 @@ public sealed class UserChatActiveTaskHandler : IModuleTaskHandler
         }
         catch (OperationCanceledException)
         {
-            var failed = Interlocked.Increment(ref progress.Failed);
-            await AddFailureAndPersistAsync(
-                taskManagement,
-                host.TaskId,
-                config,
-                account,
+            verificationFailures.Enqueue(new VerificationFailure(
+                account.Id,
+                accountDisplayName,
                 rawTarget,
-                "验证处理超时",
-                configGate,
-                CancellationToken.None);
-            await host.UpdateProgressAsync(progress.Completed, failed, CancellationToken.None);
+                "验证处理超时"));
         }
         catch (Exception ex)
         {
-            var failed = Interlocked.Increment(ref progress.Failed);
-            await AddFailureAndPersistAsync(
-                taskManagement,
-                host.TaskId,
-                config,
-                account,
+            verificationFailures.Enqueue(new VerificationFailure(
+                account.Id,
+                accountDisplayName,
                 rawTarget,
-                $"验证处理异常：{ex.Message}",
-                configGate,
-                CancellationToken.None);
-            await host.UpdateProgressAsync(progress.Completed, failed, CancellationToken.None);
+                $"验证处理异常：{ex.Message}"));
         }
     }
 
@@ -696,6 +766,12 @@ public sealed class UserChatActiveTaskHandler : IModuleTaskHandler
         public int Completed;
         public int Failed;
     }
+
+    private sealed record VerificationFailure(
+        int AccountId,
+        string AccountDisplayName,
+        string RawTarget,
+        string Reason);
 
     private sealed class AccountSlot
     {
