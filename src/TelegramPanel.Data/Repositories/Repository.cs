@@ -59,7 +59,7 @@ public class Repository<T> : IRepository<T> where T : class
             : await _dbSet.CountAsync(predicate);
     }
 
-    private async Task SaveChangesWithSqliteLockRetryAsync()
+    protected async Task SaveChangesWithSqliteLockRetryAsync(CancellationToken cancellationToken = default)
     {
         // SQLite 在云端（容器/卷/后台任务）场景更容易遇到瞬时写锁；这里做有限重试来提升稳定性
         const int maxAttempts = 5;
@@ -69,7 +69,7 @@ public class Repository<T> : IRepository<T> where T : class
         {
             try
             {
-                await _context.SaveChangesAsync();
+                await _context.SaveChangesAsync(cancellationToken);
                 return;
             }
             catch (DbUpdateException ex) when (IsSqliteLock(ex))

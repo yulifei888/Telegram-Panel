@@ -3,7 +3,9 @@
 @inject AccountManagementService AccountManagement
 @inject TelegramPanel.Core.Interfaces.IGroupService GroupService
 @inject ISnackbar Snackbar
+@inject IDialogService DialogService
 @inject IJSRuntime JS
+@using TelegramPanel.Core.Utils
 @using TelegramPanel.Data.Entities
 @using TelegramPanel.Core.Models
 
@@ -83,6 +85,52 @@
                         </RowTemplate>
                     </MudTable>
                 }
+
+                <MudDivider />
+
+                <MudStack Row="true" AlignItems="AlignItems.Center" Spacing="2">
+                    <MudText Typo="Typo.h6">本系统账号</MudText>
+                    <MudSpacer />
+                    <MudButton Variant="Variant.Text" Color="Color.Primary" Disabled="@systemAccountsLoading" OnClick="ShowSystemAccounts">
+                        查看完整列表
+                    </MudButton>
+                    <MudButton Variant="Variant.Outlined" Color="Color.Primary" StartIcon="@Icons.Material.Filled.Refresh"
+                               Disabled="@systemAccountsLoading" OnClick="LoadSystemAccounts">
+                        刷新
+                    </MudButton>
+                </MudStack>
+
+                @if (systemAccountsLoading)
+                {
+                    <MudProgressLinear Indeterminate="true" />
+                }
+                else if (systemAccounts.Count == 0)
+                {
+                    <MudText Typo="Typo.body2" Color="Color.Secondary">暂无本系统账号关联</MudText>
+                }
+                else
+                {
+                    <MudTable Items="@systemAccounts" Dense="true" Hover="true" Breakpoint="Breakpoint.Sm">
+                        <HeaderContent>
+                            <MudTh>手机号</MudTh>
+                            <MudTh>昵称</MudTh>
+                            <MudTh>用户名</MudTh>
+                            <MudTh>状态</MudTh>
+                            <MudTh>角色</MudTh>
+                        </HeaderContent>
+                        <RowTemplate>
+                            <MudTd DataLabel="手机号">@FormatPhone(context.Account?.Phone)</MudTd>
+                            <MudTd DataLabel="昵称">@(string.IsNullOrWhiteSpace(context.Account?.Nickname) ? "-" : context.Account!.Nickname)</MudTd>
+                            <MudTd DataLabel="用户名">@FormatUsername(context.Account?.Username)</MudTd>
+                            <MudTd DataLabel="状态">
+                                <MudChip T="string" Size="Size.Small" Color="@GetAccountStatusColor(context.Account)">@GetAccountStatusLabel(context.Account)</MudChip>
+                            </MudTd>
+                            <MudTd DataLabel="角色">
+                                <MudChip T="string" Size="Size.Small" Color="@GetMembershipColor(context)">@GetMembershipLabel(context)</MudChip>
+                            </MudTd>
+                        </RowTemplate>
+                    </MudTable>
+                }
             </MudStack>
         }
     </DialogContent>
@@ -103,14 +151,18 @@
     private bool loading = true;
     private Group? group;
     private string creatorDisplay = "-";
+    private int? executeAccountId;
 
     private bool adminsLoading;
     private List<ChannelAdminInfo> admins = new();
+    private bool systemAccountsLoading;
+    private List<AccountGroup> systemAccounts = new();
 
     protected override async Task OnInitializedAsync()
     {
         await LoadGroup();
         await LoadAdmins();
+        await LoadSystemAccounts();
     }
 
     private async Task LoadGroup()
@@ -122,10 +174,19 @@
             if (group == null)
                 return;
 
-            var creator = await AccountManagement.GetAccountAsync(group.CreatorAccountId);
-            creatorDisplay = creator == null
-                ? $"账号 {group.CreatorAccountId}"
-                : $"{creator.DisplayPhone}（{creator.Nickname ?? creator.Username ?? creator.UserId.ToString()}）";
+            if (group.CreatorAccountId.HasValue)
+            {
+                var creator = await AccountManagement.GetAccountAsync(group.CreatorAccountId.Value);
+                creatorDisplay = creator == null
+                    ? $"账号 {group.CreatorAccountId.Value}"
+                    : $"{creator.DisplayPhone}（{creator.Nickname ?? creator.Username ?? creator.UserId.ToString()}）";
+            }
+            else
+            {
+                creatorDisplay = "（非系统创建）";
+            }
+
+            executeAccountId = await GroupManagement.ResolveExecuteAccountIdAsync(group);
         }
         catch (Exception ex)
         {
@@ -142,10 +203,17 @@
         if (group == null)
             return;
 
+        if (executeAccountId is not > 0)
+        {
+            admins.Clear();
+            Snackbar.Add("该群组暂无可用的执行账号（请先同步群组关联账号，或确保至少有一个账号是管理员）", Severity.Warning);
+            return;
+        }
+
         adminsLoading = true;
         try
         {
-            admins = await GroupService.GetAdminsAsync(group.CreatorAccountId, group.TelegramId);
+            admins = await GroupService.GetAdminsAsync(executeAccountId.Value, group.TelegramId);
         }
         catch (Exception ex)
         {
@@ -158,14 +226,51 @@
         }
     }
 
+    private async Task LoadSystemAccounts()
+    {
+        systemAccountsLoading = true;
+        try
+        {
+            systemAccounts = (await GroupManagement.GetGroupAccountMembershipsAsync(GroupDbId))
+                .Where(x => x.Account != null)
+                .OrderByDescending(x => x.IsCreator)
+                .ThenByDescending(x => x.IsAdmin)
+                .ThenBy(x => x.AccountId)
+                .ToList();
+        }
+        catch (Exception ex)
+        {
+            systemAccounts.Clear();
+            Snackbar.Add($"加载本系统账号失败：{ex.Message}", Severity.Error);
+        }
+        finally
+        {
+            systemAccountsLoading = false;
+        }
+    }
+
+    private Task ShowSystemAccounts()
+    {
+        var parameters = new DialogParameters { ["GroupDbId"] = GroupDbId };
+        var options = new DialogOptions { CloseOnEscapeKey = true, MaxWidth = MaxWidth.Medium, FullWidth = true };
+        DialogService.Show<GroupSystemAccountsDialog>("本系统账号", parameters, options);
+        return Task.CompletedTask;
+    }
+
     private async Task CopyLink()
     {
         if (group == null)
             return;
 
+        if (executeAccountId is not > 0)
+        {
+            Snackbar.Add("该群组暂无可用的执行账号，无法导出链接（请先同步群组关联账号）", Severity.Warning);
+            return;
+        }
+
         try
         {
-            var link = await GroupService.ExportJoinLinkAsync(group.CreatorAccountId, group.TelegramId);
+            var link = await GroupService.ExportJoinLinkAsync(executeAccountId.Value, group.TelegramId);
             await JS.InvokeVoidAsync("telegramPanel.copyText", link);
             Snackbar.Add("已复制链接", Severity.Success);
         }
@@ -173,6 +278,44 @@
         {
             Snackbar.Add($"复制失败：{ex.Message}", Severity.Error);
         }
+    }
+
+    private static string FormatPhone(string? phone)
+    {
+        return string.IsNullOrWhiteSpace(phone) ? "-" : PhoneNumberFormatter.FormatWithCountryCode(phone);
+    }
+
+    private static string FormatUsername(string? username)
+    {
+        return string.IsNullOrWhiteSpace(username) ? "-" : "@" + username.Trim();
+    }
+
+    private static string GetMembershipLabel(AccountGroup membership)
+    {
+        if (membership.IsCreator)
+            return "创建者";
+        if (membership.IsAdmin)
+            return "管理员";
+        return "成员";
+    }
+
+    private static Color GetMembershipColor(AccountGroup membership)
+    {
+        if (membership.IsCreator)
+            return Color.Success;
+        if (membership.IsAdmin)
+            return Color.Info;
+        return Color.Default;
+    }
+
+    private static string GetAccountStatusLabel(Account? account)
+    {
+        return account?.IsActive == false ? "停用" : "启用";
+    }
+
+    private static Color GetAccountStatusColor(Account? account)
+    {
+        return account?.IsActive == false ? Color.Default : Color.Success;
     }
 
     private void Close()

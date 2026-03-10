@@ -1,4 +1,4 @@
-# 进阶说明
+# 配置与数据目录
 
 ## 技术栈
 
@@ -15,6 +15,7 @@
 - `/data/sessions/`：账号 session 文件
 - `/data/appsettings.local.json`：UI 保存后的本地覆盖配置
 - `/data/admin_auth.json`：后台登录账号/密码（首次会用初始默认值生成）
+- `/data/uploads/`：图片资产（数据字典图片、头像素材等）
 
 ## 后台任务（刷新页面不影响）
 
@@ -68,58 +69,4 @@ Docker 下常用环境变量（见 `docker-compose.yml`）：
 
 ## Bot Webhook 模式（生产环境推荐）
 
-> **💡 提示**：如果你不使用「Bot 频道管理」功能，可以跳过此节。
-
-默认情况下，Bot 使用**长轮询（Long Polling）**模式接收更新。**生产环境建议使用 Webhook 模式**，优势如下：
-
-- ✅ 更低的资源消耗（无需持续轮询）
-- ✅ 更快的响应速度（Telegram 主动推送）
-- ✅ 更适合高流量/多 Bot 场景
-
-### Webhook 配置项
-
-在 `docker-compose.yml` 或 `appsettings.local.json` 中配置：
-
-| 配置项 | 环境变量 | 说明 |
-|--------|----------|------|
-| `Telegram:WebhookEnabled` | `Telegram__WebhookEnabled` | 设为 `true` 启用 Webhook 模式；默认 `false` 使用轮询 |
-| `Telegram:WebhookBaseUrl` | `Telegram__WebhookBaseUrl` | 你的公网 HTTPS 地址（Telegram 要求必须 HTTPS） |
-| `Telegram:WebhookSecretToken` | `Telegram__WebhookSecretToken` | 验证密钥，Telegram 会在请求头中携带此值供校验 |
-| `Telegram:BotAutoSyncEnabled` | `Telegram__BotAutoSyncEnabled` | 设为 `true` 启用自动同步；Bot 加入新频道后自动添加到列表 |
-
-### docker-compose.yml 配置示例
-
-```yaml
-environment:
-  # 启用 Webhook 模式（生产环境推荐）
-  Telegram__WebhookEnabled: "true"
-  # Webhook 公网基础 URL（必须是 HTTPS）
-  Telegram__WebhookBaseUrl: "https://your-domain.com"
-  # Webhook 验证密钥（建议使用随机字符串）
-  Telegram__WebhookSecretToken: "your-random-secret-token"
-  # 启用自动同步（Bot 加入新频道后自动添加到列表）
-  Telegram__BotAutoSyncEnabled: "true"
-```
-
-### 注意事项
-
-- Webhook 模式**必须使用 HTTPS**，Telegram 不支持 HTTP
-- 启用 Webhook 后，系统会**自动在启动时**为所有活跃 Bot 注册 Webhook
-- 如果你使用反向代理，确保 `/api/bot/webhook/*` 路径可以被外部访问
-- 同一个 Bot Token 同时只能使用一种模式（Webhook 或 Long Polling），切换模式会自动覆盖
-- 切换模式后需要重启服务生效
-
-### 反向代理配置
-
-Nginx 示例（确保 Webhook 路径可访问）：
-
-```nginx
-location /api/bot/webhook/ {
-  proxy_pass http://127.0.0.1:5000;
-  proxy_http_version 1.1;
-  proxy_set_header Host $host;
-  proxy_set_header X-Real-IP $remote_addr;
-  proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-  proxy_set_header X-Forwarded-Proto $scheme;
-}
-```
+Bot Webhook 的完整配置与注意事项已单独整理：见 [Bot Webhook](../deployment/bot-webhook.md)。

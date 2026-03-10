@@ -64,6 +64,10 @@ public class AccountRepository : Repository<Account>, IAccountRepository
                     // Session 失效/损坏
                     || EF.Functions.Like(a.TelegramStatusSummary, "%Session 失效%")
                     || EF.Functions.Like(a.TelegramStatusSummary, "%AUTH_KEY_UNREGISTERED%")
+                    || EF.Functions.Like(a.TelegramStatusSummary, "%Session 冲突%")
+                    || EF.Functions.Like(a.TelegramStatusSummary, "%AUTH_KEY_DUPLICATED%")
+                    || EF.Functions.Like(a.TelegramStatusSummary, "%Session 已被撤销%")
+                    || EF.Functions.Like(a.TelegramStatusSummary, "%SESSION_REVOKED%")
                     || EF.Functions.Like(a.TelegramStatusSummary, "%Session 无法读取%")
                     || EF.Functions.Like(a.TelegramStatusSummary, "%Can't read session block%")
 
@@ -147,7 +151,7 @@ public class AccountRepository : Repository<Account>, IAccountRepository
     {
         return await _dbSet
             .Include(a => a.Category)
-            .Where(a => a.IsActive)
+            .Where(a => a.IsActive && (a.Category == null || !a.Category.ExcludeFromOperations))
             .ToListAsync();
     }
 
@@ -170,6 +174,8 @@ public class AccountRepository : Repository<Account>, IAccountRepository
             .Take(pageSize)
             .ToListAsync(cancellationToken);
 
+        await PopulateStatisticsAsync(items, cancellationToken);
+
         return (items, total);
     }
 
@@ -181,5 +187,68 @@ public class AccountRepository : Repository<Account>, IAccountRepository
     {
         var query = BuildQuery(categoryId, search, onlyWaste);
         return await query.ToListAsync(cancellationToken);
+    }
+
+    private async Task PopulateStatisticsAsync(IReadOnlyList<Account> items, CancellationToken cancellationToken)
+    {
+        if (items.Count == 0)
+            return;
+
+        var accountIds = items
+            .Select(x => x.Id)
+            .Where(x => x > 0)
+            .Distinct()
+            .ToArray();
+
+        if (accountIds.Length == 0)
+            return;
+
+        var linkedChannelPairs = await _context.Set<AccountChannel>()
+            .AsNoTracking()
+            .Join(
+                _context.Set<Channel>().AsNoTracking().Where(x => x.IsBroadcast),
+                link => link.ChannelId,
+                channel => channel.Id,
+                (link, channel) => new { link.AccountId, link.ChannelId })
+            .Where(x => accountIds.Contains(x.AccountId))
+            .ToListAsync(cancellationToken);
+
+        var createdChannelPairs = await _context.Set<Channel>()
+            .AsNoTracking()
+            .Where(x => x.IsBroadcast && x.CreatorAccountId.HasValue && accountIds.Contains(x.CreatorAccountId.Value))
+            .Select(x => new { AccountId = x.CreatorAccountId!.Value, ChannelId = x.Id })
+            .ToListAsync(cancellationToken);
+
+        var channelCountMap = linkedChannelPairs
+            .Concat(createdChannelPairs)
+            .GroupBy(x => x.AccountId)
+            .ToDictionary(
+                g => g.Key,
+                g => g.Select(x => x.ChannelId).Distinct().Count());
+
+        var linkedGroupPairs = await _context.Set<AccountGroup>()
+            .AsNoTracking()
+            .Where(x => accountIds.Contains(x.AccountId))
+            .Select(x => new { x.AccountId, x.GroupId })
+            .ToListAsync(cancellationToken);
+
+        var createdGroupPairs = await _context.Set<Group>()
+            .AsNoTracking()
+            .Where(x => x.CreatorAccountId.HasValue && accountIds.Contains(x.CreatorAccountId.Value))
+            .Select(x => new { AccountId = x.CreatorAccountId!.Value, GroupId = x.Id })
+            .ToListAsync(cancellationToken);
+
+        var groupCountMap = linkedGroupPairs
+            .Concat(createdGroupPairs)
+            .GroupBy(x => x.AccountId)
+            .ToDictionary(
+                g => g.Key,
+                g => g.Select(x => x.GroupId).Distinct().Count());
+
+        foreach (var account in items)
+        {
+            account.ChannelCount = channelCountMap.TryGetValue(account.Id, out var channelCount) ? channelCount : 0;
+            account.GroupCount = groupCountMap.TryGetValue(account.Id, out var groupCount) ? groupCount : 0;
+        }
     }
 }

@@ -1,0 +1,469 @@
+@inject AccountCategoryManagementService CategoryManagement
+@inject DataDictionaryService DictionaryService
+@inject TemplateRenderingService TemplateRendering
+@inject Microsoft.Extensions.Options.IOptionsMonitor<AiOpenAiOptions> AiOptionsMonitor
+@using System.Text.Json
+@using TelegramPanel.Data.Entities
+@using TelegramPanel.Modules
+@using TelegramPanel.Web.Services
+@using Microsoft.AspNetCore.Components
+
+<MudStack Spacing="2">
+    <MudAlert Severity="Severity.Info" Variant="Variant.Outlined" Dense="true">
+        持续活跃任务会在后台循环执行并按间隔发送内容。MaxMessages=0 表示持续运行，直到你在任务中心手动取消。
+        词典消息现在支持 <code>{time}</code> 和文本字典变量；任务仍会先按“随机 / 队列”模式选中一行，再解析其中变量后发送。
+    </MudAlert>
+
+    @if (loading)
+    {
+        <MudProgressCircular Indeterminate="true" Color="Color.Primary" Size="Size.Small" />
+        <MudText Typo="Typo.caption">正在加载账号分类...</MudText>
+    }
+    else
+    {
+        <MudSelect T="int"
+                   Label="执行账号分类（可多选）"
+                   Variant="Variant.Outlined"
+                   Dense="true"
+                   MultiSelection="true"
+                   SelectedValues="selectedCategoryIds"
+                   SelectedValuesChanged="OnSelectedCategoriesChanged"
+                   HelperText="可勾选多个分类，任务会从所有选中分类中抽取可用账号。">
+            @foreach (var c in categories)
+            {
+                <MudSelectItem Value="@c.Id">@c.Name</MudSelectItem>
+            }
+        </MudSelect>
+
+        <MudTextField @bind-Value="targetsText" @bind-Value:after="OnInputsChanged"
+                      Label="目标群组/频道（每行一个）"
+                      Variant="Variant.Outlined"
+                      Lines="5"
+                      Immediate="true"
+                      HelperText="支持：用户名（可带 at 前缀）、https://t.me/xxx、频道ID（如 -1001234567890 或 1234567890），如私密群组无法复制链接可登录 Telegram Web 面板打开群组聊天界面查看链接，数字就是 ID" />
+
+        <MudTextField @bind-Value="dictionaryText" @bind-Value:after="OnInputsChanged"
+                      Label="词典（每行一个）"
+                      Variant="Variant.Outlined"
+                      Lines="6"
+                      Immediate="true"
+                      HelperText="支持 {time} 和文本字典变量。任务会先按“随机 / 队列”模式选中一行，再解析变量后发送。" />
+
+        @if (textDictionaryNames.Count > 0)
+        {
+            <MudText Typo="Typo.caption">可用文本变量：<code>{time}</code>、@(string.Join("、", textDictionaryNames.Select(x => $"{{{x}}}")))</MudText>
+        }
+        else
+        {
+            <MudText Typo="Typo.caption">当前可用内置变量：<code>{time}</code></MudText>
+        }
+
+        <MudGrid>
+            <MudItem xs="12" md="4">
+                <MudNumericField T="int" @bind-Value="delayMinMs" @bind-Value:after="OnInputsChanged"
+                                 Label="最小间隔(秒)" Variant="Variant.Outlined" Min="0" Max="600" />
+            </MudItem>
+            <MudItem xs="12" md="4">
+                <MudNumericField T="int" @bind-Value="delayMaxMs" @bind-Value:after="OnInputsChanged"
+                                 Label="最大间隔(秒)" Variant="Variant.Outlined" Min="0" Max="600" />
+            </MudItem>
+            <MudItem xs="12" md="4">
+                <MudNumericField T="int" @bind-Value="maxMessages" @bind-Value:after="OnInputsChanged"
+                                 Label="最多发送条数" Variant="Variant.Outlined" Min="0" Max="1000000"
+                                 HelperText="0 表示持续运行直到取消。" />
+            </MudItem>
+        </MudGrid>
+
+        <MudGrid>
+            <MudItem xs="12" md="4">
+                <MudSelect T="string" @bind-Value="accountMode" @bind-Value:after="OnInputsChanged"
+                           Label="账号选择模式" Variant="Variant.Outlined" Dense="true">
+                    <MudSelectItem Value="@UserChatActiveTaskModes.Random">随机</MudSelectItem>
+                    <MudSelectItem Value="@UserChatActiveTaskModes.Queue">队列循环</MudSelectItem>
+                </MudSelect>
+            </MudItem>
+            <MudItem xs="12" md="4">
+                <MudSelect T="string" @bind-Value="targetMode" @bind-Value:after="OnInputsChanged"
+                           Label="目标选择模式" Variant="Variant.Outlined" Dense="true">
+                    <MudSelectItem Value="@UserChatActiveTaskModes.Random">随机</MudSelectItem>
+                    <MudSelectItem Value="@UserChatActiveTaskModes.Queue">队列循环</MudSelectItem>
+                </MudSelect>
+            </MudItem>
+            <MudItem xs="12" md="4">
+                <MudSelect T="string" @bind-Value="messageMode" @bind-Value:after="OnInputsChanged"
+                           Label="词典取值模式" Variant="Variant.Outlined" Dense="true">
+                    <MudSelectItem Value="@UserChatActiveTaskModes.Random">随机</MudSelectItem>
+                    <MudSelectItem Value="@UserChatActiveTaskModes.Queue">队列循环</MudSelectItem>
+                </MudSelect>
+            </MudItem>
+        </MudGrid>
+
+        <MudDivider Class="my-2" />
+
+        <MudSwitch T="bool" @bind-Value="enableAiVerification" @bind-Value:after="OnInputsChanged"
+                   Label="启用 AI 验证消息识别" Color="Color.Primary" />
+
+        @if (enableAiVerification)
+        {
+            <MudGrid>
+                <MudItem xs="12" md="6">
+                    <MudSelect T="string" @bind-Value="selectedAiModelOption" @bind-Value:after="OnInputsChanged"
+                               Label="任务模型" Variant="Variant.Outlined" Dense="true"
+                               HelperText="可使用全局默认模型，也可以为当前任务单独指定模型。">
+                        <MudSelectItem Value="@UseGlobalDefaultModelOption">@UseGlobalDefaultModelLabel</MudSelectItem>
+                        @foreach (var model in selectableAiModels)
+                        {
+                            <MudSelectItem Value="@model">@model</MudSelectItem>
+                        }
+                        <MudSelectItem Value="@CustomModelOption">自定义模型</MudSelectItem>
+                    </MudSelect>
+                </MudItem>
+                <MudItem xs="12" md="6">
+                    <MudNumericField T="int" @bind-Value="verificationTimeoutSeconds" @bind-Value:after="OnInputsChanged"
+                                     Label="验证等待超时(秒)" Variant="Variant.Outlined" Min="3" Max="300"
+                                     HelperText="发送活跃消息后，在此时间窗口内等待验证机器人消息。" />
+                </MudItem>
+            </MudGrid>
+
+            @if (IsCustomAiModelSelected)
+            {
+                <MudTextField @bind-Value="customAiModel" @bind-Value:after="OnInputsChanged"
+                              Label="自定义模型名" Variant="Variant.Outlined"
+                              HelperText="例如：gpt-4o-mini、qwen-vl-plus、glm-4.5v。" />
+            }
+
+            <MudAlert Severity="Severity.Info" Variant="Variant.Outlined" Dense="true">
+                仅处理同一目标群里的 <strong>bot</strong> 验证消息，并要求它 <strong>&#64;当前执行账号</strong> 或 <strong>直接回复刚发出的消息</strong>。
+                有按钮时会优先让 AI 决定点击哪个按钮；没有按钮时会让 AI 直接生成回复文本。
+            </MudAlert>
+        }
+    }
+</MudStack>
+
+@code {
+    [Parameter] public ModuleTaskDraft Draft { get; set; }
+    [Parameter] public EventCallback<ModuleTaskDraft> DraftChanged { get; set; }
+    [Parameter] public string? InitialConfigJson { get; set; }
+
+    private const string UseGlobalDefaultModelOption = "__use_global_default__";
+    private const string CustomModelOption = "__custom_model__";
+
+    private List<AccountCategory> categories = new();
+    private List<string> textDictionaryNames = new();
+    private List<string> selectableAiModels = new();
+    private bool loading = true;
+    private bool initializedFromConfig;
+
+    private IEnumerable<int> selectedCategoryIds = Array.Empty<int>();
+    private string targetsText = string.Empty;
+    private string dictionaryText = string.Empty;
+    private int delayMinMs = 15;
+    private int delayMaxMs = 45;
+    private int maxMessages;
+    private bool enableAiVerification;
+    private int verificationTimeoutSeconds = 15;
+    private string? initialAiModel;
+    private string selectedAiModelOption = UseGlobalDefaultModelOption;
+    private string customAiModel = string.Empty;
+    private string globalDefaultAiModelLabel = "使用全局默认（未配置）";
+
+    private string accountMode = UserChatActiveTaskModes.Random;
+    private string targetMode = UserChatActiveTaskModes.Queue;
+    private string messageMode = UserChatActiveTaskModes.Random;
+
+    private bool IsCustomAiModelSelected => string.Equals(selectedAiModelOption, CustomModelOption, StringComparison.Ordinal);
+    private string UseGlobalDefaultModelLabel => globalDefaultAiModelLabel;
+
+    protected override async Task OnInitializedAsync()
+    {
+        ApplyInitialConfigIfNeeded();
+
+        try
+        {
+            categories = (await CategoryManagement.GetAllCategoriesAsync())
+                .Where(x => !x.ExcludeFromOperations)
+                .OrderBy(x => x.Name, StringComparer.OrdinalIgnoreCase)
+                .ToList();
+
+            textDictionaryNames = (await DictionaryService.GetAllAsync())
+                .Where(x => x.IsEnabled && string.Equals(x.Type, DataDictionaryTypes.Text, StringComparison.OrdinalIgnoreCase))
+                .Where(x => x.Items.Any(i => i.IsEnabled && !string.IsNullOrWhiteSpace(i.TextValue)))
+                .Select(x => x.Name)
+                .OrderBy(x => x, StringComparer.OrdinalIgnoreCase)
+                .ToList();
+
+            LoadAiSettings();
+        }
+        finally
+        {
+            loading = false;
+        }
+
+        await PushDraftAsync();
+    }
+
+    private void ApplyInitialConfigIfNeeded()
+    {
+        if (initializedFromConfig)
+            return;
+
+        initializedFromConfig = true;
+
+        var raw = (InitialConfigJson ?? string.Empty).Trim();
+        if (raw.Length == 0)
+            return;
+
+        try
+        {
+            var cfg = JsonSerializer.Deserialize<UserChatActiveTaskConfig>(raw);
+            if (cfg == null)
+                return;
+
+            selectedCategoryIds = NormalizeCategoryIds(cfg.CategoryIds, cfg.CategoryId);
+            targetsText = string.Join(Environment.NewLine, cfg.Targets ?? new List<string>());
+            dictionaryText = string.Join(Environment.NewLine, cfg.Dictionary ?? new List<string>());
+            delayMinMs = ConvertMillisecondsToSeconds(cfg.DelayMinMs);
+            delayMaxMs = ConvertMillisecondsToSeconds(cfg.DelayMaxMs);
+            maxMessages = cfg.MaxMessages;
+            accountMode = NormalizeMode(cfg.AccountMode);
+            targetMode = NormalizeMode(cfg.TargetMode);
+            messageMode = NormalizeMode(cfg.MessageMode);
+            enableAiVerification = cfg.EnableAiVerification;
+            verificationTimeoutSeconds = cfg.VerificationTimeoutSeconds < 3 ? 15 : cfg.VerificationTimeoutSeconds;
+            initialAiModel = AiOpenAiSettingsSnapshot.NormalizeModel(cfg.AiModel);
+        }
+        catch
+        {
+            // 忽略旧配置解析失败，回退到默认值。
+        }
+    }
+
+    private void LoadAiSettings()
+    {
+        var snapshot = AiOptionsMonitor.CurrentValue.ToSnapshot();
+        selectableAiModels = snapshot.GetSelectableModels().ToList();
+        var defaultModel = AiOpenAiSettingsSnapshot.NormalizeModel(snapshot.DefaultModel);
+        globalDefaultAiModelLabel = string.IsNullOrWhiteSpace(defaultModel)
+            ? "使用全局默认（未配置）"
+            : $"使用全局默认（{defaultModel}）";
+
+        ApplyAiModelSelection(initialAiModel);
+    }
+
+    private void ApplyAiModelSelection(string? model)
+    {
+        var normalized = AiOpenAiSettingsSnapshot.NormalizeModel(model);
+        if (string.IsNullOrWhiteSpace(normalized))
+        {
+            selectedAiModelOption = UseGlobalDefaultModelOption;
+            customAiModel = string.Empty;
+            return;
+        }
+
+        if (selectableAiModels.Any(x => string.Equals(x, normalized, StringComparison.OrdinalIgnoreCase)))
+        {
+            selectedAiModelOption = selectableAiModels.First(x => string.Equals(x, normalized, StringComparison.OrdinalIgnoreCase));
+            customAiModel = string.Empty;
+            return;
+        }
+
+        selectedAiModelOption = CustomModelOption;
+        customAiModel = normalized;
+    }
+
+    private string? ResolveSelectedAiModel()
+    {
+        if (string.Equals(selectedAiModelOption, UseGlobalDefaultModelOption, StringComparison.Ordinal))
+            return null;
+
+        if (string.Equals(selectedAiModelOption, CustomModelOption, StringComparison.Ordinal))
+            return AiOpenAiSettingsSnapshot.NormalizeModel(customAiModel);
+
+        return AiOpenAiSettingsSnapshot.NormalizeModel(selectedAiModelOption);
+    }
+
+    private async Task OnSelectedCategoriesChanged(IEnumerable<int> values)
+    {
+        selectedCategoryIds = NormalizeCategoryIds(values, 0);
+        await OnInputsChanged();
+    }
+
+    private async Task OnInputsChanged()
+    {
+        await PushDraftAsync();
+    }
+
+    private async Task PushDraftAsync()
+    {
+        var targets = ParseTargetLines(targetsText);
+        var dictionary = ParseMessageLines(dictionaryText);
+        var selectedIds = NormalizeCategoryIds(selectedCategoryIds, 0);
+        var selectedCategories = categories.Where(x => selectedIds.Contains(x.Id)).ToList();
+
+        if (loading)
+        {
+            await DraftChanged.InvokeAsync(new ModuleTaskDraft(0, null, false, "账号分类加载中"));
+            return;
+        }
+
+        if (categories.Count == 0)
+        {
+            await DraftChanged.InvokeAsync(new ModuleTaskDraft(0, null, false, "没有可用账号分类（或都被标记为排除操作）"));
+            return;
+        }
+
+        if (selectedCategories.Count == 0)
+        {
+            await DraftChanged.InvokeAsync(new ModuleTaskDraft(0, null, false, "请至少选择一个执行账号分类"));
+            return;
+        }
+
+        if (targets.Count == 0)
+        {
+            await DraftChanged.InvokeAsync(new ModuleTaskDraft(0, null, false, "请至少填写一个目标群组/频道"));
+            return;
+        }
+
+        if (dictionary.Count == 0)
+        {
+            await DraftChanged.InvokeAsync(new ModuleTaskDraft(0, null, false, "请至少填写一条词典消息"));
+            return;
+        }
+
+        foreach (var template in dictionary)
+        {
+            try
+            {
+                await TemplateRendering.ValidateTextTemplateAsync(template);
+            }
+            catch (Exception ex)
+            {
+                await DraftChanged.InvokeAsync(new ModuleTaskDraft(0, null, false, $"词典消息模板无效：{ex.Message}"));
+                return;
+            }
+        }
+
+        if (delayMinMs < 0 || delayMaxMs < 0)
+        {
+            await DraftChanged.InvokeAsync(new ModuleTaskDraft(0, null, false, "间隔不能为负数"));
+            return;
+        }
+
+        if (delayMaxMs < delayMinMs)
+        {
+            await DraftChanged.InvokeAsync(new ModuleTaskDraft(0, null, false, "最大间隔不能小于最小间隔"));
+            return;
+        }
+
+        if (maxMessages < 0)
+        {
+            await DraftChanged.InvokeAsync(new ModuleTaskDraft(0, null, false, "最多发送条数不能小于 0"));
+            return;
+        }
+
+        if (!IsValidMode(accountMode) || !IsValidMode(targetMode) || !IsValidMode(messageMode))
+        {
+            await DraftChanged.InvokeAsync(new ModuleTaskDraft(0, null, false, "模式参数无效"));
+            return;
+        }
+
+        var resolvedAiModel = ResolveSelectedAiModel();
+        if (enableAiVerification)
+        {
+            if (verificationTimeoutSeconds < 3 || verificationTimeoutSeconds > 300)
+            {
+                await DraftChanged.InvokeAsync(new ModuleTaskDraft(0, null, false, "验证等待超时范围应为 3-300 秒"));
+                return;
+            }
+
+            if (IsCustomAiModelSelected && string.IsNullOrWhiteSpace(resolvedAiModel))
+            {
+                await DraftChanged.InvokeAsync(new ModuleTaskDraft(0, null, false, "请选择有效的自定义模型名"));
+                return;
+            }
+        }
+
+        var categoryNames = selectedCategories.Select(x => x.Name).ToList();
+        var cfg = new UserChatActiveTaskConfig
+        {
+            CategoryId = selectedCategories[0].Id,
+            CategoryName = selectedCategories[0].Name,
+            CategoryIds = selectedCategories.Select(x => x.Id).ToList(),
+            CategoryNames = categoryNames,
+            Targets = targets,
+            Dictionary = dictionary,
+            DelayMinMs = delayMinMs * 1000,
+            DelayMaxMs = delayMaxMs * 1000,
+            MaxMessages = maxMessages,
+            AccountMode = accountMode,
+            TargetMode = targetMode,
+            MessageMode = messageMode,
+            EnableAiVerification = enableAiVerification,
+            AiModel = resolvedAiModel,
+            VerificationTimeoutSeconds = enableAiVerification ? verificationTimeoutSeconds : 15
+        };
+
+        var total = maxMessages > 0 ? maxMessages : 0;
+        var json = JsonSerializer.Serialize(cfg, new JsonSerializerOptions { WriteIndented = true });
+        await DraftChanged.InvokeAsync(new ModuleTaskDraft(total, json, true, null));
+    }
+
+    private static List<int> NormalizeCategoryIds(IEnumerable<int>? values, int fallback)
+    {
+        var ids = (values ?? Array.Empty<int>())
+            .Where(x => x > 0)
+            .Distinct()
+            .ToList();
+
+        if (ids.Count == 0 && fallback > 0)
+            ids.Add(fallback);
+
+        return ids;
+    }
+
+    private static int ConvertMillisecondsToSeconds(int value)
+    {
+        if (value <= 0)
+            return 0;
+
+        return Math.Max(1, (int)Math.Ceiling(value / 1000d));
+    }
+
+    private static bool IsValidMode(string? value)
+    {
+        return string.Equals(value, UserChatActiveTaskModes.Random, StringComparison.OrdinalIgnoreCase)
+               || string.Equals(value, UserChatActiveTaskModes.Queue, StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static string NormalizeMode(string? value)
+    {
+        return string.Equals(value, UserChatActiveTaskModes.Queue, StringComparison.OrdinalIgnoreCase)
+            ? UserChatActiveTaskModes.Queue
+            : UserChatActiveTaskModes.Random;
+    }
+
+    private static List<string> ParseTargetLines(string? text)
+    {
+        if (string.IsNullOrWhiteSpace(text))
+            return new List<string>();
+
+        return text
+            .Split(new[] { "\r\n", "\n", "\r" }, StringSplitOptions.RemoveEmptyEntries)
+            .Select(x => (x ?? string.Empty).Trim())
+            .Where(x => x.Length > 0)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+    }
+
+    private static List<string> ParseMessageLines(string? text)
+    {
+        if (string.IsNullOrWhiteSpace(text))
+            return new List<string>();
+
+        return text
+            .Split(new[] { "\r\n", "\n", "\r" }, StringSplitOptions.RemoveEmptyEntries)
+            .Select(x => (x ?? string.Empty).Trim())
+            .Where(x => x.Length > 0)
+            .ToList();
+    }
+}

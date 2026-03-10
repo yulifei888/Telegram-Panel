@@ -1,11 +1,12 @@
 @inject AccountManagementService AccountManagement
-@inject IChannelService ChannelService
 @inject BotTelegramService BotTelegram
-@inject AccountTelegramToolsService AccountTools
+@inject BatchTaskManagementService TaskManagement
 @inject ISnackbar Snackbar
 @inject IDialogService DialogService
 @inject TelegramPanel.Web.Services.ChannelAdminDefaultsService DefaultsService
 @inject TelegramPanel.Web.Services.ChannelAdminPresetsService PresetsService
+@using System.Text.Json
+@using TelegramPanel.Core.BatchTasks
 @using TelegramPanel.Data.Entities
 
 <MudDialog>
@@ -14,7 +15,7 @@
             <MudAlert Severity="Severity.Warning" Variant="Variant.Outlined" Dense="true">
                 <span>将使用“执行账号”为所选 Bot 频道批量设置管理员。执行账号必须是该频道管理员（通过 Bot API 获取管理员列表并与系统账号匹配）。</span>
                 <MudText Typo="Typo.body2" Class="mt-1">
-                    支持：<b>@@username</b>、<b>username</b>
+                    支持：<b>@@username</b>、<b>username</b>。提交后在后台执行，关闭/刷新页面不影响任务。
                 </MudText>
             </MudAlert>
 
@@ -116,24 +117,14 @@
             <MudNumericField @bind-Value="delayMs" Label="操作间隔（毫秒）" Variant="Variant.Outlined" Min="0" Max="30000"
                              HelperText="建议设置 1000-2500ms，避免触发风控（会额外加少量随机抖动）。" />
 
-            @if (running)
-            {
-                <MudDivider />
-                <MudText Typo="Typo.body2">进度：@done / @total（失败：@failed）</MudText>
-                <MudProgressLinear Value="@Progress" Color="Color.Primary" />
-                @if (!string.IsNullOrWhiteSpace(currentHint))
-                {
-                    <MudText Typo="Typo.caption" Class="mud-text-secondary">@currentHint</MudText>
-                }
-            }
         </MudStack>
     </DialogContent>
     <DialogActions>
         <MudButton Variant="Variant.Text" Color="Color.Default" OnClick="CancelOrClose">
-            @(running ? "停止" : "关闭")
+            关闭
         </MudButton>
         <MudButton Variant="Variant.Filled" Color="Color.Primary" OnClick="Submit" Disabled="@(running || channels.Count == 0)">
-            开始设置
+            提交后台任务
         </MudButton>
     </DialogActions>
 </MudDialog>
@@ -145,17 +136,15 @@
     [Parameter] public int BotId { get; set; }
     [Parameter] public List<BotChannel> Channels { get; set; } = new();
 
-    private readonly Random _rand = new();
     private readonly List<Account> eligibleAccounts = new();
     private readonly Dictionary<long, Account> accountsByUserId = new();
-    private readonly Dictionary<long, List<BotTelegramService.BotChatAdminInfo>> channelAdmins = new();
 
     private List<BotChannel> channels = new();
     private int selectedAccountId;
     private string usernamesText = "";
     private string adminTitle = "Admin";
     private int delayMs = 1500;
-    private const string UsernamesHelperText = "每行一个 username 或 @username，将按“频道 × 用户”的顺序依次执行。";
+    private const string UsernamesHelperText = "每行一个 username 或 @username。提交后按“频道 × 用户”在后台执行，可在任务中心查看。";
 
     private bool loadingAdmins;
     private string? adminSummary;
@@ -180,13 +169,6 @@
         | AdminRights.ManageTopics;
 
     private bool running;
-    private int total;
-    private int done;
-    private int failed;
-    private string? currentHint;
-    private CancellationTokenSource? _cts;
-
-    private int Progress => total <= 0 ? 0 : (int)Math.Round(done * 100d / total);
 
     private AdminRights SelectedRights => rights.ToRights();
 
@@ -228,7 +210,6 @@
         loadingAdmins = true;
         adminSummary = null;
         eligibleAccounts.Clear();
-        channelAdmins.Clear();
         try
         {
             var eligibleUserIds = new HashSet<long>();
@@ -254,7 +235,6 @@
                     // ignore
                 }
 
-                channelAdmins[ch.TelegramId] = admins;
             }
 
             foreach (var uid in eligibleUserIds)
@@ -407,173 +387,57 @@
             return;
 
         running = true;
-        total = channels.Count * usernames.Count;
-        done = 0;
-        failed = 0;
-        currentHint = null;
-        _cts = new CancellationTokenSource();
-
-        var failures = new List<string>();
-
         try
         {
-            var joinTried = new HashSet<string>(StringComparer.Ordinal);
-
-            foreach (var ch in channels)
+            var config = new BotChannelSetAdminsByAccountTaskConfig
             {
-                var (executorId, reason) = ResolveExecutorAccountId(ch);
-                if (executorId == null)
-                {
-                    foreach (var _ in usernames)
+                BotId = BotId,
+                SelectedAccountId = selectedAccountId,
+                AdminTitle = title,
+                DelayMs = delayMs,
+                Rights = (int)SelectedRights,
+                Usernames = usernames,
+                Channels = channels
+                    .Select(x => new BotTaskChannelItem
                     {
-                        done++;
-                        failed++;
-                    }
+                        TelegramId = x.TelegramId,
+                        Title = x.Title ?? x.TelegramId.ToString()
+                    })
+                    .ToList(),
+                RequestedAtUtc = DateTime.UtcNow
+            };
 
-                    failures.Add($"{ch.Title}：{reason ?? "无可用执行账号"}");
-                    StateHasChanged();
-                    continue;
-                }
-
-                foreach (var username in usernames)
-                {
-                    _cts.Token.ThrowIfCancellationRequested();
-
-                    currentHint = $"{ch.Title} => {username}";
-                    StateHasChanged();
-
-                    try
-                    {
-                        var ok = await ChannelService.SetAdminAsync(executorId.Value, ch.TelegramId, username, SelectedRights, title);
-                        if (!ok)
-                        {
-                            failed++;
-                            failures.Add($"{ch.Title} => {username}：失败");
-                        }
-                    }
-                    catch (Exception ex) when (!joinTried.Contains($"{executorId.Value}:{ch.TelegramId}") && BotChannelJoinRetryHelper.LooksLikeChannelNotFound(ex.Message))
-                    {
-                        var key = $"{executorId.Value}:{ch.TelegramId}";
-                        joinTried.Add(key);
-
-                        var joined = await BotChannelJoinRetryHelper.TryJoinChannelAsync(
-                            BotTelegram, AccountTools, BotId, executorId.Value, ch, failures, _cts.Token);
-                        if (!joined)
-                        {
-                            failed++;
-                            failures.Add($"{ch.Title} => {username}：{ex.Message}");
-                            continue;
-                        }
-
-                        try
-                        {
-                            var ok = await ChannelService.SetAdminAsync(executorId.Value, ch.TelegramId, username, SelectedRights, title);
-                            if (!ok)
-                            {
-                                failed++;
-                                failures.Add($"{ch.Title} => {username}：失败");
-                            }
-                        }
-                        catch (Exception ex2)
-                        {
-                            failed++;
-                            failures.Add($"{ch.Title} => {username}：{ex2.Message}");
-                        }
-                    }
-                    catch (Exception ex)
-                    {
-                        failed++;
-                        failures.Add($"{ch.Title} => {username}：{ex.Message}");
-                    }
-                    finally
-                    {
-                        done++;
-                    }
-
-                    StateHasChanged();
-
-                    var wait = delayMs;
-                    if (wait < 0) wait = 0;
-                    if (wait > 30000) wait = 30000;
-                    var jitter = _rand.Next(500, 1000);
-                    await Task.Delay(TimeSpan.FromMilliseconds(wait + jitter), _cts.Token);
-                }
-            }
-
-            var summary = $"完成：{done}/{total}（失败：{failed}）";
-            Snackbar.Add(summary, failed == 0 ? Severity.Success : Severity.Warning);
-
-            if (failures.Count > 0)
+            var task = new BatchTask
             {
-                var details = string.Join(Environment.NewLine, failures.Take(80));
-                await DialogService.ShowMessageBox("失败明细（前 80 条）", details, "关闭");
-            }
+                TaskType = BatchTaskTypes.BotChannelSetAdminsByAccount,
+                Total = config.Channels.Count * config.Usernames.Count,
+                Completed = 0,
+                Failed = 0,
+                Config = JsonSerializer.Serialize(config, new JsonSerializerOptions
+                {
+                    WriteIndented = true
+                })
+            };
 
-            MudDialog.Close(DialogResult.Ok(new { Done = done, Failed = failed }));
-        }
-        catch (OperationCanceledException)
-        {
-            Snackbar.Add("已停止执行", Severity.Info);
+            var created = await TaskManagement.CreateTaskAsync(task);
+            Snackbar.Add($"已提交后台任务 #{created.Id}。关闭或刷新页面不影响执行，可到【任务中心】查看进度与失败明细。", Severity.Success);
+            MudDialog.Close(DialogResult.Ok(created.Id));
         }
         catch (Exception ex)
         {
-            Snackbar.Add($"执行异常：{ex.Message}", Severity.Error);
+            Snackbar.Add($"提交失败：{ex.Message}", Severity.Error);
         }
         finally
         {
             running = false;
-            currentHint = null;
-            _cts?.Dispose();
-            _cts = null;
             StateHasChanged();
         }
-    }
-
-    private (int? ExecutorId, string? Reason) ResolveExecutorAccountId(BotChannel channel)
-    {
-        if (!channelAdmins.TryGetValue(channel.TelegramId, out var admins) || admins.Count == 0)
-            return (null, "无法获取频道管理员列表（请确认 Bot 已加入且为管理员）");
-
-        if (selectedAccountId > 0)
-        {
-            var selected = eligibleAccounts.FirstOrDefault(x => x.Id == selectedAccountId);
-            if (selected == null || selected.UserId <= 0)
-                return (null, "所选执行账号无效");
-
-            var admin = admins.FirstOrDefault(x => x.UserId == selected.UserId);
-            if (admin == null)
-                return (null, "所选执行账号不是该频道管理员");
-
-            if (!admin.IsCreator && !admin.CanPromoteMembers)
-                return (null, "所选执行账号缺少“添加管理员”权限");
-
-            return (selected.Id, null);
-        }
-
-        var creator = admins.FirstOrDefault(x => x.IsCreator);
-        if (creator != null && accountsByUserId.TryGetValue(creator.UserId, out var creatorAcc))
-            return (creatorAcc.Id, null);
-
-        foreach (var a in admins)
-        {
-            if (!a.IsCreator && !a.CanPromoteMembers)
-                continue;
-
-            if (accountsByUserId.TryGetValue(a.UserId, out var acc))
-                return (acc.Id, null);
-        }
-
-        return (null, "无可用执行账号（需要该频道管理员且拥有“添加管理员”权限，并且在系统中存在）");
     }
 
     private void CancelOrClose()
     {
         if (running)
-        {
-            _cts?.Cancel();
             return;
-        }
-
         MudDialog.Close();
     }
 

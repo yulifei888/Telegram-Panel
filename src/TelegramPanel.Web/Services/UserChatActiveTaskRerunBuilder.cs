@@ -1,0 +1,124 @@
+﻿using System.Text.Json;
+using TelegramPanel.Core.BatchTasks;
+using TelegramPanel.Data.Entities;
+using TelegramPanel.Modules;
+
+namespace TelegramPanel.Web.Services;
+
+public sealed class UserChatActiveTaskRerunBuilder : IModuleTaskRerunBuilder
+{
+    public string TaskType => BatchTaskTypes.UserChatActive;
+
+    public ModuleTaskCreateRequest Build(ModuleTaskSnapshot task)
+    {
+        var rerunConfig = BuildRerunConfig(task.Config);
+        var total = rerunConfig.MaxMessages > 0 ? rerunConfig.MaxMessages : 0;
+        var configJson = JsonSerializer.Serialize(rerunConfig, new JsonSerializerOptions { WriteIndented = true });
+
+        return new ModuleTaskCreateRequest
+        {
+            TaskType = BatchTaskTypes.UserChatActive,
+            Total = total,
+            Config = configJson
+        };
+    }
+
+    private static UserChatActiveTaskConfig BuildRerunConfig(string? rawConfig)
+    {
+        var raw = (rawConfig ?? string.Empty).Trim();
+        if (raw.Length == 0)
+            throw new InvalidOperationException("任务配置为空，无法重新运行");
+
+        UserChatActiveTaskConfig cfg;
+        try
+        {
+            cfg = JsonSerializer.Deserialize<UserChatActiveTaskConfig>(raw)
+                  ?? throw new InvalidOperationException("任务配置解析结果为空");
+        }
+        catch (Exception ex)
+        {
+            throw new InvalidOperationException($"任务配置 JSON 无效：{ex.Message}");
+        }
+
+        cfg.CategoryIds = NormalizeCategoryIdsForRerun(cfg.CategoryIds, cfg.CategoryId);
+        if (cfg.CategoryIds.Count == 0)
+            throw new InvalidOperationException("任务缺少账号分类，无法重新运行");
+
+        cfg.CategoryId = cfg.CategoryIds[0];
+        cfg.CategoryNames = NormalizeCategoryNamesForRerun(cfg.CategoryNames, cfg.CategoryName);
+        cfg.CategoryName = cfg.CategoryNames.FirstOrDefault() ?? cfg.CategoryName;
+
+        cfg.Targets = (cfg.Targets ?? new List<string>())
+            .Select(x => (x ?? string.Empty).Trim())
+            .Where(x => x.Length > 0)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+
+        cfg.Dictionary = (cfg.Dictionary ?? new List<string>())
+            .Select(x => (x ?? string.Empty).Trim())
+            .Where(x => x.Length > 0)
+            .ToList();
+
+        if (cfg.Targets.Count == 0)
+            throw new InvalidOperationException("任务缺少目标群组/频道，无法重新运行");
+
+        if (cfg.Dictionary.Count == 0)
+            throw new InvalidOperationException("任务缺少词典消息，无法重新运行");
+
+        if (cfg.DelayMinMs < 0) cfg.DelayMinMs = 0;
+        if (cfg.DelayMaxMs < 0) cfg.DelayMaxMs = 0;
+        if (cfg.DelayMinMs > 600000) cfg.DelayMinMs = 600000;
+        if (cfg.DelayMaxMs > 600000) cfg.DelayMaxMs = 600000;
+        if (cfg.DelayMaxMs < cfg.DelayMinMs) cfg.DelayMaxMs = cfg.DelayMinMs;
+        if (cfg.MaxMessages < 0) cfg.MaxMessages = 0;
+        if (cfg.VerificationTimeoutSeconds < 3) cfg.VerificationTimeoutSeconds = 15;
+        if (cfg.VerificationTimeoutSeconds > 300) cfg.VerificationTimeoutSeconds = 300;
+
+        cfg.AiModel = AiOpenAiSettingsSnapshot.NormalizeModel(cfg.AiModel);
+
+        cfg.AccountMode = NormalizeModeValue(cfg.AccountMode);
+        cfg.TargetMode = NormalizeModeValue(cfg.TargetMode);
+        cfg.MessageMode = NormalizeModeValue(cfg.MessageMode);
+
+        cfg.Canceled = false;
+        cfg.Error = null;
+        cfg.RecentFailures = new List<UserChatActiveTaskRuntimeFailure>();
+
+        return cfg;
+    }
+
+    private static List<int> NormalizeCategoryIdsForRerun(IEnumerable<int>? values, int fallback)
+    {
+        var ids = (values ?? Array.Empty<int>())
+            .Where(x => x > 0)
+            .Distinct()
+            .ToList();
+
+        if (ids.Count == 0 && fallback > 0)
+            ids.Add(fallback);
+
+        return ids;
+    }
+
+    private static List<string> NormalizeCategoryNamesForRerun(IEnumerable<string>? values, string? fallback)
+    {
+        var names = (values ?? Array.Empty<string>())
+            .Select(x => (x ?? string.Empty).Trim())
+            .Where(x => x.Length > 0)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+
+        var fallbackName = (fallback ?? string.Empty).Trim();
+        if (names.Count == 0 && fallbackName.Length > 0)
+            names.Add(fallbackName);
+
+        return names;
+    }
+
+    private static string NormalizeModeValue(string? mode)
+    {
+        return string.Equals((mode ?? string.Empty).Trim(), UserChatActiveTaskModes.Queue, StringComparison.OrdinalIgnoreCase)
+            ? UserChatActiveTaskModes.Queue
+            : UserChatActiveTaskModes.Random;
+    }
+}

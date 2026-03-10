@@ -1,25 +1,68 @@
+@inject AccountManagementService AccountManagement
+@inject BotTelegramService BotTelegram
 @namespace TelegramPanel.Web.Components.Dialogs
+@using TelegramPanel.Core.Services
+@using TelegramPanel.Core.Services.Telegram
 @using TelegramPanel.Data.Entities
 
 <MudDialog>
     <DialogContent>
         <MudStack Spacing="3">
             <MudAlert Severity="Severity.Info">
-                将从 <strong>@SelectedCount</strong> 个频道移除指定用户
+                将从 <strong>@TargetChannelCount</strong> 个频道移除指定用户
             </MudAlert>
 
-            <MudTextField @bind-Value="userIdInput" Label="用户 ID" Variant="Variant.Outlined" Required="true"
-                          HelperText="输入要移除的 Telegram 用户 ID（纯数字）"
-                          Placeholder="例如: 123456789" />
+            <MudSelect T="ExecuteMode" @bind-Value="executeMode" @bind-Value:after="OnExecuteModeChanged"
+                       Label="执行方式" Variant="Variant.Outlined" Dense="true">
+                <MudSelectItem Value="@ExecuteMode.Bot">机器人执行（按用户 ID）</MudSelectItem>
+                <MudSelectItem Value="@ExecuteMode.Account">账号执行（支持 @@username）</MudSelectItem>
+            </MudSelect>
 
-            <MudAlert Severity="Severity.Normal" Variant="Variant.Outlined" Dense="true">
-                <strong>如何获取用户 ID？</strong>
-                <ol style="margin: 8px 0 0 0; padding-left: 20px;">
-                    <li>打开网页版：登录 <a href="https://web.telegram.org" target="_blank" style="color: #1976d2;">Telegram 网页版 (web.telegram.org)</a></li>
-                    <li>找到联系人：点击进入你想查询的用户的私聊窗口</li>
-                    <li>查看链接：在浏览器地址栏中，链接最后的那串数字（如 web.telegram.org 中的 <code>123456789</code>）就是对方的 UserID</li>
-                </ol>
-            </MudAlert>
+            <MudTextField @bind-Value="targetInput" Label="目标用户" Variant="Variant.Outlined" Required="true"
+                          HelperText="@TargetHelperText"
+                          Placeholder="@TargetPlaceholder" />
+
+            @if (executeMode == ExecuteMode.Bot)
+            {
+                <MudAlert Severity="Severity.Normal" Variant="Variant.Outlined" Dense="true">
+                    <strong>如何获取用户 ID？</strong>
+                    <ol style="margin: 8px 0 0 0; padding-left: 20px;">
+                        <li>打开网页版：登录 <a href="https://web.telegram.org" target="_blank" style="color: #1976d2;">Telegram 网页版 (web.telegram.org)</a></li>
+                        <li>找到联系人：点击进入你想查询的用户的私聊窗口</li>
+                        <li>查看链接：在浏览器地址栏中，链接最后的那串数字（如 web.telegram.org 中的 <code>123456789</code>）就是对方的 UserID</li>
+                    </ol>
+                </MudAlert>
+            }
+
+            @if (executeMode == ExecuteMode.Account)
+            {
+                @if (loadingAdmins)
+                {
+                    <MudProgressLinear Indeterminate="true" />
+                    <MudText Typo="Typo.caption" Color="Color.Secondary">正在读取频道管理员列表（Bot API）...</MudText>
+                }
+
+                @if (!string.IsNullOrWhiteSpace(adminSummary))
+                {
+                    <MudText Typo="Typo.caption" Color="Color.Secondary">@adminSummary</MudText>
+                }
+
+                <MudSelect @bind-Value="selectedAccountId" Label="执行账号" Variant="Variant.Outlined" Dense="true"
+                           Disabled="@(loadingAdmins || eligibleAccounts.Count == 0)">
+                    <MudSelectItem Value="0">自动选择（按频道）</MudSelectItem>
+                    @foreach (var a in eligibleAccounts)
+                    {
+                        <MudSelectItem Value="@a.Id">@FormatAccountLabel(a)</MudSelectItem>
+                    }
+                </MudSelect>
+
+                @if (eligibleAccounts.Count == 0 && !loadingAdmins && channels.Count > 0)
+                {
+                    <MudAlert Severity="Severity.Info" Variant="Variant.Outlined" Dense="true">
+                        当前所选频道中未发现“既是频道管理员又在系统中的账号（且具备封禁权限）”。你仍可继续执行，但这些频道会被跳过。
+                    </MudAlert>
+                }
+            }
 
             <MudRadioGroup @bind-Value="banMode">
                 <MudRadio Value="@BanMode.KickOnly" Color="Color.Primary">
@@ -52,10 +95,33 @@
 @code
 {
     [CascadingParameter] private MudDialogInstance MudDialog { get; set; } = default!;
+
+    [Parameter] public int BotId { get; set; }
+    [Parameter] public List<BotChannel> Channels { get; set; } = new();
     [Parameter] public int SelectedCount { get; set; }
 
-    private string userIdInput = "";
+    private readonly List<BotChannel> channels = new();
+    private readonly List<Account> eligibleAccounts = new();
+    private readonly Dictionary<long, Account> accountsByUserId = new();
+
+    private ExecuteMode executeMode = ExecuteMode.Bot;
+    private string targetInput = "";
     private BanMode banMode = BanMode.KickOnly;
+    private int selectedAccountId;
+
+    private bool loadingAdmins;
+    private bool accountContextLoaded;
+    private string? adminSummary;
+
+    private int TargetChannelCount => channels.Count > 0 ? channels.Count : SelectedCount;
+
+    private string TargetHelperText => executeMode == ExecuteMode.Bot
+        ? "机器人执行：请输入 Telegram 用户 ID（纯数字）"
+        : "账号执行：支持 @username / username，也支持输入纯数字用户 ID";
+
+    private string TargetPlaceholder => executeMode == ExecuteMode.Bot
+        ? "例如: 123456789"
+        : "例如: @username 或 123456789";
 
     private enum BanMode
     {
@@ -63,29 +129,161 @@
         PermanentBan    // 永久封禁
     }
 
+    private enum ExecuteMode
+    {
+        Bot = 0,
+        Account = 1
+    }
+
+    protected override Task OnInitializedAsync()
+    {
+        channels.Clear();
+        channels.AddRange((Channels ?? new List<BotChannel>())
+            .Where(x => x != null)
+            .GroupBy(x => x.TelegramId)
+            .Select(x => x.First()));
+
+        return Task.CompletedTask;
+    }
+
+    private async Task OnExecuteModeChanged()
+    {
+        if (executeMode != ExecuteMode.Account)
+            return;
+
+        await EnsureAccountContextLoadedAsync();
+    }
+
+    private async Task EnsureAccountContextLoadedAsync()
+    {
+        if (accountContextLoaded)
+            return;
+
+        accountContextLoaded = true;
+        if (BotId <= 0 || channels.Count == 0)
+            return;
+
+        await LoadAccountsAsync();
+        await LoadAdminsAndEligibleAccountsAsync();
+    }
+
+    private async Task LoadAccountsAsync()
+    {
+        var all = (await AccountManagement.GetAllAccountsAsync()).ToList();
+        accountsByUserId.Clear();
+
+        foreach (var a in all.Where(x => x.IsActive && x.Category?.ExcludeFromOperations != true))
+        {
+            if (a.UserId <= 0)
+                continue;
+            if (!accountsByUserId.ContainsKey(a.UserId))
+                accountsByUserId[a.UserId] = a;
+        }
+    }
+
+    private async Task LoadAdminsAndEligibleAccountsAsync()
+    {
+        loadingAdmins = true;
+        adminSummary = null;
+        eligibleAccounts.Clear();
+        try
+        {
+            var eligibleUserIds = new HashSet<long>();
+            var matchedChannels = 0;
+
+            foreach (var ch in channels)
+            {
+                try
+                {
+                    var admins = await BotTelegram.GetChatAdminsAsync(BotId, ch.TelegramId, CancellationToken.None);
+                    var hasMatched = false;
+
+                    foreach (var admin in admins)
+                    {
+                        if (!admin.IsCreator && !admin.CanRestrictMembers)
+                            continue;
+
+                        if (!accountsByUserId.ContainsKey(admin.UserId))
+                            continue;
+
+                        eligibleUserIds.Add(admin.UserId);
+                        hasMatched = true;
+                    }
+
+                    if (hasMatched)
+                        matchedChannels++;
+                }
+                catch
+                {
+                    // ignore
+                }
+            }
+
+            foreach (var uid in eligibleUserIds)
+            {
+                if (accountsByUserId.TryGetValue(uid, out var acc))
+                    eligibleAccounts.Add(acc);
+            }
+
+            eligibleAccounts.Sort((a, b) => string.Compare(FormatAccountLabel(a), FormatAccountLabel(b), StringComparison.OrdinalIgnoreCase));
+            adminSummary = $"可用执行账号：{eligibleAccounts.Count} 个；可执行频道：{matchedChannels}/{channels.Count}。";
+        }
+        finally
+        {
+            loadingAdmins = false;
+        }
+    }
+
     private void Cancel() => MudDialog.Cancel();
 
     private void Confirm()
     {
-        var input = (userIdInput ?? string.Empty).Trim();
-        if (string.IsNullOrWhiteSpace(input))
+        var (userId, username) = ParseTargetInput(targetInput);
+        if (executeMode == ExecuteMode.Bot && userId == null)
         {
-            // 空输入直接取消
-            MudDialog.Cancel();
-            return;
-        }
-
-        if (!long.TryParse(input, out var userId) || userId <= 0)
-        {
-            // 无效的用户 ID，返回错误标记
             MudDialog.Close(DialogResult.Cancel());
             return;
         }
 
-        // 返回用户ID和封禁模式
-        var result = new BanUserRequest(userId, banMode == BanMode.PermanentBan);
+        if (executeMode == ExecuteMode.Account && userId == null && string.IsNullOrWhiteSpace(username))
+        {
+            MudDialog.Close(DialogResult.Cancel());
+            return;
+        }
+
+        var result = new BanUserRequest(
+            UserId: userId,
+            Username: username,
+            PermanentBan: banMode == BanMode.PermanentBan,
+            UseAccountExecution: executeMode == ExecuteMode.Account,
+            SelectedAccountId: executeMode == ExecuteMode.Account ? selectedAccountId : 0);
+
         MudDialog.Close(DialogResult.Ok(result));
     }
 
-    public record BanUserRequest(long UserId, bool PermanentBan);
+    private static (long? UserId, string? Username) ParseTargetInput(string? input)
+    {
+        var text = (input ?? string.Empty).Trim();
+        if (string.IsNullOrWhiteSpace(text))
+            return (null, null);
+
+        if (long.TryParse(text, out var userId) && userId > 0)
+            return (userId, null);
+
+        var username = text.TrimStart('@').Trim();
+        return string.IsNullOrWhiteSpace(username) ? (null, null) : (null, username);
+    }
+
+    private static string FormatAccountLabel(Account account)
+    {
+        var nickname = string.IsNullOrWhiteSpace(account.Nickname) ? null : account.Nickname.Trim();
+        var username = string.IsNullOrWhiteSpace(account.Username) ? null : account.Username.Trim();
+
+        var namePart = nickname ?? account.Phone;
+        if (!string.IsNullOrWhiteSpace(username))
+            return $"{namePart} (@{username})";
+        return namePart;
+    }
+
+    public record BanUserRequest(long? UserId, string? Username, bool PermanentBan, bool UseAccountExecution, int SelectedAccountId);
 }

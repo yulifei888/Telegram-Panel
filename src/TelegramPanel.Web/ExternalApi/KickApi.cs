@@ -1,6 +1,5 @@
 using System.Security.Cryptography;
 using System.Text;
-using System.Text.Json.Serialization;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Routing;
@@ -8,7 +7,6 @@ using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging;
 using System.Text.Json;
 using TelegramPanel.Core.Services;
-using TelegramPanel.Core.Services.Telegram;
 using TelegramPanel.Core.BatchTasks;
 using TelegramPanel.Data.Entities;
 
@@ -27,7 +25,6 @@ public static class KickApi
         HttpContext http,
         IConfiguration configuration,
         BotManagementService botManagement,
-        BotTelegramService botTelegram,
         BatchTaskManagementService taskManagement,
         ILoggerFactory loggerFactory,
         CancellationToken cancellationToken)
@@ -86,10 +83,10 @@ public static class KickApi
                 false,
                 "未配置任何可操作的频道/群组（请先在页面选择机器人与频道/群组）",
                 new KickSummary(0, 0, 0),
-                Array.Empty<KickResultItem>()));
+                    Array.Empty<KickResultItem>()));
         }
 
-        // 记录到任务中心（即使外部调用返回了，也能追溯这次操作）
+        // 提交到任务中心，由后台执行（避免反代/CF 524 超时）
         var createdTask = await taskManagement.CreateTaskAsync(new BatchTask
         {
             TaskType = BatchTaskTypes.ExternalApiKick,
@@ -108,120 +105,17 @@ public static class KickApi
             })
         });
 
-        await taskManagement.StartTaskAsync(createdTask.Id);
+        logger.LogInformation("Kick task queued: taskId={TaskId} api={ApiName} botId={BotId} total={Total} userId={UserId} permanent={Permanent}",
+            createdTask.Id, matched.Name ?? "", configuredBotId, targets.TotalChats, request.UserId, permanentBan);
 
-        var results = new List<KickResultItem>(targets.TotalChats);
-        var completed = 0;
-        var failedCount = 0;
-
-        try
-        {
-            foreach (var group in targets.Groups)
-            {
-                cancellationToken.ThrowIfCancellationRequested();
-
-                try
-                {
-                    var banResult = await botTelegram.BanChatMemberAsync(
-                        botId: group.Bot.Id,
-                        channelTelegramIds: group.Chats.Select(x => x.TelegramId).ToList(),
-                        userId: request.UserId,
-                        permanentBan: permanentBan,
-                        cancellationToken: cancellationToken);
-
-                    var failures = banResult.Failures;
-                    foreach (var chat in group.Chats)
-                    {
-                        failures.TryGetValue(chat.TelegramId, out var err);
-                        var ok = err == null;
-                        results.Add(new KickResultItem(
-                            ChatId: chat.TelegramId.ToString(),
-                            Title: chat.Title,
-                            Success: ok,
-                            Error: err));
-
-                        if (ok) completed++; else failedCount++;
-                    }
-                }
-                catch (Exception ex)
-                {
-                    logger.LogWarning(ex, "Kick API failed on bot {BotId} (chats={Count})", group.Bot.Id, group.Chats.Count);
-                    foreach (var chat in group.Chats)
-                    {
-                        results.Add(new KickResultItem(
-                            ChatId: chat.TelegramId.ToString(),
-                            Title: chat.Title,
-                            Success: false,
-                            Error: ex.Message));
-                        failedCount++;
-                    }
-                }
-
-                await taskManagement.UpdateTaskProgressAsync(createdTask.Id, completed, failedCount);
-            }
-        }
-        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
-        {
-            await taskManagement.UpdateTaskProgressAsync(createdTask.Id, completed, failedCount == 0 ? 1 : failedCount);
-            await taskManagement.UpdateTaskConfigAsync(createdTask.Id, SerializeIndented(new KickTaskLog
-            {
-                ApiName = matched.Name ?? "",
-                BotId = configuredBotId,
-                UseAllChats = useAllChats,
-                ChatIds = configuredChatSet.OrderBy(x => x).ToList(),
-                UserId = request.UserId,
-                PermanentBan = permanentBan,
-                RequestedAtUtc = DateTime.UtcNow,
-                Results = results,
-                Canceled = true
-            }));
-            await taskManagement.CompleteTaskAsync(createdTask.Id, success: false);
-            throw;
-        }
-        catch (Exception ex)
-        {
-            logger.LogWarning(ex, "Kick API failed (taskId={TaskId})", createdTask.Id);
-            await taskManagement.UpdateTaskProgressAsync(createdTask.Id, completed, failedCount == 0 ? 1 : failedCount);
-            await taskManagement.UpdateTaskConfigAsync(createdTask.Id, SerializeIndented(new KickTaskLog
-            {
-                ApiName = matched.Name ?? "",
-                BotId = configuredBotId,
-                UseAllChats = useAllChats,
-                ChatIds = configuredChatSet.OrderBy(x => x).ToList(),
-                UserId = request.UserId,
-                PermanentBan = permanentBan,
-                RequestedAtUtc = DateTime.UtcNow,
-                Results = results,
-                Error = ex.Message
-            }));
-            await taskManagement.CompleteTaskAsync(createdTask.Id, success: false);
-            throw;
-        }
-
-        var okCount = results.Count(x => x.Success);
-        var total = results.Count;
-        var failedTotal = total - okCount;
-        var actionText = permanentBan ? "Banned" : "Kicked";
-        var message = $"{actionText} user {request.UserId} from {okCount}/{total} chats";
-
-        await taskManagement.UpdateTaskConfigAsync(createdTask.Id, SerializeIndented(new KickTaskLog
-        {
-            ApiName = matched.Name ?? "",
-            BotId = configuredBotId,
-            UseAllChats = useAllChats,
-            ChatIds = configuredChatSet.OrderBy(x => x).ToList(),
-            UserId = request.UserId,
-            PermanentBan = permanentBan,
-            RequestedAtUtc = DateTime.UtcNow,
-            Results = results
-        }));
-        await taskManagement.CompleteTaskAsync(createdTask.Id, success: failedTotal == 0);
-
-        return Results.Ok(new KickResponse(
-            Success: true,
-            Message: message,
-            Summary: new KickSummary(total, okCount, failedTotal),
-            Results: results));
+        return Results.Json(
+            new KickResponse(
+                Success: true,
+                Message: $"已提交后台任务 #{createdTask.Id}，请到面板【任务中心】查看进度与结果。",
+                Summary: new KickSummary(targets.TotalChats, 0, 0),
+                Results: Array.Empty<KickResultItem>(),
+                TaskId: createdTask.Id),
+            statusCode: StatusCodes.Status202Accepted);
     }
 
     private static async Task<TargetResolution> ResolveTargetsAsync(
@@ -280,41 +174,7 @@ public static class KickApi
         return JsonSerializer.Serialize(value, new JsonSerializerOptions { WriteIndented = true });
     }
 
-    public sealed record KickRequest(
-        [property: JsonPropertyName("user_id")] long UserId,
-        [property: JsonPropertyName("permanent_ban")] bool? PermanentBan = null);
-
-    public sealed record KickResponse(
-        [property: JsonPropertyName("success")] bool Success,
-        [property: JsonPropertyName("message")] string Message,
-        [property: JsonPropertyName("summary")] KickSummary Summary,
-        [property: JsonPropertyName("results")] IReadOnlyList<KickResultItem> Results);
-
-    public sealed record KickSummary(
-        [property: JsonPropertyName("total")] int Total,
-        [property: JsonPropertyName("success")] int Success,
-        [property: JsonPropertyName("failed")] int Failed);
-
-    public sealed record KickResultItem(
-        [property: JsonPropertyName("chat_id")] string ChatId,
-        [property: JsonPropertyName("title")] string Title,
-        [property: JsonPropertyName("success")] bool Success,
-        [property: JsonPropertyName("error")] string? Error);
-
     private sealed record TargetGroup(Bot Bot, List<BotChannel> Chats);
     private sealed record TargetResolution(List<TargetGroup> Groups, int TotalChats);
 
-    private sealed class KickTaskLog
-    {
-        public string ApiName { get; set; } = "";
-        public int BotId { get; set; }
-        public bool UseAllChats { get; set; }
-        public List<long> ChatIds { get; set; } = new();
-        public long UserId { get; set; }
-        public bool PermanentBan { get; set; }
-        public DateTime RequestedAtUtc { get; set; }
-        public bool Canceled { get; set; }
-        public string? Error { get; set; }
-        public List<KickResultItem>? Results { get; set; }
-    }
 }

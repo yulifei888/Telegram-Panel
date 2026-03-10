@@ -1,5 +1,6 @@
-@namespace TelegramPanel.Web.Components.Dialogs
+﻿@namespace TelegramPanel.Web.Components.Dialogs
 @inject BatchTaskManagementService TaskManagement
+@inject ScheduledTaskService ScheduledTaskManagement
 @inject TelegramPanel.Web.Modules.ModuleContributionRegistry Contributions
 @inject ISnackbar Snackbar
 @inject IDialogService DialogService
@@ -7,25 +8,28 @@
 @using System.Text.Json
 @using Microsoft.AspNetCore.Components
 @using TelegramPanel.Data.Entities
+@using TelegramPanel.Modules
+@using TelegramPanel.Web.Modules
+@using TelegramPanel.Web.Services
 
 <MudDialog>
     <DialogContent>
         <MudStack Spacing="2">
             <MudAlert Severity="Severity.Info" Variant="Variant.Outlined" Dense="true">
-                任务会提交到后台执行，可在【任务中心】查看进度与结果。
+                立即执行会创建一条后台执行记录；Cron 计划会在任务中心的【计划任务】区域持续调度。
             </MudAlert>
 
             <MudGrid>
                 <MudItem xs="12" md="6">
-                <MudSelect @bind-Value="selectedCategory" Label="任务分类" Variant="Variant.Outlined" Dense="true">
-                    @foreach (var c in AvailableCategories)
-                    {
-                        <MudSelectItem Value="@c">@GetCategoryDisplayName(c)</MudSelectItem>
-                    }
-                </MudSelect>
+                    <MudSelect T="string" @bind-Value="selectedCategory" Label="任务分类" Variant="Variant.Outlined" Dense="true">
+                        @foreach (var c in AvailableCategories)
+                        {
+                            <MudSelectItem Value="@c">@GetCategoryDisplayName(c)</MudSelectItem>
+                        }
+                    </MudSelect>
                 </MudItem>
                 <MudItem xs="12" md="6">
-                    <MudSelect @bind-Value="selectedTaskType" Label="任务类型" Variant="Variant.Outlined" Dense="true">
+                    <MudSelect T="string" @bind-Value="selectedTaskType" Label="任务类型" Variant="Variant.Outlined" Dense="true">
                         @foreach (var opt in AvailableOptions)
                         {
                             <MudSelectItem Value="@opt.TaskType">@opt.DisplayName</MudSelectItem>
@@ -34,9 +38,36 @@
                 </MudItem>
             </MudGrid>
 
-            @if (CurrentOption != null && !string.IsNullOrWhiteSpace(CurrentOption.Description))
+            <MudRadioGroup T="string" @bind-Value="submissionMode">
+                <MudRadio T="string" Value="@SubmissionModes.Once">立即执行</MudRadio>
+                <MudRadio T="string" Value="@SubmissionModes.Scheduled">Cron 计划</MudRadio>
+            </MudRadioGroup>
+
+            @if (!string.IsNullOrWhiteSpace(CurrentOption?.Description))
             {
                 <MudText Typo="Typo.caption" Class="mud-text-secondary">@CurrentOption.Description</MudText>
+            }
+
+            @if (IsScheduledMode)
+            {
+                <MudAlert Severity="Severity.Info" Variant="Variant.Outlined" Dense="true">
+                    Cron 按服务器本地时区解析：<b>@TimeZoneInfo.Local.Id</b>
+                </MudAlert>
+
+                <MudTextField @bind-Value="cronExpression"
+                              Label="Cron 表达式"
+                              Variant="Variant.Outlined"
+                              Immediate="true"
+                              HelperText="5 段格式：分 时 日 月 周，例如：0 9 * * *" />
+
+                <MudStack Row="true" Spacing="1" Wrap="Wrap.Wrap">
+                    @foreach (var preset in CronPresets)
+                    {
+                        <MudButton Variant="Variant.Outlined" Size="Size.Small" OnClick="@(() => ApplyCronPreset(preset.Expression))">
+                            @preset.Label
+                        </MudButton>
+                    }
+                </MudStack>
             }
 
             @if (CurrentOption != null && !string.IsNullOrWhiteSpace(CurrentOption.CreateRoute))
@@ -56,7 +87,7 @@
             else if (CurrentOption != null && !string.IsNullOrWhiteSpace(CurrentOption.EditorComponentType) && editorComponentType != null)
             {
                 <MudAlert Severity="Severity.Info" Variant="Variant.Outlined" Dense="true">
-                    该任务由模块提供自定义创建器。
+                    该任务由模块提供自定义配置表单。
                 </MudAlert>
 
                 <DynamicComponent Type="editorComponentType" Parameters="editorParameters" />
@@ -72,10 +103,18 @@
                     该任务类型暂无专用创建表单。你可以填写通用配置（JSON 字符串）提交任务；对应模块需要在后台实现该 TaskType 的执行器。
                 </MudAlert>
 
-                <MudTextField @bind-Value="genericConfigJson" Label="任务配置（JSON）" Variant="Variant.Outlined" Lines="8"
+                <MudTextField @bind-Value="genericConfigJson"
+                              Label="任务配置（JSON）"
+                              Variant="Variant.Outlined"
+                              Lines="8"
                               HelperText="模块可自行解析该 JSON。若无需配置可留空。" />
 
-                <MudNumericField @bind-Value="genericTotal" Label="总数（Total，可选）" Variant="Variant.Outlined" Min="0" Max="1000000"
+                <MudNumericField T="int"
+                                 @bind-Value="genericTotal"
+                                 Label="总数（Total，可选）"
+                                 Variant="Variant.Outlined"
+                                 Min="0"
+                                 Max="1000000"
                                  HelperText="用于进度条展示；若不确定可填 0，由执行器在运行时持续更新进度。" />
             }
         </MudStack>
@@ -88,6 +127,10 @@
                 <MudProgressCircular Size="Size.Small" Indeterminate="true" Class="mr-2" />
                 <span>提交中...</span>
             }
+            else if (IsScheduledMode)
+            {
+                <span>保存计划</span>
+            }
             else
             {
                 <span>提交任务</span>
@@ -98,28 +141,47 @@
 
 @code
 {
+    private sealed record CronPresetItem(string Label, string Expression);
+
+    private static class SubmissionModes
+    {
+        public const string Once = "once";
+        public const string Scheduled = "scheduled";
+    }
+
+    private static readonly IReadOnlyList<CronPresetItem> CronPresets = new[]
+    {
+        new CronPresetItem("每30分钟", "*/30 * * * *"),
+        new CronPresetItem("每小时", "0 * * * *"),
+        new CronPresetItem("每天9点", "0 9 * * *"),
+        new CronPresetItem("每天12点", "0 12 * * *"),
+        new CronPresetItem("每天21点", "0 21 * * *")
+    };
+
     [CascadingParameter] private MudDialogInstance MudDialog { get; set; } = default!;
 
-    private string _selectedCategory = "";
+    private string _selectedCategory = string.Empty;
     private string selectedCategory
     {
         get => _selectedCategory;
         set
         {
-            value = (value ?? "").Trim();
+            value = (value ?? string.Empty).Trim();
             if (string.Equals(_selectedCategory, value, StringComparison.OrdinalIgnoreCase))
                 return;
+
             _selectedCategory = value;
             EnsureTaskTypeValid();
         }
     }
-    private string _selectedTaskType = "";
+
+    private string _selectedTaskType = string.Empty;
     private string selectedTaskType
     {
         get => _selectedTaskType;
         set
         {
-            value = (value ?? "").Trim();
+            value = (value ?? string.Empty).Trim();
             if (string.Equals(_selectedTaskType, value, StringComparison.OrdinalIgnoreCase))
                 return;
 
@@ -128,46 +190,46 @@
         }
     }
 
+    private string submissionMode = SubmissionModes.Once;
+    private string cronExpression = "0 9 * * *";
     private bool creating;
-
-    // generic task config
-    private string genericConfigJson = "";
-    private int genericTotal = 0;
-
-    // module editor draft
-    private TelegramPanel.Modules.ModuleTaskDraft editorDraft = new(0, null, false, null);
+    private string genericConfigJson = string.Empty;
+    private int genericTotal;
+    private ModuleTaskDraft editorDraft = new(0, null, false, null);
     private Type? editorComponentType;
     private Dictionary<string, object?> editorParameters = new();
 
+    private bool IsScheduledMode => string.Equals(submissionMode, SubmissionModes.Scheduled, StringComparison.OrdinalIgnoreCase);
+
     private IEnumerable<string> AvailableCategories =>
         Contributions.Tasks
-            .Select(x => (x.Definition.Category ?? "").Trim())
+            .Select(x => (x.Definition.Category ?? string.Empty).Trim())
             .Where(x => x.Length > 0)
             .Where(x => !IsSystemCategory(x))
             .Distinct(StringComparer.OrdinalIgnoreCase)
             .OrderBy(x => x, StringComparer.OrdinalIgnoreCase);
 
-    private IEnumerable<TelegramPanel.Modules.ModuleTaskDefinition> AvailableOptions =>
+    private IEnumerable<ModuleTaskDefinition> AvailableOptions =>
         Contributions.Tasks
             .Select(x => x.Definition)
             .Where(o => !IsSystemCategory(o.Category))
             .Where(o => string.Equals(o.Category, selectedCategory, StringComparison.OrdinalIgnoreCase))
             .OrderBy(o => o.Order)
-            .ThenBy(o => o.DisplayName);
+            .ThenBy(o => o.DisplayName, StringComparer.OrdinalIgnoreCase);
 
-    private TelegramPanel.Modules.ModuleTaskDefinition? CurrentOption =>
+    private ModuleTaskDefinition? CurrentOption =>
         !string.IsNullOrWhiteSpace(selectedTaskType)
         && Contributions.TaskTypeToDefinition.TryGetValue(selectedTaskType, out var reg)
             ? reg.Definition
             : null;
 
-    protected override async Task OnInitializedAsync()
+    protected override Task OnInitializedAsync()
     {
         if (string.IsNullOrWhiteSpace(selectedCategory))
             selectedCategory = AvailableCategories.FirstOrDefault() ?? "user";
 
         EnsureTaskTypeValid();
-        await Task.CompletedTask;
+        return Task.CompletedTask;
     }
 
     private void EnsureTaskTypeValid()
@@ -175,8 +237,8 @@
         if (AvailableOptions.All(o => !string.Equals(o.TaskType, selectedTaskType, StringComparison.OrdinalIgnoreCase)))
         {
             selectedTaskType = AvailableOptions.FirstOrDefault()?.TaskType
-                               ?? Contributions.Tasks.FirstOrDefault()?.Definition.TaskType
-                               ?? "";
+                ?? Contributions.Tasks.FirstOrDefault(x => !IsSystemCategory(x.Definition.Category))?.Definition.TaskType
+                ?? string.Empty;
         }
     }
 
@@ -189,54 +251,40 @@
     };
 
     private static bool IsSystemCategory(string? category) =>
-        string.Equals((category ?? "").Trim(), "system", StringComparison.OrdinalIgnoreCase);
+        string.Equals((category ?? string.Empty).Trim(), "system", StringComparison.OrdinalIgnoreCase);
 
     private void ResolveEditorComponent()
     {
         editorComponentType = null;
         editorParameters = new Dictionary<string, object?>();
-        editorDraft = new TelegramPanel.Modules.ModuleTaskDraft(0, null, false, null);
+        editorDraft = new ModuleTaskDraft(0, null, false, null);
 
-        var opt = CurrentOption;
-        if (opt == null || string.IsNullOrWhiteSpace(opt.EditorComponentType))
+        var option = CurrentOption;
+        if (option == null || string.IsNullOrWhiteSpace(option.EditorComponentType))
             return;
 
-        if (!Contributions.TaskTypeToDefinition.TryGetValue(opt.TaskType, out var reg))
+        if (!Contributions.TaskTypeToDefinition.TryGetValue(option.TaskType, out var reg))
             return;
 
-        var typeName = opt.EditorComponentType.Trim();
-        var moduleTypeName = NormalizeModuleTypeName(typeName);
-        editorComponentType =
-            Type.GetType(typeName, throwOnError: false, ignoreCase: false)
-            ?? reg.Module.Instance.GetType().Assembly.GetType(moduleTypeName, throwOnError: false, ignoreCase: false);
-
+        editorComponentType = ModuleTaskEditorComponentResolver.ResolveCreateEditor(reg);
         if (editorComponentType == null)
             return;
 
         editorParameters = new Dictionary<string, object?>
         {
             ["Draft"] = editorDraft,
-            ["DraftChanged"] = EventCallback.Factory.Create<TelegramPanel.Modules.ModuleTaskDraft>(this, OnEditorDraftChanged)
+            ["DraftChanged"] = EventCallback.Factory.Create<ModuleTaskDraft>(this, OnEditorDraftChanged)
         };
     }
 
-    private void OnEditorDraftChanged(TelegramPanel.Modules.ModuleTaskDraft draft)
+    private void OnEditorDraftChanged(ModuleTaskDraft draft)
     {
         editorDraft = draft;
     }
 
-    private static string NormalizeModuleTypeName(string typeName)
+    private void ApplyCronPreset(string expression)
     {
-        typeName = (typeName ?? "").Trim();
-        if (typeName.Length == 0)
-            return typeName;
-
-        // 兼容 AssemblyQualifiedName：Assembly.GetType 只接受纯 FullName
-        var comma = typeName.IndexOf(',', StringComparison.Ordinal);
-        if (comma > 0)
-            return typeName.Substring(0, comma).Trim();
-
-        return typeName;
+        cronExpression = expression;
     }
 
     private async Task Create()
@@ -250,102 +298,68 @@
             return;
         }
 
-        if (CurrentOption != null && !string.IsNullOrWhiteSpace(CurrentOption.EditorComponentType) && editorComponentType != null)
+        string? config;
+        int total;
+
+        try
         {
-            if (!editorDraft.CanSubmit)
-            {
-                Snackbar.Add(string.IsNullOrWhiteSpace(editorDraft.ValidationError) ? "请先完善任务配置" : editorDraft.ValidationError!, Severity.Warning);
-                return;
-            }
-
-            var config = string.IsNullOrWhiteSpace(editorDraft.Config) ? null : editorDraft.Config.Trim();
-            if (!string.IsNullOrWhiteSpace(config))
-            {
-                try
-                {
-                    JsonDocument.Parse(config);
-                }
-                catch (Exception ex)
-                {
-                    Snackbar.Add($"配置 JSON 无效：{ex.Message}", Severity.Warning);
-                    return;
-                }
-            }
-
-            var total = editorDraft.Total < 0 ? 0 : editorDraft.Total;
-            bool? confirm = await DialogService.ShowMessageBox(
-                "确认提交任务",
-                $"将提交任务类型：{selectedTaskType}，总数：{total}。是否继续？",
-                yesText: "继续", cancelText: "取消");
-
-            if (confirm != true)
-                return;
-
-            creating = true;
-            try
-            {
-                var task = new BatchTask
-                {
-                    TaskType = selectedTaskType,
-                    Total = total,
-                    Completed = 0,
-                    Failed = 0,
-                    Config = config
-                };
-
-                var created = await TaskManagement.CreateTaskAsync(task);
-                Snackbar.Add($"已提交后台任务 #{created.Id}（{selectedTaskType}）。请到【任务中心】查看进度。", Severity.Success);
-                MudDialog.Close(DialogResult.Ok(created.Id));
-            }
-            catch (Exception ex)
-            {
-                Snackbar.Add($"提交失败：{ex.Message}", Severity.Error);
-            }
-            finally
-            {
-                creating = false;
-            }
-
+            (config, total) = ResolveSubmissionDraft();
+        }
+        catch (Exception ex)
+        {
+            Snackbar.Add(ex.Message, Severity.Warning);
             return;
         }
-
-        // Generic task create
-        if (!string.IsNullOrWhiteSpace(genericConfigJson))
-        {
-            try
-            {
-                JsonDocument.Parse(genericConfigJson);
-            }
-            catch (Exception ex)
-            {
-                Snackbar.Add($"配置 JSON 无效：{ex.Message}", Severity.Warning);
-                return;
-            }
-        }
-
-        bool? genericConfirm = await DialogService.ShowMessageBox(
-            "确认提交任务",
-            $"将提交任务类型：{selectedTaskType}。是否继续？",
-            yesText: "继续", cancelText: "取消");
-
-        if (genericConfirm != true)
-            return;
 
         creating = true;
         try
         {
+            if (IsScheduledMode)
+            {
+                bool? confirm = await DialogService.ShowMessageBox(
+                    "确认创建计划任务",
+                    $"将保存计划任务：{selectedTaskType}，Cron：{cronExpression}。是否继续？",
+                    yesText: "继续", cancelText: "取消");
+
+                if (confirm != true)
+                    return;
+
+                var scheduledTask = new ScheduledTask
+                {
+                    TaskType = selectedTaskType,
+                    Total = total,
+                    ConfigJson = config,
+                    CronExpression = cronExpression.Trim(),
+                    Status = ScheduledTaskStatuses.Enabled,
+                    OwnedAssetScopeId = TaskAssetScopeHelper.GetAssetScopeId(config)
+                };
+
+                var created = await ScheduledTaskManagement.CreateAsync(scheduledTask);
+                Snackbar.Add($"已创建计划任务 #{created.Id}（{selectedTaskType}）。", Severity.Success);
+                MudDialog.Close(DialogResult.Ok(created.Id));
+                return;
+            }
+
+            bool? taskConfirm = await DialogService.ShowMessageBox(
+                "确认提交任务",
+                $"将提交任务类型：{selectedTaskType}，总数：{total}。是否继续？",
+                yesText: "继续", cancelText: "取消");
+
+            if (taskConfirm != true)
+                return;
+
             var task = new BatchTask
             {
                 TaskType = selectedTaskType,
-                Total = genericTotal,
+                Total = total,
                 Completed = 0,
                 Failed = 0,
-                Config = string.IsNullOrWhiteSpace(genericConfigJson) ? null : genericConfigJson.Trim()
+                Config = config
             };
 
-            var created = await TaskManagement.CreateTaskAsync(task);
-            Snackbar.Add($"已提交后台任务 #{created.Id}（{selectedTaskType}）。请到【任务中心】查看进度。", Severity.Success);
-            MudDialog.Close(DialogResult.Ok(created.Id));
+            var createdTask = await TaskManagement.CreateTaskAsync(task);
+            Snackbar.Add($"已提交后台任务 #{createdTask.Id}（{selectedTaskType}）。请到【任务中心】查看进度。", Severity.Success);
+            MudDialog.Close(DialogResult.Ok(createdTask.Id));
         }
         catch (Exception ex)
         {
@@ -357,6 +371,33 @@
         }
     }
 
+    private (string? Config, int Total) ResolveSubmissionDraft()
+    {
+        if (string.IsNullOrWhiteSpace(selectedTaskType))
+            throw new InvalidOperationException("请先选择任务类型");
+
+        if (IsScheduledMode && string.IsNullOrWhiteSpace(cronExpression))
+            throw new InvalidOperationException("请填写 Cron 表达式");
+
+        if (editorComponentType != null)
+        {
+            if (!editorDraft.CanSubmit)
+                throw new InvalidOperationException(string.IsNullOrWhiteSpace(editorDraft.ValidationError) ? "请先完善任务配置" : editorDraft.ValidationError!);
+
+            var editorConfig = string.IsNullOrWhiteSpace(editorDraft.Config) ? null : editorDraft.Config.Trim();
+            if (!string.IsNullOrWhiteSpace(editorConfig))
+                JsonDocument.Parse(editorConfig);
+
+            return (editorConfig, Math.Max(0, editorDraft.Total));
+        }
+
+        var genericConfig = string.IsNullOrWhiteSpace(genericConfigJson) ? null : genericConfigJson.Trim();
+        if (!string.IsNullOrWhiteSpace(genericConfig))
+            JsonDocument.Parse(genericConfig);
+
+        return (genericConfig, Math.Max(0, genericTotal));
+    }
+
     private void NavigateTo(string url)
     {
         MudDialog.Close();
@@ -365,11 +406,10 @@
 
     private async Task OpenCreateDialog(string route)
     {
-        route = (route ?? "").Trim();
+        route = (route ?? string.Empty).Trim();
         if (route.Length == 0)
             return;
 
-        // 仅对模块扩展页面提供“窗口打开”：/ext/{ModuleId}/{PageKey}
         if (!TryParseExtRoute(route, out var moduleId, out var pageKey))
         {
             Snackbar.Add("该任务未提供可窗口打开的模块页面，请使用“前往页面”。", Severity.Info);
@@ -389,19 +429,15 @@
 
     private static bool TryParseExtRoute(string route, out string moduleId, out string pageKey)
     {
-        moduleId = "";
-        pageKey = "";
+        moduleId = string.Empty;
+        pageKey = string.Empty;
 
-        route = (route ?? "").Trim();
+        route = (route ?? string.Empty).Trim();
         if (!route.StartsWith("/ext/", StringComparison.OrdinalIgnoreCase))
             return false;
 
-        // /ext/{moduleId}/{pageKey}
         var parts = route.Split('/', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
-        if (parts.Length < 3)
-            return false;
-
-        if (!string.Equals(parts[0], "ext", StringComparison.OrdinalIgnoreCase))
+        if (parts.Length < 3 || !string.Equals(parts[0], "ext", StringComparison.OrdinalIgnoreCase))
             return false;
 
         moduleId = parts[1];

@@ -1,0 +1,344 @@
+﻿@inject AccountCategoryManagementService CategoryManagement
+@inject AccountManagementService AccountManagement
+@inject ChannelGroupManagementService ChannelGroupManagement
+@inject GroupCategoryManagementService GroupCategoryManagement
+@inject DataDictionaryService DictionaryService
+@inject ImageAssetStorageService AssetStorage
+@using System.Text.Json
+@using TelegramPanel.Data.Entities
+@using TelegramPanel.Modules
+@using TelegramPanel.Web.Services
+@using Microsoft.AspNetCore.Components
+@using Microsoft.AspNetCore.Components.Forms
+
+<MudStack Spacing="2">
+    @if (loading)
+    {
+        <MudProgressCircular Indeterminate="true" Size="Size.Small" Color="Color.Primary" />
+        <MudText Typo="Typo.caption">正在加载配置项...</MudText>
+    }
+    else
+    {
+        <MudSelect T="int"
+                   Label="执行账号分类（可多选）"
+                   Variant="Variant.Outlined"
+                   MultiSelection="true"
+                   SelectedValues="selectedCategoryIds"
+                   SelectedValuesChanged="OnSelectedCategoriesChanged">
+            @foreach (var item in categories)
+            {
+                <MudSelectItem Value="@item.Id">@item.Name</MudSelectItem>
+            }
+        </MudSelect>
+
+        <MudSelect T="string" @bind-Value="createType" @bind-Value:after="OnInputsChanged" Label="创建对象类型" Variant="Variant.Outlined">
+            <MudSelectItem Value="@ChannelGroupAutomationTaskObjectTypes.Channel">频道</MudSelectItem>
+            <MudSelectItem Value="@ChannelGroupAutomationTaskObjectTypes.Group">群组</MudSelectItem>
+        </MudSelect>
+
+        @if (IsChannel)
+        {
+            <MudSelect T="int" @bind-Value="selectedChannelGroupId" @bind-Value:after="OnInputsChanged" Label="频道分组" Variant="Variant.Outlined">
+                <MudSelectItem Value="0">未分组</MudSelectItem>
+                @foreach (var item in channelGroups)
+                {
+                    <MudSelectItem Value="@item.Id">@item.Name</MudSelectItem>
+                }
+            </MudSelect>
+        }
+        else
+        {
+            <MudSelect T="int" @bind-Value="selectedGroupCategoryId" @bind-Value:after="OnInputsChanged" Label="群组分类" Variant="Variant.Outlined">
+                <MudSelectItem Value="0">未分类</MudSelectItem>
+                @foreach (var item in groupCategories)
+                {
+                    <MudSelectItem Value="@item.Id">@item.Name</MudSelectItem>
+                }
+            </MudSelect>
+        }
+
+        <MudGrid>
+            <MudItem xs="12" md="6">
+                <MudNumericField T="int" @bind-Value="systemCreatedLimit" @bind-Value:after="OnInputsChanged" Label="系统创建数量上限" Variant="Variant.Outlined" Min="1" Max="100000" />
+            </MudItem>
+            <MudItem xs="12" md="6">
+                <MudNumericField T="int" @bind-Value="perAccountBatchSize" @bind-Value:after="OnInputsChanged" Label="每账号本轮处理数量" Variant="Variant.Outlined" Min="1" Max="1000" />
+            </MudItem>
+        </MudGrid>
+
+        <MudTextField @bind-Value="titleTemplate" @bind-Value:after="OnInputsChanged"
+                      Label="标题模板" Variant="Variant.Outlined"
+                      HelperText="支持 {time} 和文本字典变量，例如：临时频道{time}" />
+
+        @if (textDictionaryNames.Count > 0)
+        {
+            <MudText Typo="Typo.caption">可用文本变量：@string.Join("、", textDictionaryNames.Select(x => $"{{{x}}}"))</MudText>
+        }
+
+        <MudSelect T="string" @bind-Value="avatarSource" @bind-Value:after="OnInputsChanged" Label="头像来源" Variant="Variant.Outlined">
+            <MudSelectItem Value="@ChannelGroupAutomationAvatarSourceModes.None">不设置</MudSelectItem>
+            <MudSelectItem Value="@ChannelGroupAutomationAvatarSourceModes.Fixed">固定上传</MudSelectItem>
+            <MudSelectItem Value="@ChannelGroupAutomationAvatarSourceModes.Dictionary">图片字典变量</MudSelectItem>
+        </MudSelect>
+
+        @if (avatarSource == ChannelGroupAutomationAvatarSourceModes.Fixed)
+        {
+            <MudFileUpload T="IReadOnlyList<IBrowserFile>" FilesChanged="OnAvatarChanged" Accept="image/*" MaximumFileCount="1">
+                <ActivatorContent>
+                    <MudButton Variant="Variant.Outlined" Color="Color.Primary" StartIcon="@Icons.Material.Filled.Image">上传固定头像</MudButton>
+                </ActivatorContent>
+            </MudFileUpload>
+            @if (!string.IsNullOrWhiteSpace(fixedAvatarAssetPath))
+            {
+                <MudText Typo="Typo.caption">已保存头像：@fixedAvatarAssetPath</MudText>
+            }
+        }
+        else if (avatarSource == ChannelGroupAutomationAvatarSourceModes.Dictionary)
+        {
+            <MudSelect T="string" @bind-Value="selectedImageDictionaryName" @bind-Value:after="OnSelectedImageDictionaryChanged" Label="图片字典" Variant="Variant.Outlined">
+                <MudSelectItem Value="@string.Empty">-- 请选择图片字典 --</MudSelectItem>
+                @foreach (var item in imageDictionaryNames)
+                {
+                    <MudSelectItem Value="@item">@item</MudSelectItem>
+                }
+            </MudSelect>
+        }
+
+        <MudGrid>
+            <MudItem xs="12" md="4">
+                <MudNumericField T="int" @bind-Value="minDelaySeconds" @bind-Value:after="OnInputsChanged" Label="最小间隔(秒)" Variant="Variant.Outlined" Min="0" Max="3600" />
+            </MudItem>
+            <MudItem xs="12" md="4">
+                <MudNumericField T="int" @bind-Value="maxDelaySeconds" @bind-Value:after="OnInputsChanged" Label="最大间隔(秒)" Variant="Variant.Outlined" Min="0" Max="3600" />
+            </MudItem>
+            <MudItem xs="12" md="4">
+                <MudNumericField T="int" @bind-Value="jitterPercent" @bind-Value:after="OnInputsChanged" Label="时间抖动(%)" Variant="Variant.Outlined" Min="0" Max="100" />
+            </MudItem>
+        </MudGrid>
+    }
+</MudStack>
+
+@code {
+    [Parameter] public ModuleTaskDraft Draft { get; set; }
+    [Parameter] public EventCallback<ModuleTaskDraft> DraftChanged { get; set; }
+    [Parameter] public string? InitialConfigJson { get; set; }
+
+    private bool loading = true;
+    private bool initialized;
+    private List<AccountCategory> categories = new();
+    private List<Account> activeAccounts = new();
+    private List<ChannelGroup> channelGroups = new();
+    private List<GroupCategory> groupCategories = new();
+    private List<string> textDictionaryNames = new();
+    private List<string> imageDictionaryNames = new();
+
+    private IEnumerable<int> selectedCategoryIds = Array.Empty<int>();
+    private string createType = ChannelGroupAutomationTaskObjectTypes.Channel;
+    private int selectedChannelGroupId;
+    private int selectedGroupCategoryId;
+    private int systemCreatedLimit = 10;
+    private int perAccountBatchSize = 1;
+    private string titleTemplate = string.Empty;
+    private string avatarSource = ChannelGroupAutomationAvatarSourceModes.None;
+    private string? fixedAvatarAssetPath;
+    private string avatarDictionaryToken = string.Empty;
+    private string selectedImageDictionaryName = string.Empty;
+    private int minDelaySeconds = 10;
+    private int maxDelaySeconds = 30;
+    private int jitterPercent = 20;
+    private string assetScopeId = Guid.NewGuid().ToString("N");
+
+    private bool IsChannel => string.Equals(createType, ChannelGroupAutomationTaskObjectTypes.Channel, StringComparison.OrdinalIgnoreCase);
+
+    protected override async Task OnInitializedAsync()
+    {
+        await LoadDataAsync();
+        ApplyInitialConfig();
+        initialized = true;
+        loading = false;
+        await PushDraftAsync();
+    }
+
+    private async Task LoadDataAsync()
+    {
+        categories = (await CategoryManagement.GetAllCategoriesAsync())
+            .Where(x => !x.ExcludeFromOperations)
+            .OrderBy(x => x.Name, StringComparer.OrdinalIgnoreCase)
+            .ToList();
+        activeAccounts = (await AccountManagement.GetActiveAccountsAsync()).ToList();
+        channelGroups = (await ChannelGroupManagement.GetAllGroupsAsync()).ToList();
+        groupCategories = (await GroupCategoryManagement.GetAllCategoriesAsync()).ToList();
+
+        var dictionaries = await DictionaryService.GetAllAsync();
+        textDictionaryNames = dictionaries.Where(x => x.IsEnabled && x.Type == DataDictionaryTypes.Text).Select(x => x.Name).OrderBy(x => x).ToList();
+        imageDictionaryNames = dictionaries.Where(x => x.IsEnabled && x.Type == DataDictionaryTypes.Image).Select(x => x.Name).OrderBy(x => x).ToList();
+    }
+
+    private void ApplyInitialConfig()
+    {
+        if (string.IsNullOrWhiteSpace(InitialConfigJson))
+            return;
+
+        try
+        {
+            var config = JsonSerializer.Deserialize<ChannelGroupPrivateCreateTaskConfig>(InitialConfigJson!);
+            if (config == null)
+                return;
+
+            selectedCategoryIds = (config.CategoryIds ?? new List<int>()).Where(x => x > 0).Distinct().ToList();
+            createType = string.Equals(config.CreateType, ChannelGroupAutomationTaskObjectTypes.Group, StringComparison.OrdinalIgnoreCase)
+                ? ChannelGroupAutomationTaskObjectTypes.Group
+                : ChannelGroupAutomationTaskObjectTypes.Channel;
+            selectedChannelGroupId = config.ChannelGroupId ?? 0;
+            selectedGroupCategoryId = config.GroupCategoryId ?? 0;
+            systemCreatedLimit = Math.Max(1, config.SystemCreatedLimit);
+            perAccountBatchSize = Math.Max(1, config.PerAccountBatchSize);
+            titleTemplate = config.TitleTemplate ?? string.Empty;
+            avatarSource = config.AvatarSource ?? ChannelGroupAutomationAvatarSourceModes.None;
+            fixedAvatarAssetPath = string.IsNullOrWhiteSpace(config.FixedAvatarAssetPath) ? null : config.FixedAvatarAssetPath.Trim();
+            avatarDictionaryToken = config.AvatarDictionaryToken ?? string.Empty;
+            selectedImageDictionaryName = ExtractDictionaryName(avatarDictionaryToken);
+            minDelaySeconds = config.MinDelaySeconds;
+            maxDelaySeconds = config.MaxDelaySeconds;
+            jitterPercent = config.JitterPercent;
+            if (!string.IsNullOrWhiteSpace(config.AssetScopeId))
+                assetScopeId = config.AssetScopeId.Trim();
+        }
+        catch
+        {
+            // 忽略旧配置解析失败，使用默认值。
+        }
+    }
+
+    private async Task OnSelectedCategoriesChanged(IEnumerable<int> values)
+    {
+        selectedCategoryIds = (values ?? Array.Empty<int>()).Where(x => x > 0).Distinct().ToList();
+        await OnInputsChanged();
+    }
+
+    private async Task OnSelectedImageDictionaryChanged()
+    {
+        avatarDictionaryToken = string.IsNullOrWhiteSpace(selectedImageDictionaryName) ? string.Empty : $"{{{selectedImageDictionaryName}}}";
+        await OnInputsChanged();
+    }
+
+    private async Task OnAvatarChanged(IReadOnlyList<IBrowserFile> files)
+    {
+        var file = files?.FirstOrDefault();
+        if (file == null)
+            return;
+
+        if (!string.IsNullOrWhiteSpace(fixedAvatarAssetPath))
+            await AssetStorage.DeleteAssetAsync(fixedAvatarAssetPath);
+
+        var stored = await AssetStorage.SaveBrowserFileAsync(file, $"task-assets/{assetScopeId}", ImageAssetKind.Avatar);
+        fixedAvatarAssetPath = stored.AssetPath;
+        avatarSource = ChannelGroupAutomationAvatarSourceModes.Fixed;
+        await OnInputsChanged();
+    }
+
+    private async Task OnInputsChanged()
+    {
+        if (!initialized)
+            return;
+        await PushDraftAsync();
+    }
+
+    private async Task PushDraftAsync()
+    {
+        if (loading)
+        {
+            await DraftChanged.InvokeAsync(new ModuleTaskDraft(0, null, false, "配置加载中"));
+            return;
+        }
+
+        var selectedIds = selectedCategoryIds.Where(x => x > 0).Distinct().ToList();
+        if (selectedIds.Count == 0)
+        {
+            await DraftChanged.InvokeAsync(new ModuleTaskDraft(0, null, false, "请至少选择一个账号分类"));
+            return;
+        }
+
+        titleTemplate = (titleTemplate ?? string.Empty).Trim();
+        if (titleTemplate.Length == 0)
+        {
+            await DraftChanged.InvokeAsync(new ModuleTaskDraft(0, null, false, "标题模板不能为空"));
+            return;
+        }
+
+        if (systemCreatedLimit < 1)
+        {
+            await DraftChanged.InvokeAsync(new ModuleTaskDraft(0, null, false, "系统创建数量上限必须大于 0"));
+            return;
+        }
+
+        if (perAccountBatchSize < 1)
+        {
+            await DraftChanged.InvokeAsync(new ModuleTaskDraft(0, null, false, "每账号本轮处理数量必须大于 0"));
+            return;
+        }
+
+        minDelaySeconds = ChannelGroupTaskDelayHelper.NormalizeMinDelay(minDelaySeconds);
+        maxDelaySeconds = ChannelGroupTaskDelayHelper.NormalizeMaxDelay(minDelaySeconds, maxDelaySeconds);
+        jitterPercent = ChannelGroupTaskDelayHelper.NormalizeJitterPercent(jitterPercent);
+
+        avatarSource = NormalizeAvatarSource(avatarSource);
+        if (avatarSource == ChannelGroupAutomationAvatarSourceModes.Fixed && string.IsNullOrWhiteSpace(fixedAvatarAssetPath))
+        {
+            await DraftChanged.InvokeAsync(new ModuleTaskDraft(0, null, false, "请先上传固定头像"));
+            return;
+        }
+
+        if (avatarSource == ChannelGroupAutomationAvatarSourceModes.Dictionary && string.IsNullOrWhiteSpace(avatarDictionaryToken))
+        {
+            await DraftChanged.InvokeAsync(new ModuleTaskDraft(0, null, false, "请选择图片字典"));
+            return;
+        }
+
+        var selectedCategoryNames = categories.Where(x => selectedIds.Contains(x.Id)).Select(x => x.Name).ToList();
+        var selectedAccountCount = activeAccounts.Count(x => x.IsActive && x.CategoryId.HasValue && selectedIds.Contains(x.CategoryId.Value) && x.Category?.ExcludeFromOperations != true);
+        var total = Math.Max(0, selectedAccountCount * Math.Max(1, perAccountBatchSize));
+
+        var config = new ChannelGroupPrivateCreateTaskConfig
+        {
+            CategoryIds = selectedIds,
+            CategoryNames = selectedCategoryNames,
+            CreateType = IsChannel ? ChannelGroupAutomationTaskObjectTypes.Channel : ChannelGroupAutomationTaskObjectTypes.Group,
+            ChannelGroupId = IsChannel && selectedChannelGroupId > 0 ? selectedChannelGroupId : null,
+            ChannelGroupName = IsChannel && selectedChannelGroupId > 0 ? channelGroups.FirstOrDefault(x => x.Id == selectedChannelGroupId)?.Name : null,
+            GroupCategoryId = !IsChannel && selectedGroupCategoryId > 0 ? selectedGroupCategoryId : null,
+            GroupCategoryName = !IsChannel && selectedGroupCategoryId > 0 ? groupCategories.FirstOrDefault(x => x.Id == selectedGroupCategoryId)?.Name : null,
+            SystemCreatedLimit = systemCreatedLimit,
+            PerAccountBatchSize = perAccountBatchSize,
+            MinDelaySeconds = minDelaySeconds,
+            MaxDelaySeconds = maxDelaySeconds,
+            JitterPercent = jitterPercent,
+            TitleTemplate = titleTemplate,
+            AvatarSource = avatarSource,
+            FixedAvatarAssetPath = fixedAvatarAssetPath,
+            AvatarDictionaryToken = string.IsNullOrWhiteSpace(avatarDictionaryToken) ? null : avatarDictionaryToken.Trim(),
+            AssetScopeId = avatarSource == ChannelGroupAutomationAvatarSourceModes.Fixed ? assetScopeId : null
+        };
+
+        var json = JsonSerializer.Serialize(config, new JsonSerializerOptions { WriteIndented = true });
+        await DraftChanged.InvokeAsync(new ModuleTaskDraft(total, json, true, null));
+    }
+
+    private static string NormalizeAvatarSource(string? value)
+    {
+        return string.Equals((value ?? string.Empty).Trim(), ChannelGroupAutomationAvatarSourceModes.Fixed, StringComparison.OrdinalIgnoreCase)
+            ? ChannelGroupAutomationAvatarSourceModes.Fixed
+            : string.Equals((value ?? string.Empty).Trim(), ChannelGroupAutomationAvatarSourceModes.Dictionary, StringComparison.OrdinalIgnoreCase)
+                ? ChannelGroupAutomationAvatarSourceModes.Dictionary
+                : ChannelGroupAutomationAvatarSourceModes.None;
+    }
+
+    private static string ExtractDictionaryName(string? token)
+    {
+        var text = (token ?? string.Empty).Trim();
+        if (text.StartsWith("{") && text.EndsWith("}") && text.Length > 2)
+            return text[1..^1];
+        return string.Empty;
+    }
+}
+

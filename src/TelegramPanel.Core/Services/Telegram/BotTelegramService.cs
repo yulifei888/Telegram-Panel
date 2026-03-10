@@ -1,4 +1,5 @@
 using System.Text.Json;
+using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging;
 using SixLabors.ImageSharp;
 using SixLabors.ImageSharp.Formats.Jpeg;
@@ -18,21 +19,25 @@ public class BotTelegramService
     private readonly BotManagementService _botManagement;
     private readonly TelegramBotApiClient _api;
     private readonly BotUpdateHub _updateHub;
+    private readonly IConfiguration _configuration;
     private readonly ILogger<BotTelegramService> _logger;
 
     public BotTelegramService(
         BotManagementService botManagement,
         TelegramBotApiClient api,
         BotUpdateHub updateHub,
+        IConfiguration configuration,
         ILogger<BotTelegramService> logger)
     {
         _botManagement = botManagement;
         _api = api;
         _updateHub = updateHub;
+        _configuration = configuration;
         _logger = logger;
     }
 
     public sealed record BotChannelSyncResult(int AppliedUpdates, int RemovedStale);
+    public sealed record ChannelStatusCheckResult(int SuccessCount, int FailedCount, int TotalCount, IReadOnlyDictionary<long, string> Failures);
 
     /// <summary>
     /// 手动同步（新增 + 清理）：
@@ -202,6 +207,12 @@ public class BotTelegramService
         if (seconds < 1) seconds = 1;
         if (seconds > 120) seconds = 120;
         return true;
+    }
+
+    private static int ReadInt(IConfiguration configuration, string key, int defaultValue)
+    {
+        var raw = (configuration[key] ?? "").Trim();
+        return int.TryParse(raw, out var v) ? v : defaultValue;
     }
 
     /// <summary>
@@ -394,6 +405,7 @@ public class BotTelegramService
             var customTitle = el.TryGetProperty("custom_title", out var ctEl) ? ctEl.GetString() : null;
             var canInviteUsers = ReadBool(el, "can_invite_users");
             var canPromoteMembers = ReadBool(el, "can_promote_members");
+            var canRestrictMembers = ReadBool(el, "can_restrict_members");
 
             if (!el.TryGetProperty("user", out var userEl) || userEl.ValueKind != JsonValueKind.Object)
                 continue;
@@ -413,7 +425,8 @@ public class BotTelegramService
                 Status: status,
                 CustomTitle: string.IsNullOrWhiteSpace(customTitle) ? null : customTitle.Trim(),
                 CanInviteUsers: canInviteUsers,
-                CanPromoteMembers: canPromoteMembers
+                CanPromoteMembers: canPromoteMembers,
+                CanRestrictMembers: canRestrictMembers
             ));
         }
 
@@ -486,34 +499,7 @@ public class BotTelegramService
         if (string.IsNullOrWhiteSpace(fileName))
             fileName = "photo.jpg";
 
-        // Bot API setChatPhoto 需要 multipart 上传 InputFile。
-        // 为了提高成功率：做“居中裁剪为正方形 + 缩放到 512x512 + JPEG 压缩”，避免原图过大/比例异常导致失败。
-        await using var raw = new MemoryStream();
-        if (fileStream.CanSeek)
-            fileStream.Position = 0;
-        await fileStream.CopyToAsync(raw, cancellationToken);
-        raw.Position = 0;
-
-        await using var encoded = new MemoryStream();
-        try
-        {
-            using var image = await Image.LoadAsync(raw, cancellationToken);
-            image.Mutate(x => x.AutoOrient());
-
-            const int targetSize = 512;
-            image.Mutate(x => x.Resize(new ResizeOptions
-            {
-                Mode = ResizeMode.Crop,
-                Size = new Size(targetSize, targetSize)
-            }));
-
-            await image.SaveAsJpegAsync(encoded, new JpegEncoder { Quality = 85 }, cancellationToken);
-            encoded.Position = 0;
-        }
-        catch (UnknownImageFormatException)
-        {
-            throw new InvalidOperationException("不支持的图片格式（建议使用 JPG/PNG）");
-        }
+        await using var encoded = await TelegramImageProcessor.PrepareAvatarJpegAsync(fileStream, cancellationToken);
 
         _ = await _api.CallWithFileAsync(
             token: bot.Token,
@@ -622,6 +608,132 @@ public class BotTelegramService
         return map;
     }
 
+    /// <summary>
+    /// 批量检测 Bot 在频道中的可操作状态：
+    /// 通过 sendMessage 发送探测消息并立即 deleteMessage；发送失败则记为异常。
+    /// </summary>
+    public async Task<ChannelStatusCheckResult> CheckChannelsStatusAsync(
+        int botId,
+        IReadOnlyList<long> channelTelegramIds,
+        CancellationToken cancellationToken)
+    {
+        var bot = await _botManagement.GetBotAsync(botId)
+            ?? throw new InvalidOperationException($"机器人不存在：{botId}");
+
+        if (!bot.IsActive)
+            throw new InvalidOperationException("该机器人已停用");
+
+        var ids = channelTelegramIds
+            .Where(x => x != 0)
+            .Distinct()
+            .ToList();
+
+        if (ids.Count == 0)
+            return new ChannelStatusCheckResult(0, 0, 0, new Dictionary<long, string>());
+
+        var failures = new Dictionary<long, string>();
+
+        var delayMs = ReadInt(_configuration, "Telegram:DefaultDelayMs", 1000);
+        if (delayMs < 0) delayMs = 0;
+        if (delayMs > 10000) delayMs = 10000;
+
+        var maxRetries = ReadInt(_configuration, "Telegram:MaxRetries", 1);
+        if (maxRetries < 0) maxRetries = 0;
+        if (maxRetries > 5) maxRetries = 5;
+
+        var ok = 0;
+        for (var index = 0; index < ids.Count; index++)
+        {
+            var chatId = ids[index];
+            cancellationToken.ThrowIfCancellationRequested();
+
+            var attempt = 0;
+            while (true)
+            {
+                try
+                {
+                    await ProbeChannelBySendDeleteAsync(bot.Token, chatId, cancellationToken);
+                    await _botManagement.UpdateChannelStatusAsync(bot.Id, chatId, ok: true, error: null, checkedAtUtc: DateTime.UtcNow);
+                    ok++;
+                    break;
+                }
+                catch (InvalidOperationException ex) when (TryGetRetryAfterSeconds(ex.Message, out var seconds))
+                {
+                    attempt++;
+                    if (attempt > maxRetries)
+                    {
+                        var msg = string.IsNullOrWhiteSpace(ex.Message) ? "检测失败（限流重试超限）" : ex.Message.Trim();
+                        failures[chatId] = msg;
+                        await _botManagement.UpdateChannelStatusAsync(bot.Id, chatId, ok: false, error: msg, checkedAtUtc: DateTime.UtcNow);
+                        _logger.LogWarning(
+                            "CheckChannelsStatus retry exceeded: bot={BotId} chat={ChatId} retryAfter={RetryAfter}s",
+                            botId,
+                            chatId,
+                            seconds);
+                        break;
+                    }
+
+                    _logger.LogWarning(
+                        "CheckChannelsStatus hit rate limit, retry after {Seconds}s (attempt {Attempt}/{Max}): bot={BotId} chat={ChatId}",
+                        seconds,
+                        attempt,
+                        maxRetries,
+                        botId,
+                        chatId);
+                    await Task.Delay(TimeSpan.FromSeconds(seconds), cancellationToken);
+                }
+                catch (Exception ex)
+                {
+                    var msg = string.IsNullOrWhiteSpace(ex.Message) ? "检测失败" : ex.Message.Trim();
+                    failures[chatId] = msg;
+                    await _botManagement.UpdateChannelStatusAsync(bot.Id, chatId, ok: false, error: msg, checkedAtUtc: DateTime.UtcNow);
+                    _logger.LogWarning(ex, "CheckChannelsStatus failed: bot={BotId} chat={ChatId}", botId, chatId);
+                    break;
+                }
+            }
+
+            if (delayMs > 0 && index < ids.Count - 1)
+            {
+                var jitter = Random.Shared.Next(0, Math.Min(300, delayMs + 1));
+                await Task.Delay(delayMs + jitter, cancellationToken);
+            }
+        }
+
+        return new ChannelStatusCheckResult(ok, failures.Count, ids.Count, failures);
+    }
+
+    private async Task ProbeChannelBySendDeleteAsync(string token, long chatId, CancellationToken cancellationToken)
+    {
+        var probeText = $"频道状态检测 {DateTime.UtcNow:yyyy-MM-dd HH:mm:ss}";
+        var sendResult = await _api.CallAsync(token, "sendMessage", new Dictionary<string, string?>
+        {
+            ["chat_id"] = chatId.ToString(),
+            ["text"] = probeText,
+            ["disable_notification"] = "true"
+        }, cancellationToken);
+
+        if (sendResult.ValueKind != JsonValueKind.Object
+            || !sendResult.TryGetProperty("message_id", out var messageIdEl)
+            || !messageIdEl.TryGetInt64(out var messageId))
+        {
+            throw new InvalidOperationException("Bot API sendMessage 返回格式异常，无法完成频道检测");
+        }
+
+        try
+        {
+            await _api.CallAsync(token, "deleteMessage", new Dictionary<string, string?>
+            {
+                ["chat_id"] = chatId.ToString(),
+                ["message_id"] = messageId.ToString()
+            }, cancellationToken);
+        }
+        catch (Exception ex)
+        {
+            // 删除失败不判定为“频道异常”，但记录日志便于排查（例如 Bot 缺少删消息权限）。
+            _logger.LogWarning(ex, "Probe deleteMessage failed: chat={ChatId}", chatId);
+        }
+    }
+
     private static bool TryParseChatMemberUpdate(JsonElement myChatMember, out BotApiChat chat, out string status)
     {
         chat = default;
@@ -664,7 +776,8 @@ public class BotTelegramService
         string Status,
         string? CustomTitle,
         bool CanInviteUsers,
-        bool CanPromoteMembers)
+        bool CanPromoteMembers,
+        bool CanRestrictMembers)
     {
         public bool IsCreator => string.Equals(Status, "creator", StringComparison.OrdinalIgnoreCase);
         public string DisplayName
@@ -814,7 +927,8 @@ public sealed record BotAdminRights(
         IReadOnlyList<long> channelTelegramIds,
         long userId,
         bool permanentBan,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        Func<long, string?, int, int, Task>? perChatCallback = null)
     {
         var bot = await _botManagement.GetBotAsync(botId)
             ?? throw new InvalidOperationException($"机器人不存在：{botId}");
@@ -830,53 +944,113 @@ public sealed record BotAdminRights(
 
         var botUserId = await GetBotUserIdAsync(bot.Token, cancellationToken);
 
+        var delayMs = ReadInt(_configuration, "Telegram:DefaultDelayMs", 2000);
+        if (delayMs < 0) delayMs = 0;
+        if (delayMs > 60000) delayMs = 60000;
+
+        var maxRetries = ReadInt(_configuration, "Telegram:MaxRetries", 0);
+        if (maxRetries < 0) maxRetries = 0;
+        if (maxRetries > 10) maxRetries = 10;
+
         var ok = 0;
-        foreach (var chatId in distinctIds)
+        for (var index = 0; index < distinctIds.Count; index++)
         {
+            var chatId = distinctIds[index];
             cancellationToken.ThrowIfCancellationRequested();
 
-            try
+            var attempt = 0;
+            while (true)
             {
-                var (canBan, reason) = await CanBotBanMembersAsync(bot.Token, chatId, botUserId, cancellationToken);
-                if (!canBan)
-                    throw new InvalidOperationException(reason);
-
-                // 目标如果是管理员：Telegram 不允许直接 ban/kick 管理员，需先取消管理员再踢出
-                var targetStatus = await GetChatMemberStatusAsync(bot.Token, chatId, userId, cancellationToken);
-                if (string.Equals(targetStatus, "creator", StringComparison.OrdinalIgnoreCase))
-                    throw new InvalidOperationException("目标是频道创建者，无法踢出/封禁");
-
-                if (string.Equals(targetStatus, "administrator", StringComparison.OrdinalIgnoreCase))
-                {
-                    var (canPromote, promoteReason) = await CanBotPromoteMembersAsync(bot.Token, chatId, botUserId, cancellationToken);
-                    if (!canPromote)
-                        throw new InvalidOperationException($"目标是管理员，且无法取消管理员权限：{promoteReason}");
-
-                    await DemoteChatMemberAsync(bot.Token, chatId, userId, cancellationToken);
-                }
-
                 try
                 {
-                    await BanOrKickInternalAsync(bot.Token, chatId, userId, permanentBan, cancellationToken);
+                    var (canBan, reason) = await CanBotBanMembersAsync(bot.Token, chatId, botUserId, cancellationToken);
+                    if (!canBan)
+                        throw new InvalidOperationException(reason);
+
+                    // 目标如果是管理员：Telegram 不允许直接 ban/kick 管理员，需先取消管理员再踢出
+                    var targetStatus = await GetChatMemberStatusAsync(bot.Token, chatId, userId, cancellationToken);
+                    if (string.Equals(targetStatus, "creator", StringComparison.OrdinalIgnoreCase))
+                        throw new InvalidOperationException("目标是频道创建者，无法踢出/封禁");
+
+                    if (string.Equals(targetStatus, "administrator", StringComparison.OrdinalIgnoreCase))
+                    {
+                        var (canPromote, promoteReason) = await CanBotPromoteMembersAsync(bot.Token, chatId, botUserId, cancellationToken);
+                        if (!canPromote)
+                            throw new InvalidOperationException($"目标是管理员，且无法取消管理员权限：{promoteReason}");
+
+                        await DemoteChatMemberAsync(bot.Token, chatId, userId, cancellationToken);
+                    }
+
+                    try
+                    {
+                        await BanOrKickInternalAsync(bot.Token, chatId, userId, permanentBan, cancellationToken);
+                    }
+                    catch (InvalidOperationException ex) when (IsUserIsAdministratorError(ex.Message))
+                    {
+                        // 兜底：即使前面没识别到/状态变化，也尝试“先降权再踢”
+                        var (canPromote, promoteReason) = await CanBotPromoteMembersAsync(bot.Token, chatId, botUserId, cancellationToken);
+                        if (!canPromote)
+                            throw new InvalidOperationException($"目标是管理员，且无法取消管理员权限：{promoteReason}");
+
+                        await DemoteChatMemberAsync(bot.Token, chatId, userId, cancellationToken);
+                        await BanOrKickInternalAsync(bot.Token, chatId, userId, permanentBan, cancellationToken);
+                    }
+
+                    ok++;
+                    break;
                 }
-                catch (InvalidOperationException ex) when (IsUserIsAdministratorError(ex.Message))
+                catch (InvalidOperationException ex) when (TryGetRetryAfterSeconds(ex.Message, out var seconds))
                 {
-                    // 兜底：即使前面没识别到/状态变化，也尝试“先降权再踢”
-                    var (canPromote, promoteReason) = await CanBotPromoteMembersAsync(bot.Token, chatId, botUserId, cancellationToken);
-                    if (!canPromote)
-                        throw new InvalidOperationException($"目标是管理员，且无法取消管理员权限：{promoteReason}");
+                    attempt++;
+                    if (attempt > maxRetries)
+                    {
+                        failures[chatId] = ex.Message;
+                        _logger.LogWarning(
+                            "BanChatMember hit rate limit but retries exceeded: bot={BotId} chat={ChatId} user={UserId} retryAfter={Seconds}s",
+                            botId,
+                            chatId,
+                            userId,
+                            seconds);
+                        break;
+                    }
 
-                    await DemoteChatMemberAsync(bot.Token, chatId, userId, cancellationToken);
-                    await BanOrKickInternalAsync(bot.Token, chatId, userId, permanentBan, cancellationToken);
+                    _logger.LogWarning(
+                        "BanChatMember hit rate limit, retry after {Seconds}s (attempt {Attempt}/{Max}): bot={BotId} chat={ChatId} user={UserId}",
+                        seconds,
+                        attempt,
+                        maxRetries,
+                        botId,
+                        chatId,
+                        userId);
+
+                    await Task.Delay(TimeSpan.FromSeconds(seconds), cancellationToken);
                 }
-
-                ok++;
+                catch (Exception ex)
+                {
+                    failures[chatId] = ex.Message;
+                    _logger.LogWarning(
+                        "BanChatMember failed: bot={BotId} chat={ChatId} user={UserId} permanent={Permanent} error={Error}",
+                        botId,
+                        chatId,
+                        userId,
+                        permanentBan,
+                        ex.Message);
+                    _logger.LogDebug(ex, "BanChatMember debug details: bot={BotId} chat={ChatId} user={UserId}", botId, chatId, userId);
+                    break;
+                }
             }
-            catch (Exception ex)
+
+            if (perChatCallback != null)
             {
-                var msg = ex.Message;
-                failures[chatId] = msg;
-                _logger.LogWarning(ex, "BanChatMember failed for bot {BotId} chat {ChatId} user {UserId} permanent {Permanent}", botId, chatId, userId, permanentBan);
+                failures.TryGetValue(chatId, out var err);
+                await perChatCallback(chatId, err, ok, failures.Count);
+            }
+
+            // 降速：避免 Bot API 429
+            if (delayMs > 0 && index < distinctIds.Count - 1)
+            {
+                var jitter = Random.Shared.Next(0, Math.Min(500, delayMs + 1));
+                await Task.Delay(delayMs + jitter, cancellationToken);
             }
         }
 

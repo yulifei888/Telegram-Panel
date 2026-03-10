@@ -1,0 +1,215 @@
+﻿@page "/data-dictionaries"
+@inject DataDictionaryService DictionaryService
+@inject ISnackbar Snackbar
+@inject IDialogService DialogService
+@using TelegramPanel.Data.Entities
+
+<PageTitle>数据字典 - Telegram Panel</PageTitle>
+
+<MudText Typo="Typo.h4" Class="mb-4">数据字典管理</MudText>
+
+<MudAlert Severity="Severity.Info" Variant="Variant.Outlined" Dense="true" Class="mb-4">
+    当前系统内置变量：<code>{time}</code>，格式为 <code>yyyyMMddHHmmss</code>，例如 <code>20260310143059</code>。
+    它不是 Unix 时间戳，而是可直接阅读的时间字符串。
+    文本字段通常支持 <code>{time}</code> 和 <code>{字典名}</code>；图片字段通常只能使用单个图片字典变量，例如 <code>{avatar}</code>。
+</MudAlert>
+
+<MudCard>
+    <MudCardContent>
+        <MudStack Row="true" Spacing="2" AlignItems="AlignItems.Center" Wrap="Wrap.Wrap">
+            <MudTextField @bind-Value="searchText"
+                          Label="搜索字典"
+                          Variant="Variant.Outlined"
+                          Immediate="true"
+                          Adornment="Adornment.Start"
+                          AdornmentIcon="@Icons.Material.Filled.Search"
+                          Style="min-width: 260px;" />
+            <MudSpacer />
+            <MudButton Variant="Variant.Outlined" Color="Color.Primary" StartIcon="@Icons.Material.Filled.TextFields" OnClick="@(() => OpenCreateDialog(DataDictionaryTypes.Text))">
+                新建文本字典
+            </MudButton>
+            <MudButton Variant="Variant.Outlined" Color="Color.Secondary" StartIcon="@Icons.Material.Filled.Image" OnClick="@(() => OpenCreateDialog(DataDictionaryTypes.Image))">
+                新建图片字典
+            </MudButton>
+            <MudIconButton Icon="@Icons.Material.Filled.Refresh" Color="Color.Default" Disabled="@loading" OnClick="LoadDictionaries" />
+        </MudStack>
+    </MudCardContent>
+</MudCard>
+
+<MudCard Class="mt-4">
+    <MudCardContent>
+        <MudTable Items="@FilteredDictionaries" Hover="true" Breakpoint="Breakpoint.Sm" Loading="@loading">
+            <HeaderContent>
+                <MudTh>显示名称</MudTh>
+                <MudTh>变量名</MudTh>
+                <MudTh>类型</MudTh>
+                <MudTh>读取模式</MudTh>
+                <MudTh>状态</MudTh>
+                <MudTh>内容数</MudTh>
+                <MudTh>轮询游标</MudTh>
+                <MudTh>更新时间</MudTh>
+                <MudTh>操作</MudTh>
+            </HeaderContent>
+            <RowTemplate>
+                <MudTd DataLabel="显示名称">@context.DisplayName</MudTd>
+                <MudTd DataLabel="变量名"><code>@($"{{{context.Name}}}")</code></MudTd>
+                <MudTd DataLabel="类型">
+                    <MudChip T="string" Size="Size.Small" Color="@(IsImageDictionary(context) ? Color.Secondary : Color.Primary)">
+                        @(IsImageDictionary(context) ? "图片" : "文本")
+                    </MudChip>
+                </MudTd>
+                <MudTd DataLabel="读取模式">@(IsQueueMode(context) ? "队列轮询" : "随机")</MudTd>
+                <MudTd DataLabel="状态">
+                    <MudChip T="string" Size="Size.Small" Color="@(context.IsEnabled ? Color.Success : Color.Warning)">
+                        @(context.IsEnabled ? "启用" : "停用")
+                    </MudChip>
+                </MudTd>
+                <MudTd DataLabel="内容数">@context.Items.Count(x => x.IsEnabled)</MudTd>
+                <MudTd DataLabel="轮询游标">@context.NextIndex</MudTd>
+                <MudTd DataLabel="更新时间"><PanelTime Value="context.UpdatedAt" /></MudTd>
+                <MudTd DataLabel="操作">
+                    <MudStack Row="true" Spacing="1">
+                        <MudIconButton Icon="@Icons.Material.Filled.Edit" Size="Size.Small" Color="Color.Primary" OnClick="@(() => OpenEditDialog(context))" />
+                        <MudIconButton Icon="@(context.IsEnabled ? Icons.Material.Filled.ToggleOn : Icons.Material.Filled.ToggleOff)"
+                                       Size="Size.Small"
+                                       Color="@(context.IsEnabled ? Color.Success : Color.Warning)"
+                                       OnClick="@(() => ToggleEnabled(context))" />
+                        <MudIconButton Icon="@Icons.Material.Filled.RestartAlt" Size="Size.Small" Color="Color.Info" OnClick="@(() => ResetQueue(context))" />
+                        <MudIconButton Icon="@Icons.Material.Filled.Delete" Size="Size.Small" Color="Color.Error" OnClick="@(() => DeleteDictionary(context))" />
+                    </MudStack>
+                </MudTd>
+            </RowTemplate>
+            <NoRecordsContent>
+                <MudText>暂无数据字典</MudText>
+            </NoRecordsContent>
+        </MudTable>
+    </MudCardContent>
+</MudCard>
+
+@code {
+    private List<DataDictionary> dictionaries = new();
+    private bool loading = true;
+    private string searchText = string.Empty;
+
+    private IEnumerable<DataDictionary> FilteredDictionaries =>
+        dictionaries.Where(MatchSearch)
+            .OrderBy(x => x.DisplayName, StringComparer.OrdinalIgnoreCase)
+            .ThenBy(x => x.Name, StringComparer.OrdinalIgnoreCase);
+
+    protected override async Task OnInitializedAsync()
+    {
+        await LoadDictionaries();
+    }
+
+    private async Task LoadDictionaries()
+    {
+        loading = true;
+        try
+        {
+            dictionaries = (await DictionaryService.GetAllAsync()).ToList();
+        }
+        catch (Exception ex)
+        {
+            Snackbar.Add($"加载字典失败：{ex.Message}", Severity.Error);
+        }
+        finally
+        {
+            loading = false;
+        }
+    }
+
+    private bool MatchSearch(DataDictionary dictionary)
+    {
+        var text = (searchText ?? string.Empty).Trim();
+        if (text.Length == 0)
+            return true;
+
+        return (dictionary.Name?.Contains(text, StringComparison.OrdinalIgnoreCase) ?? false)
+            || (dictionary.DisplayName?.Contains(text, StringComparison.OrdinalIgnoreCase) ?? false)
+            || (dictionary.Description?.Contains(text, StringComparison.OrdinalIgnoreCase) ?? false);
+    }
+
+    private async Task OpenCreateDialog(string type)
+    {
+        var parameters = new DialogParameters
+        {
+            ["InitialType"] = type
+        };
+        var options = new DialogOptions { CloseOnEscapeKey = true, MaxWidth = MaxWidth.Large, FullWidth = true };
+        var dialog = DialogService.Show<TelegramPanel.Web.Components.Dialogs.DataDictionaryEditDialog>(type == DataDictionaryTypes.Image ? "新建图片字典" : "新建文本字典", parameters, options)!;
+        var result = await dialog.Result;
+        if (result is { Canceled: false })
+            await LoadDictionaries();
+    }
+
+    private async Task OpenEditDialog(DataDictionary dictionary)
+    {
+        var parameters = new DialogParameters
+        {
+            ["DictionaryId"] = dictionary.Id,
+            ["InitialType"] = dictionary.Type
+        };
+        var options = new DialogOptions { CloseOnEscapeKey = true, MaxWidth = MaxWidth.Large, FullWidth = true };
+        var dialog = DialogService.Show<TelegramPanel.Web.Components.Dialogs.DataDictionaryEditDialog>($"编辑字典：{dictionary.DisplayName}", parameters, options)!;
+        var result = await dialog.Result;
+        if (result is { Canceled: false })
+            await LoadDictionaries();
+    }
+
+    private async Task ToggleEnabled(DataDictionary dictionary)
+    {
+        try
+        {
+            await DictionaryService.SetEnabledAsync(dictionary.Id, !dictionary.IsEnabled);
+            await LoadDictionaries();
+            Snackbar.Add($"已{(!dictionary.IsEnabled ? "启用" : "停用")}字典 {dictionary.DisplayName}", Severity.Success);
+        }
+        catch (Exception ex)
+        {
+            Snackbar.Add($"操作失败：{ex.Message}", Severity.Error);
+        }
+    }
+
+    private async Task ResetQueue(DataDictionary dictionary)
+    {
+        try
+        {
+            await DictionaryService.ResetQueueAsync(dictionary.Id);
+            await LoadDictionaries();
+            Snackbar.Add($"已重置字典 {dictionary.DisplayName} 的轮询游标", Severity.Success);
+        }
+        catch (Exception ex)
+        {
+            Snackbar.Add($"重置失败：{ex.Message}", Severity.Error);
+        }
+    }
+
+    private async Task DeleteDictionary(DataDictionary dictionary)
+    {
+        bool? confirm = await DialogService.ShowMessageBox(
+            "确认删除",
+            $"确定要删除字典 {dictionary.DisplayName} 吗？删除后将同步清理关联图片文件。",
+            yesText: "删除", cancelText: "取消");
+
+        if (confirm != true)
+            return;
+
+        try
+        {
+            await DictionaryService.DeleteAsync(dictionary.Id);
+            await LoadDictionaries();
+            Snackbar.Add($"字典 {dictionary.DisplayName} 已删除", Severity.Success);
+        }
+        catch (Exception ex)
+        {
+            Snackbar.Add($"删除失败：{ex.Message}", Severity.Error);
+        }
+    }
+
+    private static bool IsImageDictionary(DataDictionary dictionary) =>
+        string.Equals(dictionary.Type, DataDictionaryTypes.Image, StringComparison.OrdinalIgnoreCase);
+
+    private static bool IsQueueMode(DataDictionary dictionary) =>
+        string.Equals(dictionary.ReadMode, DataDictionaryReadModes.Queue, StringComparison.OrdinalIgnoreCase);
+}
+

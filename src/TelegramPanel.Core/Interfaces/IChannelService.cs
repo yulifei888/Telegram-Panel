@@ -18,6 +18,11 @@ public interface IChannelService
     Task<List<ChannelInfo>> GetAdminedChannelsAsync(int accountId);
 
     /// <summary>
+    /// 获取账号当前可见的全部频道（创建者/管理员/普通成员）
+    /// </summary>
+    Task<List<ChannelInfo>> GetVisibleChannelsAsync(int accountId, CancellationToken cancellationToken = default);
+
+    /// <summary>
     /// 创建新频道
     /// </summary>
     Task<ChannelInfo> CreateChannelAsync(int accountId, string title, string about, bool isPublic = false);
@@ -53,6 +58,16 @@ public interface IChannelService
     Task<bool> SetForwardingAllowedAsync(int accountId, long channelId, bool allowed);
 
     /// <summary>
+    /// 退出频道或取消订阅。
+    /// </summary>
+    Task<bool> LeaveChannelAsync(int accountId, long channelId);
+
+    /// <summary>
+    /// 解散频道（需要频道创建者权限）。
+    /// </summary>
+    Task<bool> DisbandChannelAsync(int accountId, long channelId);
+
+    /// <summary>
     /// 导出频道加入链接：公开频道返回 t.me 链接；私密频道导出邀请链接（需要权限）。
     /// </summary>
     Task<string> ExportJoinLinkAsync(int accountId, long channelId);
@@ -68,9 +83,19 @@ public interface IChannelService
     Task<bool> UpdateChannelInfoAsync(int accountId, long channelId, string title, string? about);
 
     /// <summary>
+    /// 设置频道头像。
+    /// </summary>
+    Task<bool> SetChannelPhotoAsync(int accountId, long channelId, Stream fileStream, string fileName, CancellationToken cancellationToken = default);
+
+    /// <summary>
     /// 从频道踢出用户（通过 username），可选是否永久封禁
     /// </summary>
     Task<bool> KickUserAsync(int accountId, long channelId, string username, bool permanentBan = false);
+
+    /// <summary>
+    /// 从频道踢出用户（通过 userId），可选是否永久封禁
+    /// </summary>
+    Task<bool> KickUserByUserIdAsync(int accountId, long channelId, long userId, bool permanentBan = false);
 }
 
 /// <summary>

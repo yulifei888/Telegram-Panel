@@ -31,6 +31,22 @@
             <MudSelectItem Value='@("public")'>公开</MudSelectItem>
             <MudSelectItem Value='@("private")'>私密</MudSelectItem>
         </MudSelect>
+        <MudSelect @bind-Value="filterMembershipRole" @bind-Value:after="OnFiltersChanged" Label="账号角色" Variant="Variant.Outlined" Dense="true"
+                   Class="tp-input-full-xs" Style="min-width: 140px; flex: 0 1 180px;">
+            <MudSelectItem Value='@("all")'>全部角色</MudSelectItem>
+            <MudSelectItem Value='@("creator")'>创建者</MudSelectItem>
+            <MudSelectItem Value='@("admin")'>管理员</MudSelectItem>
+            <MudSelectItem Value='@("member")'>非管理员</MudSelectItem>
+        </MudSelect>
+        <MudSelect @bind-Value="filterGroupId" @bind-Value:after="OnFiltersChanged" Label="频道分类" Variant="Variant.Outlined" Dense="true"
+                   Class="tp-input-full-xs" Style="min-width: 160px; flex: 0 1 220px;">
+            <MudSelectItem Value='@(-1)'>全部分类</MudSelectItem>
+            <MudSelectItem Value='@(0)'>未分类</MudSelectItem>
+            @foreach (var group in groups)
+            {
+                <MudSelectItem Value="@group.Id">@group.Name</MudSelectItem>
+            }
+        </MudSelect>
         <MudTextField @bind-Value="searchString" Placeholder="搜索频道..." Adornment="Adornment.Start"
                       AdornmentIcon="@Icons.Material.Filled.Search" IconSize="Size.Medium" Class="mt-0 tp-input-full-xs"
                       Style="min-width: 200px; flex: 1; max-width: 400px;"
@@ -59,7 +75,10 @@
         <MudMenuItem Disabled="@(selectedChannels.Count == 0)" OnClick="BatchCopyInvitesSelected">批量复制邀请链接（已选）</MudMenuItem>
         <MudMenuItem Disabled="@(selectedChannels.Count == 0)" OnClick="BatchExportInvitesSelected">批量导出邀请链接（已选）</MudMenuItem>
         <MudMenuItem Disabled="@(selectedChannels.Count == 0)" OnClick="OpenBatchSetAdminsSelected">批量设置管理员（已选）</MudMenuItem>
-        <MudMenuItem Disabled="@(selectedChannels.Count == 0)" OnClick="OpenBatchSetGroupSelected">批量修改分组（已选）</MudMenuItem>
+        <MudMenuItem Disabled="@(selectedChannels.Count == 0)" OnClick="OpenBatchSetGroupSelected">批量修改分类（已选）</MudMenuItem>
+        <MudDivider />
+        <MudMenuItem Disabled="@(selectedChannels.Count == 0)" OnClick="LeaveSelectedChannels">批量退出频道（已选）</MudMenuItem>
+        <MudMenuItem Disabled="@(selectedChannels.Count == 0)" Icon="@Icons.Material.Filled.Warning" IconColor="Color.Error" OnClick="DisbandSelectedChannels">批量解散频道（已选）</MudMenuItem>
     </MudMenu>
 
     @if (selectedChannels.Count > 0)
@@ -81,7 +100,12 @@
                 <MudTh>频道名称</MudTh>
                 <MudTh>用户名</MudTh>
                 <MudTh>类型</MudTh>
+                <MudTh>频道分类</MudTh>
                 <MudTh>成员数</MudTh>
+                @if (filterAccount > 0)
+                {
+                    <MudTh>当前账号角色</MudTh>
+                }
                 <MudTh>创建账号</MudTh>
                 <MudTh>最后同步</MudTh>
                 <MudTh>操作</MudTh>
@@ -114,7 +138,20 @@
                         @(string.IsNullOrEmpty(context.Username) ? "私密" : "公开")
                     </MudChip>
                 </MudTd>
+                <MudTd DataLabel="频道分类">
+                    <MudChip T="string" Size="Size.Small" Color="@(context.GroupId.HasValue ? Color.Info : Color.Default)">
+                        @(context.Group?.Name ?? "未分类")
+                    </MudChip>
+                </MudTd>
                 <MudTd DataLabel="成员数">@context.MemberCount</MudTd>
+                @if (filterAccount > 0)
+                {
+                    <MudTd DataLabel="当前账号角色">
+                        <MudChip T="string" Size="Size.Small" Color="@GetCurrentAccountRoleColor(context)">
+                            @GetCurrentAccountRoleLabel(context)
+                        </MudChip>
+                    </MudTd>
+                }
                 <MudTd DataLabel="创建账号">
                     @if (context.CreatorAccount != null)
                     {
@@ -140,8 +177,11 @@
                              <MudMenuItem Icon="@Icons.Material.Filled.PersonAdd" OnClick="@(async () => await OpenInvite(context))">邀请成员</MudMenuItem>
                              <MudMenuItem Icon="@Icons.Material.Filled.AdminPanelSettings" OnClick="@(async () => await OpenSetAdmins(context))">设置管理员</MudMenuItem>
                              <MudMenuItem Icon="@Icons.Material.Filled.PersonRemove" OnClick="@(async () => await KickUser(context))">踢人</MudMenuItem>
+                             <MudMenuItem Icon="@Icons.Material.Filled.People" OnClick="@(async () => await ShowSystemAccounts(context))">本系统账号</MudMenuItem>
                              <MudMenuItem Icon="@Icons.Material.Filled.Link" OnClick="@(async () => await CopyLinkAsync(context))">复制链接</MudMenuItem>
                              <MudDivider />
+                             <MudMenuItem Icon="@Icons.Material.Filled.ExitToApp" OnClick="@(async () => await LeaveChannel(context))">退出频道</MudMenuItem>
+                             <MudMenuItem Icon="@Icons.Material.Filled.Warning" IconColor="Color.Error" OnClick="@(async () => await DisbandChannel(context))">解散频道</MudMenuItem>
                              <MudMenuItem Icon="@Icons.Material.Filled.Delete" IconColor="Color.Error" OnClick="@(() => DeleteChannel(context.Id))">删除频道</MudMenuItem>
                         </MudMenu>
                     </MudStack>
@@ -161,6 +201,9 @@
 </MudCard>
 
 @code {
+    [SupplyParameterFromQuery(Name = "accountId")]
+    public int? QueryAccountId { get; set; }
+
     private MudTable<Channel>? _table;
     private List<Channel> channels = new();
     private List<Account> accounts = new();
@@ -169,8 +212,11 @@
     private bool loading = true;
     private string searchString = "";
     private int filterAccount = 0;
+    private int filterGroupId = -1;
     private string filterType = "all";
+    private string filterMembershipRole = "all";
     private HashSet<Channel> selectedChannels = new();
+    private int? _lastAppliedQueryAccountId;
     private CancellationTokenSource? _searchDebounceCts;
 
     private SelectionToggleMode _selectionToggleMode = SelectionToggleMode.SelectAll;
@@ -194,6 +240,19 @@
     {
         await LoadAccounts();
         await LoadGroups();
+    }
+
+    protected override async Task OnParametersSetAsync()
+    {
+        var queryAccountId = QueryAccountId.GetValueOrDefault();
+        if (_lastAppliedQueryAccountId == queryAccountId)
+            return;
+
+        _lastAppliedQueryAccountId = queryAccountId;
+        filterAccount = queryAccountId > 0 ? queryAccountId : 0;
+
+        if (_table != null)
+            await ReloadTable();
     }
 
     private async Task LoadAccounts()
@@ -220,7 +279,7 @@
         }
         catch (Exception ex)
         {
-            Snackbar.Add($"加载分组失败：{ex.Message}", Severity.Error);
+            Snackbar.Add($"加载分类失败：{ex.Message}", Severity.Error);
         }
     }
 
@@ -230,8 +289,10 @@
         try
         {
             var (items, total) = await ChannelManagement.QueryChannelsForViewPagedAsync(
-                creatorAccountId: filterAccount,
+                accountId: filterAccount,
+                groupId: filterGroupId,
                 filterType: filterType,
+                membershipRole: filterMembershipRole,
                 search: searchString,
                 pageIndex: state.Page,
                 pageSize: state.PageSize,
@@ -347,6 +408,42 @@
         if (!string.IsNullOrWhiteSpace(username))
             return $"{namePart} (@{username})";
         return namePart;
+    }
+
+    private AccountChannel? GetCurrentAccountRelation(Channel channel)
+    {
+        if (filterAccount <= 0)
+            return null;
+
+        return channel.AccountChannels?
+            .Where(x => x.AccountId == filterAccount)
+            .OrderByDescending(x => x.IsCreator)
+            .ThenByDescending(x => x.IsAdmin)
+            .FirstOrDefault();
+    }
+
+    private string GetCurrentAccountRoleLabel(Channel channel)
+    {
+        var relation = GetCurrentAccountRelation(channel);
+        if (relation == null)
+            return "未同步";
+        if (relation.IsCreator)
+            return "创建者";
+        if (relation.IsAdmin)
+            return "管理员";
+        return "成员";
+    }
+
+    private Color GetCurrentAccountRoleColor(Channel channel)
+    {
+        var relation = GetCurrentAccountRelation(channel);
+        if (relation == null)
+            return Color.Default;
+        if (relation.IsCreator)
+            return Color.Success;
+        if (relation.IsAdmin)
+            return Color.Info;
+        return Color.Default;
     }
 
     private async Task OpenBatchInviteSelected()
@@ -513,15 +610,15 @@
 
     private int GuessDefaultExecuteAccountId(IReadOnlyList<Channel> targets)
     {
+        if (filterAccount > 0)
+            return filterAccount;
+
         if (targets.Count == 1)
         {
             var cid = targets[0].CreatorAccountId;
             if (cid != null && cid.Value > 0)
                 return cid.Value;
         }
-
-        if (filterAccount > 0)
-            return filterAccount;
 
         var ids = targets.Select(x => x.CreatorAccountId).Where(x => x != null && x.Value > 0).Select(x => x!.Value).Distinct().ToList();
         return ids.Count == 1 ? ids[0] : 0;
@@ -605,6 +702,14 @@
             await ReloadTable();
     }
 
+    private async Task ShowSystemAccounts(Channel channel)
+    {
+        var parameters = new DialogParameters { ["ChannelDbId"] = channel.Id };
+        var options = new DialogOptions { CloseOnEscapeKey = true, MaxWidth = MaxWidth.Medium, FullWidth = true };
+        DialogService.Show<ChannelSystemAccountsDialog>("本系统账号", parameters, options);
+        await Task.CompletedTask;
+    }
+
     private async Task OpenBatchSetGroupSelected()
     {
         var targets = selectedChannels.ToList();
@@ -623,7 +728,7 @@
             ["SelectedCount"] = targets.Count
         };
         var options = new DialogOptions { CloseOnEscapeKey = true, MaxWidth = MaxWidth.Small, FullWidth = true };
-        var dialog = DialogService.Show<BatchSetChannelGroupDialog>("批量修改分组", parameters, options);
+        var dialog = DialogService.Show<BatchSetChannelGroupDialog>("批量修改分类", parameters, options);
         var result = await dialog.Result;
         if (result is not { Canceled: false })
             return;
@@ -639,11 +744,11 @@
 
             selectedChannels.Clear();
             await ReloadTable();
-            Snackbar.Add($"分组已更新：{targets.Count} 个频道", Severity.Success);
+            Snackbar.Add($"分类已更新：{targets.Count} 个频道", Severity.Success);
         }
         catch (Exception ex)
         {
-            Snackbar.Add($"修改分组失败：{ex.Message}", Severity.Error);
+            Snackbar.Add($"修改分类失败：{ex.Message}", Severity.Error);
         }
         finally
         {
@@ -661,14 +766,14 @@
     {
         try
         {
-            var executeAccountId = channel.CreatorAccountId ?? filterAccount;
-            if (executeAccountId <= 0)
+            var executeAccountId = await ResolveChannelExecuteAccountIdAsync(channel);
+            if (executeAccountId is not > 0)
             {
-                Snackbar.Add("无法导出链接：请先选择账号或确保频道有创建账号", Severity.Warning);
+                Snackbar.Add("无法导出链接：该频道暂无可用执行账号，请先同步对应账号的频道数据", Severity.Warning);
                 return;
             }
 
-            var link = await ChannelService.ExportJoinLinkAsync(executeAccountId, channel.TelegramId);
+            var link = await ChannelService.ExportJoinLinkAsync(executeAccountId.Value, channel.TelegramId);
 
             await JS.InvokeVoidAsync("telegramPanel.copyText", link);
             Snackbar.Add("已复制链接", Severity.Success);
@@ -676,6 +781,208 @@
         catch (Exception ex)
         {
             Snackbar.Add($"复制失败：{ex.Message}", Severity.Error);
+        }
+    }
+
+    private async Task<int?> ResolveChannelExecuteAccountIdAsync(Channel channel)
+    {
+        return await ChannelManagement.ResolveExecuteAccountIdAsync(
+            channel,
+            preferredAccountId: filterAccount > 0 ? filterAccount : null);
+    }
+
+    private async Task<int?> ResolveChannelDisbandAccountIdAsync(Channel channel)
+    {
+        if (filterAccount > 0 && channel.CreatorAccountId == filterAccount)
+            return filterAccount;
+
+        if (channel.CreatorAccountId is > 0)
+            return channel.CreatorAccountId.Value;
+
+        return await ResolveChannelExecuteAccountIdAsync(channel);
+    }
+
+    private async Task<bool> ConfirmAdminPasswordAsync(string prompt, string confirmText)
+    {
+        var parameters = new DialogParameters
+        {
+            ["Prompt"] = prompt,
+            ["ConfirmText"] = confirmText
+        };
+        var options = new DialogOptions { CloseOnEscapeKey = true, MaxWidth = MaxWidth.Small, FullWidth = true };
+        var dialog = DialogService.Show<AdminPasswordConfirmDialog>("后台密码确认", parameters, options);
+        var result = await dialog.Result;
+        return result is { Canceled: false };
+    }
+
+    private void ShowBatchFailureWarnings(IReadOnlyList<string> failures, string actionName)
+    {
+        foreach (var failure in failures.Take(3))
+            Snackbar.Add($"{actionName}失败：{failure}", Severity.Warning);
+
+        if (failures.Count > 3)
+            Snackbar.Add($"另有 {failures.Count - 3} 条{actionName}失败，请重试或逐个处理", Severity.Warning);
+    }
+
+    private async Task LeaveChannel(Channel channel)
+    {
+        bool? result = await DialogService.ShowMessageBox(
+            "确认退出",
+            $"确定要让执行账号退出频道 {channel.Title} 吗？若系统内其他账号仍在该频道中，频道记录可能继续显示。",
+            yesText: "退出", cancelText: "取消");
+
+        if (result != true)
+            return;
+
+        try
+        {
+            var executeAccountId = await ResolveChannelExecuteAccountIdAsync(channel);
+            if (executeAccountId is not > 0)
+            {
+                Snackbar.Add("退出失败：该频道暂无可用执行账号", Severity.Warning);
+                return;
+            }
+
+            await ChannelService.LeaveChannelAsync(executeAccountId.Value, channel.TelegramId);
+            await ChannelManagement.RemoveAccountChannelAsync(channel.Id, executeAccountId.Value);
+            await ReloadTable();
+            Snackbar.Add($"已退出频道：{channel.Title}", Severity.Success);
+        }
+        catch (Exception ex)
+        {
+            Snackbar.Add($"退出失败：{ex.Message}", Severity.Error);
+        }
+    }
+
+    private async Task LeaveSelectedChannels()
+    {
+        var targets = selectedChannels.ToList();
+        if (targets.Count == 0)
+        {
+            Snackbar.Add("未选择任何频道", Severity.Info);
+            return;
+        }
+
+        bool? result = await DialogService.ShowMessageBox(
+            "确认批量退出",
+            $"确定要让执行账号退出选中的 {targets.Count} 个频道吗？若系统内其他账号仍在这些频道中，频道记录可能继续显示。",
+            yesText: "退出", cancelText: "取消");
+
+        if (result != true)
+            return;
+
+        loading = true;
+        var successCount = 0;
+        var failures = new List<string>();
+        try
+        {
+            foreach (var channel in targets)
+            {
+                try
+                {
+                    var executeAccountId = await ResolveChannelExecuteAccountIdAsync(channel);
+                    if (executeAccountId is not > 0)
+                        throw new InvalidOperationException("暂无可用执行账号");
+
+                    await ChannelService.LeaveChannelAsync(executeAccountId.Value, channel.TelegramId);
+                    await ChannelManagement.RemoveAccountChannelAsync(channel.Id, executeAccountId.Value);
+                    successCount++;
+                }
+                catch (Exception ex)
+                {
+                    failures.Add($"{channel.Title}：{ex.Message}");
+                }
+            }
+
+            selectedChannels.Clear();
+            await ReloadTable();
+            Snackbar.Add(
+                $"批量退出完成：成功 {successCount} 个，失败 {failures.Count} 个",
+                failures.Count == 0 ? Severity.Success : successCount > 0 ? Severity.Warning : Severity.Error);
+            ShowBatchFailureWarnings(failures, "退出频道");
+        }
+        finally
+        {
+            loading = false;
+        }
+    }
+
+    private async Task DisbandChannel(Channel channel)
+    {
+        var confirmed = await ConfirmAdminPasswordAsync(
+            $"确定要解散频道 {channel.Title} 吗？此操作会在 Telegram 侧删除频道，并从本地面板移除记录。",
+            "确认解散");
+        if (!confirmed)
+            return;
+
+        try
+        {
+            var executeAccountId = await ResolveChannelDisbandAccountIdAsync(channel);
+            if (executeAccountId is not > 0)
+            {
+                Snackbar.Add("解散失败：该频道暂无可用执行账号", Severity.Warning);
+                return;
+            }
+
+            await ChannelService.DisbandChannelAsync(executeAccountId.Value, channel.TelegramId);
+            await ChannelManagement.DeleteChannelAsync(channel.Id);
+            await ReloadTable();
+            Snackbar.Add($"已解散频道：{channel.Title}", Severity.Success);
+        }
+        catch (Exception ex)
+        {
+            Snackbar.Add($"解散失败：{ex.Message}", Severity.Error);
+        }
+    }
+
+    private async Task DisbandSelectedChannels()
+    {
+        var targets = selectedChannels.ToList();
+        if (targets.Count == 0)
+        {
+            Snackbar.Add("未选择任何频道", Severity.Info);
+            return;
+        }
+
+        var confirmed = await ConfirmAdminPasswordAsync(
+            $"确定要解散选中的 {targets.Count} 个频道吗？此操作会在 Telegram 侧删除频道，并从本地面板移除记录。",
+            "确认批量解散");
+        if (!confirmed)
+            return;
+
+        loading = true;
+        var successCount = 0;
+        var failures = new List<string>();
+        try
+        {
+            foreach (var channel in targets)
+            {
+                try
+                {
+                    var executeAccountId = await ResolveChannelDisbandAccountIdAsync(channel);
+                    if (executeAccountId is not > 0)
+                        throw new InvalidOperationException("暂无可用执行账号");
+
+                    await ChannelService.DisbandChannelAsync(executeAccountId.Value, channel.TelegramId);
+                    await ChannelManagement.DeleteChannelAsync(channel.Id);
+                    successCount++;
+                }
+                catch (Exception ex)
+                {
+                    failures.Add($"{channel.Title}：{ex.Message}");
+                }
+            }
+
+            selectedChannels.Clear();
+            await ReloadTable();
+            Snackbar.Add(
+                $"批量解散完成：成功 {successCount} 个，失败 {failures.Count} 个",
+                failures.Count == 0 ? Severity.Success : successCount > 0 ? Severity.Warning : Severity.Error);
+            ShowBatchFailureWarnings(failures, "解散频道");
+        }
+        finally
+        {
+            loading = false;
         }
     }
 

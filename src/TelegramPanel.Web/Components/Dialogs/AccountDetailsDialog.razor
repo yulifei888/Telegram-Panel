@@ -17,7 +17,8 @@
         else
         {
             <MudStack Spacing="3">
-                <MudTextField Value="@FormatCreatedAt()" Label="创建时间" ReadOnly="true" Variant="Variant.Outlined" />
+                <MudTextField Value="@FormatEstimatedRegistrationAt()" Label="注册时间（估算，非百分百正确）" ReadOnly="true" Variant="Variant.Outlined" />
+                <MudTextField Value="@FormatCreatedAt()" Label="导入时间" ReadOnly="true" Variant="Variant.Outlined" />
                 <MudTextField Value="@account.SessionPath" Label="Session 路径" ReadOnly="true" Variant="Variant.Outlined" />
 
                 <MudDivider Class="my-2" />
@@ -84,6 +85,11 @@
     private string FormatCreatedAt()
     {
         return account == null ? "-" : TimeZone.Format(account.CreatedAt, "yyyy-MM-dd HH:mm");
+    }
+
+    private string FormatEstimatedRegistrationAt()
+    {
+        return account == null ? "-" : TimeZone.Format(account.EstimatedRegistrationAt, "yyyy-MM-dd HH:mm", "-");
     }
 
     private string DisplayPassword()

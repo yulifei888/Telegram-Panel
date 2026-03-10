@@ -1,10 +1,13 @@
 @page "/bots/channels"
 @inject BotManagementService BotManagement
+@inject AccountManagementService AccountManagement
+@inject IChannelService ChannelService
 @inject TelegramPanel.Core.Services.Telegram.BotTelegramService BotTelegram
 @inject ISnackbar Snackbar
 @inject IDialogService DialogService
 @inject NavigationManager Navigation
 @inject IJSRuntime JS
+@using TelegramPanel.Core.Interfaces
 @using TelegramPanel.Data.Entities
 @using TelegramPanel.Web.Components.Dialogs
 
@@ -17,7 +20,7 @@
         <MudSelect T="int" Value="@selectedBotId" ValueChanged="@(async (int id) => await OnSelectedBotChanged(id))" Label="选择机器人"
                    Variant="Variant.Outlined" Dense="true" Class="tp-input-full-xs"
                    Style="min-width: 200px; flex: 1; max-width: 400px;">
-            <MudSelectItem Value="0">-- 请选择机器人 --</MudSelectItem>
+            <MudSelectItem Value="0">全部机器人</MudSelectItem>
             @foreach (var b in bots)
             {
                 <MudSelectItem Value="@b.Id">@b.Name</MudSelectItem>
@@ -26,7 +29,7 @@
 
         <MudSelect @bind-Value="filterCategoryId" @bind-Value:after="OnFiltersChanged" Label="分类" Variant="Variant.Outlined" Dense="true"
                    Class="tp-input-full-xs"
-                   Style="min-width: 160px; flex: 0 1 200px;" Disabled="@(selectedBotId <= 0)">
+                   Style="min-width: 160px; flex: 0 1 200px;" Disabled="@(bots.Count == 0)">
             <MudSelectItem Value="0">全部分类</MudSelectItem>
             <MudSelectItem Value="-1">未分类</MudSelectItem>
             @foreach (var c in categories)
@@ -35,33 +38,42 @@
             }
         </MudSelect>
 
+        <MudSelect @bind-Value="filterStatus" @bind-Value:after="OnFiltersChanged" Label="频道状态" Variant="Variant.Outlined" Dense="true"
+                   Class="tp-input-full-xs"
+                   Style="min-width: 160px; flex: 0 1 200px;" Disabled="@(bots.Count == 0)">
+            <MudSelectItem Value="0">全部状态</MudSelectItem>
+            <MudSelectItem Value="1">正常</MudSelectItem>
+            <MudSelectItem Value="2">异常</MudSelectItem>
+            <MudSelectItem Value="3">未检测</MudSelectItem>
+        </MudSelect>
+
         <MudIconButton Icon="@Icons.Material.Filled.Add" Color="Color.Primary" Size="Size.Small"
                        Title="新建分类" OnClick="OpenCreateCategoryDialog"
-                       Disabled="@(selectedBotId <= 0)" />
+                       Disabled="@(bots.Count == 0)" />
 
         <MudIconButton Icon="@Icons.Material.Filled.Edit" Color="Color.Default" Size="Size.Small"
                        Title="编辑当前分类" OnClick="OpenEditCategoryDialog"
-                       Disabled="@(selectedBotId <= 0 || filterCategoryId <= 0)" />
+                       Disabled="@(bots.Count == 0 || filterCategoryId <= 0)" />
 
         <MudIconButton Icon="@Icons.Material.Filled.Delete" Color="Color.Error" Size="Size.Small"
                        Title="删除当前分类" OnClick="DeleteSelectedCategoryAsync"
-                       Disabled="@(selectedBotId <= 0 || filterCategoryId <= 0)" />
+                       Disabled="@(bots.Count == 0 || filterCategoryId <= 0)" />
 
         <MudTextField @bind-Value="search" Placeholder="搜索频道..." Adornment="Adornment.Start"
                       AdornmentIcon="@Icons.Material.Filled.Search" IconSize="Size.Medium" Class="mt-0 tp-input-full-xs"
                       Style="min-width: 200px; flex: 1; max-width: 400px;"
-                      Immediate="true" Disabled="@(selectedBotId <= 0)" @bind-Value:after="OnSearchChanged" />
+                      Immediate="true" Disabled="@(bots.Count == 0)" @bind-Value:after="OnSearchChanged" />
     </MudStack>
 </MudPaper>
 
 <MudStack Row="true" Spacing="2" AlignItems="AlignItems.Center" Class="mb-2" Style="flex-wrap: wrap;">
     <MudButton Variant="Variant.Filled" Color="Color.Primary" StartIcon="@Icons.Material.Filled.Refresh"
-               Disabled="@(loading || selectedBotId <= 0)" OnClick="ReloadTable" Size="Size.Small">
+               Disabled="@(loading || bots.Count == 0)" OnClick="ReloadTable" Size="Size.Small">
         刷新
     </MudButton>
     
     <MudButton Variant="Variant.Outlined" Color="Color.Primary" StartIcon="@SelectionToggleIcon"
-               Disabled="@(loading || selectedBotId <= 0 || channels.Count == 0)" OnClick="CycleSelectionToggle" Size="Size.Small">
+               Disabled="@(loading || channels.Count == 0)" OnClick="CycleSelectionToggle" Size="Size.Small">
         @SelectionToggleText
     </MudButton>
     
@@ -71,13 +83,15 @@
     </MudButton>
 
     <MudMenu Label="批量操作" Variant="Variant.Outlined" Color="Color.Default" StartIcon="@Icons.Material.Filled.MoreHoriz"
-               Size="Size.Small" Disabled="@(loading || selectedBotId <= 0)" Dense="true" EndIcon="@Icons.Material.Filled.KeyboardArrowDown">
-        <MudMenuItem Disabled="@(selected.Count == 0)" OnClick="ExportInvites">导出邀请（已选）</MudMenuItem>
-        <MudMenuItem Disabled="@(selected.Count == 0)" OnClick="OpenBatchInviteMembers">批量邀请成员（已选）</MudMenuItem>
-        <MudMenuItem Disabled="@(selected.Count == 0)" OnClick="OpenBatchSetAdminsByAccount">批量设置管理员（账号执行）</MudMenuItem>
-        <MudMenuItem Disabled="@(selected.Count == 0)" OnClick="OpenSetAdmins">批量设置管理员（机器人/ID）</MudMenuItem>
-        <MudMenuItem Disabled="@(selected.Count == 0)" OnClick="OpenBatchSetCategory">批量设置分类（已选）</MudMenuItem>
-        <MudMenuItem Disabled="@(selected.Count == 0)" OnClick="OpenBanMember">踢出用户（已选）</MudMenuItem>
+               Size="Size.Small" Disabled="@(loading || bots.Count == 0)" Dense="true" EndIcon="@Icons.Material.Filled.KeyboardArrowDown">
+        <MudMenuItem Disabled="@(selected.Count == 0 || selectedBotId <= 0)" OnClick="CheckSelectedChannelsStatus">检测状态（已选）</MudMenuItem>
+        <MudMenuItem Disabled="@(selected.Count == 0 || selectedBotId <= 0)" OnClick="ExportInvites">导出邀请（已选）</MudMenuItem>
+        <MudMenuItem Disabled="@(selected.Count == 0 || selectedBotId <= 0)" OnClick="OpenBatchInviteMembers">批量邀请成员（已选）</MudMenuItem>
+        <MudMenuItem Disabled="@(selected.Count == 0 || selectedBotId <= 0)" OnClick="OpenBatchSetAdminsByAccount">批量设置管理员（账号执行）</MudMenuItem>
+        <MudMenuItem Disabled="@(selected.Count == 0 || selectedBotId <= 0)" OnClick="OpenSetAdmins">批量设置管理员（机器人/ID）</MudMenuItem>
+        <MudMenuItem Disabled="@(selected.Count == 0 || selectedBotId <= 0)" OnClick="OpenBatchSetCategory">批量设置分类（已选）</MudMenuItem>
+        <MudMenuItem Disabled="@(selected.Count == 0 || selectedBotId <= 0)" OnClick="OpenBanMember">踢出用户（已选）</MudMenuItem>
+        <MudMenuItem Disabled="@(selected.Count == 0)" OnClick="DeleteSelectedChannelsAsync">删除频道（已选）</MudMenuItem>
     </MudMenu>
 
     @if (selected.Count > 0)
@@ -99,6 +113,7 @@
                 <MudTh>频道名称</MudTh>
                 <MudTh>用户名</MudTh>
                 <MudTh>分类</MudTh>
+                <MudTh>频道状态</MudTh>
                 <MudTh>最后同步</MudTh>
                 <MudTh>操作</MudTh>
             </HeaderContent>
@@ -126,22 +141,37 @@
                         <MudText Typo="Typo.body2" Color="Color.Default">未分类</MudText>
                     }
                 </MudTd>
+                <MudTd DataLabel="频道状态">
+                    <MudTooltip Text="@GetChannelStatusTooltip(context)">
+                        <MudChip T="string" Size="Size.Small" Color="@GetChannelStatusColor(context)">
+                            @GetChannelStatusText(context)
+                        </MudChip>
+                    </MudTooltip>
+                </MudTd>
                 <MudTd DataLabel="最后同步"><PanelTime Value="context.SyncedAt" /></MudTd>
                 <MudTd DataLabel="操作">
                     <MudStack Row="true" Spacing="1" AlignItems="AlignItems.Center" Style="flex-wrap: wrap;">
+                        <MudIconButton Icon="@Icons.Material.Filled.Refresh" Size="Size.Small" Color="Color.Success"
+                                       Disabled="@(selectedBotId <= 0)"
+                                       OnClick="@(async () => await CheckSingleChannelStatus(context))" title="检测状态" />
                         <MudIconButton Icon="@Icons.Material.Filled.Link" Size="Size.Small" Color="Color.Info"
+                                       Disabled="@(selectedBotId <= 0)"
                                        OnClick="@(async () => await CopyLinkAsync(context))" Title="复制链接" />
                         <MudIconButton Icon="@Icons.Material.Filled.Info" Size="Size.Small" Color="Color.Default"
+                                       Disabled="@(selectedBotId <= 0)"
                                        OnClick="@(async () => await ShowDetailsAsync(context))" Title="查看详情" />
                         <MudIconButton Icon="@Icons.Material.Filled.Edit" Size="Size.Small" Color="Color.Primary"
+                                       Disabled="@(selectedBotId <= 0)"
                                        OnClick="@(async () => await EditChannelAsync(context))" Title="编辑频道" />
+                        <MudIconButton Icon="@Icons.Material.Filled.Delete" Size="Size.Small" Color="Color.Error"
+                                       OnClick="@(async () => await DeleteSingleChannelAsync(context))" title="删除频道" />
                     </MudStack>
                 </MudTd>
             </RowTemplate>
             <NoRecordsContent>
-                @if (selectedBotId <= 0)
+                @if (bots.Count == 0)
                 {
-                    <MudText>请先选择机器人</MudText>
+                    <MudText>暂无机器人</MudText>
                 }
                 else
                 {
@@ -172,6 +202,7 @@
     private HashSet<BotChannel> selected = new();
 
     private int filterCategoryId = 0;
+    private int filterStatus = 0;
     private string search = "";
     private bool _actionsExpanded = true;
     private CancellationTokenSource? _searchDebounceCts;
@@ -202,13 +233,9 @@
             if (BotIdQuery is > 0 && bots.Any(x => x.Id == BotIdQuery.Value))
             {
                 selectedBotId = BotIdQuery.Value;
-                await LoadBotData();
             }
-            else if (bots.Count == 1)
-            {
-                selectedBotId = bots[0].Id;
-                await LoadBotData();
-            }
+
+            await LoadBotData();
         }
         catch (Exception ex)
         {
@@ -227,16 +254,15 @@
 
         selectedBotId = botId;
         filterCategoryId = 0;
+        filterStatus = 0;
         search = "";
         selected.Clear();
 
         if (selectedBotId <= 0)
         {
             selectedBot = null;
-            categories.Clear();
-            channels.Clear();
-            totalCount = 0;
             Navigation.NavigateTo("/bots/channels", replace: true);
+            await LoadBotData();
             return;
         }
 
@@ -246,18 +272,21 @@
 
     private async Task LoadBotData()
     {
-        if (selectedBotId <= 0)
-            return;
-
         loading = true;
         try
         {
-            selectedBot = await BotManagement.GetBotAsync(selectedBotId);
-            if (selectedBot == null)
+            if (selectedBotId > 0)
             {
-                Snackbar.Add("机器人不存在", Severity.Error);
-                selectedBotId = 0;
-                return;
+                selectedBot = await BotManagement.GetBotAsync(selectedBotId);
+                if (selectedBot == null)
+                {
+                    Snackbar.Add("机器人不存在，已切回全部机器人视图", Severity.Warning);
+                    selectedBotId = 0;
+                }
+            }
+            else
+            {
+                selectedBot = null;
             }
 
             categories = (await BotManagement.GetCategoriesAsync()).ToList();
@@ -278,13 +307,11 @@
         loading = true;
         try
         {
-            if (selectedBotId <= 0)
-                return new TableData<BotChannel> { Items = Array.Empty<BotChannel>(), TotalItems = 0 };
-
             var (items, total) = await BotManagement.QueryChannelsPagedAsync(
                 botId: selectedBotId,
                 categoryId: filterCategoryId == -1 ? -1 : (filterCategoryId > 0 ? filterCategoryId : null),
                 search: search,
+                statusFilter: filterStatus,
                 pageIndex: state.Page,
                 pageSize: state.PageSize,
                 cancellationToken: cancellationToken);
@@ -367,9 +394,223 @@
         }
     }
 
-    private async Task OpenCreateCategoryDialog()
+    private async Task CheckSingleChannelStatus(BotChannel channel)
     {
         if (selectedBotId <= 0)
+            return;
+
+        loading = true;
+        try
+        {
+            var result = await BotTelegram.CheckChannelsStatusAsync(
+                selectedBotId,
+                new List<long> { channel.TelegramId },
+                CancellationToken.None);
+
+            if (result.FailedCount == 0)
+            {
+                Snackbar.Add($"频道“{channel.Title}”检测正常", Severity.Success);
+            }
+            else
+            {
+                var msg = result.Failures.TryGetValue(channel.TelegramId, out var err) ? err : "检测失败";
+                Snackbar.Add($"频道“{channel.Title}”检测异常：{msg}", Severity.Warning);
+            }
+
+            await ReloadTable();
+        }
+        catch (Exception ex)
+        {
+            Snackbar.Add($"检测失败：{ex.Message}", Severity.Error);
+        }
+        finally
+        {
+            loading = false;
+        }
+    }
+
+    private async Task CheckSelectedChannelsStatus()
+    {
+        if (selectedBotId <= 0)
+            return;
+
+        if (selected.Count == 0)
+        {
+            Snackbar.Add("请先选择频道", Severity.Info);
+            return;
+        }
+
+        bool? ok = await DialogService.ShowMessageBox(
+            "确认检测",
+            $"将检测 {selected.Count} 个频道的状态（发送一条探测消息并立即删除）。是否继续？",
+            yesText: "继续", cancelText: "取消");
+
+        if (ok != true)
+            return;
+
+        loading = true;
+        try
+        {
+            var ids = selected.Select(x => x.TelegramId).Distinct().ToList();
+            var result = await BotTelegram.CheckChannelsStatusAsync(selectedBotId, ids, CancellationToken.None);
+
+            if (result.FailedCount == 0)
+            {
+                Snackbar.Add($"检测完成：{result.SuccessCount} 个频道均正常", Severity.Success);
+            }
+            else
+            {
+                var first = result.Failures.FirstOrDefault();
+                var msg = $"检测完成：正常 {result.SuccessCount} 个，异常 {result.FailedCount} 个";
+                if (first.Key != 0)
+                    msg += $"（首个失败：{first.Value}）";
+                Snackbar.Add(msg, Severity.Warning);
+            }
+
+            await ReloadTable();
+        }
+        catch (Exception ex)
+        {
+            Snackbar.Add($"检测失败：{ex.Message}", Severity.Error);
+        }
+        finally
+        {
+            loading = false;
+        }
+    }
+
+    private async Task DeleteSingleChannelAsync(BotChannel channel)
+    {
+        var channelName = string.IsNullOrWhiteSpace(channel.Title) ? channel.TelegramId.ToString() : channel.Title;
+        var selectedBotIds = await SelectBotsForDeleteAsync(new[] { channel.TelegramId }, channelName);
+        if (selectedBotIds == null || selectedBotIds.Count == 0)
+            return;
+
+        loading = true;
+        try
+        {
+            var removed = await BotManagement.DeleteChannelBindingsByBotIdsAsync(channel.TelegramId, selectedBotIds);
+            if (removed > 0)
+                Snackbar.Add($"已删除频道绑定：{channelName}（删除 {removed} 条绑定）", Severity.Success);
+            else
+                Snackbar.Add($"未删除任何绑定：{channelName}（所选 Bot 可能未绑定该频道）", Severity.Info);
+            await ReloadTable();
+        }
+        catch (Exception ex)
+        {
+            Snackbar.Add($"删除失败：{ex.Message}", Severity.Error);
+        }
+        finally
+        {
+            loading = false;
+        }
+    }
+
+    private async Task DeleteSelectedChannelsAsync()
+    {
+        if (selected.Count == 0)
+        {
+            Snackbar.Add("请先选择频道", Severity.Info);
+            return;
+        }
+
+        var ids = selected.Select(x => x.TelegramId).Distinct().ToList();
+        var selectedBotIds = await SelectBotsForDeleteAsync(ids, null);
+        if (selectedBotIds == null || selectedBotIds.Count == 0)
+            return;
+
+        loading = true;
+        try
+        {
+            var success = 0;
+            var failed = 0;
+            var removedTotal = 0;
+
+            foreach (var chatId in ids)
+            {
+                try
+                {
+                    var removed = await BotManagement.DeleteChannelBindingsByBotIdsAsync(chatId, selectedBotIds);
+                    removedTotal += removed;
+                    success++;
+                }
+                catch
+                {
+                    failed++;
+                }
+            }
+
+            if (failed == 0)
+            {
+                Snackbar.Add($"批量删除完成：处理 {success} 个频道，删除绑定 {removedTotal} 条", Severity.Success);
+            }
+            else
+            {
+                Snackbar.Add($"批量删除完成：处理成功 {success} 个，失败 {failed} 个，删除绑定 {removedTotal} 条", Severity.Warning);
+            }
+
+            await ReloadTable();
+        }
+        catch (Exception ex)
+        {
+            Snackbar.Add($"批量删除失败：{ex.Message}", Severity.Error);
+        }
+        finally
+        {
+            loading = false;
+        }
+    }
+
+    private async Task<List<int>?> SelectBotsForDeleteAsync(IReadOnlyCollection<long> channelTelegramIds, string? singleChannelName)
+    {
+        var ids = channelTelegramIds.Where(x => x != 0).Distinct().ToList();
+        if (ids.Count == 0)
+            return null;
+
+        var botMap = new Dictionary<int, Bot>();
+        foreach (var telegramId in ids)
+        {
+            var boundBots = await BotManagement.GetChannelBoundBotsAsync(telegramId);
+            foreach (var bot in boundBots)
+            {
+                if (bot.Id > 0 && !botMap.ContainsKey(bot.Id))
+                    botMap[bot.Id] = bot;
+            }
+        }
+
+        if (botMap.Count == 0)
+        {
+            Snackbar.Add("未找到可删除的 Bot 绑定", Severity.Info);
+            return null;
+        }
+
+        var prompt = ids.Count == 1
+            ? $"频道“{singleChannelName ?? ids[0].ToString()}”当前绑定了以下 Bot，请勾选要删除的绑定："
+            : $"已选 {ids.Count} 个频道。请勾选要批量删除的 Bot 绑定（未绑定的频道会自动跳过）。";
+
+        var parameters = new DialogParameters
+        {
+            ["Prompt"] = prompt,
+            ["Bots"] = botMap.Values.OrderBy(x => x.Name, StringComparer.OrdinalIgnoreCase).ToList(),
+            ["CurrentBotId"] = selectedBotId
+        };
+        var options = new DialogOptions { CloseOnEscapeKey = true, MaxWidth = MaxWidth.Small, FullWidth = true };
+        var dialog = DialogService.Show<BotChannelDeleteBindingsDialog>("选择要删除的 Bot 绑定", parameters, options);
+        var result = await dialog.Result;
+        if (result.Canceled)
+            return null;
+
+        if (result.Data is List<int> selectedIds)
+            return selectedIds.Where(x => x > 0).Distinct().ToList();
+        if (result.Data is IReadOnlyList<int> selectedReadOnlyIds)
+            return selectedReadOnlyIds.Where(x => x > 0).Distinct().ToList();
+
+        return null;
+    }
+
+    private async Task OpenCreateCategoryDialog()
+    {
+        if (bots.Count == 0)
             return;
 
         var parameters = new DialogParameters();
@@ -394,7 +635,7 @@
 
     private async Task OpenEditCategoryDialog()
     {
-        if (selectedBotId <= 0)
+        if (bots.Count == 0)
             return;
 
         var cat = GetSelectedCategory();
@@ -420,7 +661,7 @@
 
     private async Task DeleteSelectedCategoryAsync()
     {
-        if (selectedBotId <= 0)
+        if (bots.Count == 0)
             return;
 
         var cat = GetSelectedCategory();
@@ -661,9 +902,11 @@
 
         var parameters = new DialogParameters
         {
+            ["BotId"] = selectedBotId,
+            ["Channels"] = selected.ToList(),
             ["SelectedCount"] = selected.Count
         };
-        var options = new DialogOptions { CloseOnEscapeKey = true, MaxWidth = MaxWidth.Small, FullWidth = true };
+        var options = new DialogOptions { CloseOnEscapeKey = true, MaxWidth = MaxWidth.Medium, FullWidth = true };
         var dialog = DialogService.Show<BotBanMemberDialog>("移除用户", parameters, options);
         var result = await dialog.Result;
 
@@ -672,29 +915,10 @@
             loading = true;
             try
             {
-                var channelTelegramIds = selected.Select(x => x.TelegramId).ToList();
-                var banResult = await BotTelegram.BanChatMemberAsync(
-                    selectedBotId,
-                    channelTelegramIds,
-                    request.UserId,
-                    request.PermanentBan,
-                    CancellationToken.None);
-
-                var actionText = request.PermanentBan ? "封禁" : "踢出";
-                if (banResult.Failures.Count == 0)
-                {
-                    Snackbar.Add($"已成功从 {banResult.SuccessCount} 个频道{actionText}用户 {request.UserId}", Severity.Success);
-                }
+                if (request.UseAccountExecution)
+                    await ExecuteBanByAccountAsync(request);
                 else
-                {
-                    var msg = $"成功：{banResult.SuccessCount} 个，失败：{banResult.Failures.Count} 个";
-                    if (banResult.Failures.Count > 0)
-                    {
-                        var firstError = banResult.Failures.First();
-                        msg += $"（首个失败原因：{firstError.Value}）";
-                    }
-                    Snackbar.Add(msg, Severity.Warning);
-                }
+                    await ExecuteBanByBotAsync(request);
 
                 selected.Clear();
             }
@@ -707,6 +931,184 @@
                 loading = false;
             }
         }
+    }
+
+    private async Task ExecuteBanByBotAsync(BotBanMemberDialog.BanUserRequest request)
+    {
+        if (request.UserId is null or <= 0)
+        {
+            Snackbar.Add("机器人执行仅支持用户 ID（纯数字）", Severity.Warning);
+            return;
+        }
+
+        var channelTelegramIds = selected.Select(x => x.TelegramId).Distinct().ToList();
+        var banResult = await BotTelegram.BanChatMemberAsync(
+            selectedBotId,
+            channelTelegramIds,
+            request.UserId.Value,
+            request.PermanentBan,
+            CancellationToken.None);
+
+        var actionText = request.PermanentBan ? "封禁" : "踢出";
+        if (banResult.Failures.Count == 0)
+        {
+            Snackbar.Add($"已成功从 {banResult.SuccessCount} 个频道{actionText}用户 {request.UserId}", Severity.Success);
+            return;
+        }
+
+        var message = $"成功：{banResult.SuccessCount} 个，失败：{banResult.Failures.Count} 个";
+        if (banResult.Failures.Count > 0)
+        {
+            var firstError = banResult.Failures.First();
+            message += $"（首个失败原因：{firstError.Value}）";
+        }
+        Snackbar.Add(message, Severity.Warning);
+    }
+
+    private async Task ExecuteBanByAccountAsync(BotBanMemberDialog.BanUserRequest request)
+    {
+        var targetChannels = selected
+            .Where(x => x != null)
+            .GroupBy(x => x.TelegramId)
+            .Select(x => x.First())
+            .ToList();
+        if (targetChannels.Count == 0)
+            return;
+
+        if (string.IsNullOrWhiteSpace(request.Username) && (request.UserId is null or <= 0))
+        {
+            Snackbar.Add("账号执行需要填写 @username 或用户 ID", Severity.Warning);
+            return;
+        }
+
+        var allAccounts = (await AccountManagement.GetAllAccountsAsync()).ToList();
+        var availableAccounts = allAccounts
+            .Where(x => x.IsActive && x.Category?.ExcludeFromOperations != true && x.UserId > 0)
+            .ToList();
+        var accountsById = availableAccounts.ToDictionary(x => x.Id);
+        var accountsByUserId = availableAccounts
+            .GroupBy(x => x.UserId)
+            .ToDictionary(x => x.Key, x => x.First());
+
+        var channelAdmins = new Dictionary<long, List<BotTelegramService.BotChatAdminInfo>>();
+        foreach (var channel in targetChannels)
+        {
+            try
+            {
+                channelAdmins[channel.TelegramId] = await BotTelegram.GetChatAdminsAsync(selectedBotId, channel.TelegramId, CancellationToken.None);
+            }
+            catch
+            {
+                channelAdmins[channel.TelegramId] = new List<BotTelegramService.BotChatAdminInfo>();
+            }
+        }
+
+        var failures = new Dictionary<long, string>();
+        var success = 0;
+        foreach (var channel in targetChannels)
+        {
+            var (executorId, reason) = ResolveBanExecutorAccountId(
+                channel,
+                request.SelectedAccountId,
+                channelAdmins,
+                accountsById,
+                accountsByUserId);
+
+            if (executorId == null)
+            {
+                failures[channel.TelegramId] = NormalizeReason(reason ?? "无可用执行账号");
+                continue;
+            }
+
+            try
+            {
+                if (!string.IsNullOrWhiteSpace(request.Username))
+                {
+                    await ChannelService.KickUserAsync(executorId.Value, channel.TelegramId, request.Username!, request.PermanentBan);
+                }
+                else if (request.UserId > 0)
+                {
+                    await ChannelService.KickUserByUserIdAsync(executorId.Value, channel.TelegramId, request.UserId.Value, request.PermanentBan);
+                }
+                else
+                {
+                    throw new InvalidOperationException("缺少可用的目标用户标识");
+                }
+
+                success++;
+            }
+            catch (Exception ex)
+            {
+                failures[channel.TelegramId] = NormalizeReason(ex.Message);
+            }
+        }
+
+        var actionText = request.PermanentBan ? "封禁" : "踢出";
+        var targetText = !string.IsNullOrWhiteSpace(request.Username)
+            ? $"@{request.Username}"
+            : request.UserId?.ToString() ?? "-";
+
+        if (failures.Count == 0)
+        {
+            Snackbar.Add($"已成功从 {success} 个频道{actionText}用户 {targetText}", Severity.Success);
+            return;
+        }
+
+        var summary = $"成功：{success} 个，失败：{failures.Count} 个";
+        if (failures.Count > 0)
+        {
+            var first = failures.First();
+            var channelTitle = targetChannels.FirstOrDefault(x => x.TelegramId == first.Key)?.Title ?? first.Key.ToString();
+            summary += $"（首个失败：{channelTitle}：{first.Value}）";
+        }
+        Snackbar.Add(summary, Severity.Warning);
+    }
+
+    private static (int? ExecutorId, string? Reason) ResolveBanExecutorAccountId(
+        BotChannel channel,
+        int selectedAccountId,
+        IReadOnlyDictionary<long, List<BotTelegramService.BotChatAdminInfo>> channelAdmins,
+        IReadOnlyDictionary<int, Account> accountsById,
+        IReadOnlyDictionary<long, Account> accountsByUserId)
+    {
+        if (!channelAdmins.TryGetValue(channel.TelegramId, out var admins) || admins.Count == 0)
+            return (null, "无法获取频道管理员列表（请确认 Bot 已加入且为管理员）");
+
+        if (selectedAccountId > 0)
+        {
+            if (!accountsById.TryGetValue(selectedAccountId, out var selected) || selected.UserId <= 0)
+                return (null, "所选执行账号无效");
+
+            var admin = admins.FirstOrDefault(x => x.UserId == selected.UserId);
+            if (admin == null)
+                return (null, "所选执行账号不是该频道管理员");
+
+            if (!admin.IsCreator && !admin.CanRestrictMembers)
+                return (null, "所选执行账号缺少“封禁用户”权限");
+
+            return (selected.Id, null);
+        }
+
+        var creator = admins.FirstOrDefault(x => x.IsCreator);
+        if (creator != null && accountsByUserId.TryGetValue(creator.UserId, out var creatorAcc))
+            return (creatorAcc.Id, null);
+
+        foreach (var admin in admins)
+        {
+            if (!admin.IsCreator && !admin.CanRestrictMembers)
+                continue;
+
+            if (accountsByUserId.TryGetValue(admin.UserId, out var account))
+                return (account.Id, null);
+        }
+
+        return (null, "无可用执行账号（需要该频道管理员且拥有“封禁用户”权限，并且在系统中存在）");
+    }
+
+    private static string NormalizeReason(string? reason)
+    {
+        var text = (reason ?? string.Empty).Trim();
+        return string.IsNullOrWhiteSpace(text) ? "失败" : text;
     }
 
     private async Task ShowDetailsAsync(BotChannel channel)
@@ -739,6 +1141,39 @@
         var result = await dialog.Result;
         if (!result.Canceled)
             await LoadBotData();
+    }
+
+    private static string GetChannelStatusText(BotChannel channel)
+    {
+        return channel.ChannelStatusOk switch
+        {
+            true => "正常",
+            false => "异常",
+            null => "未检测"
+        };
+    }
+
+    private static Color GetChannelStatusColor(BotChannel channel)
+    {
+        return channel.ChannelStatusOk switch
+        {
+            true => Color.Success,
+            false => Color.Error,
+            null => Color.Default
+        };
+    }
+
+    private static string GetChannelStatusTooltip(BotChannel channel)
+    {
+        if (channel.ChannelStatusOk == null)
+            return "尚未检测";
+
+        var checkedAt = channel.ChannelStatusCheckedAtUtc?.ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss") ?? "-";
+        if (channel.ChannelStatusOk == true)
+            return $"最近检测：{checkedAt}";
+
+        var err = string.IsNullOrWhiteSpace(channel.ChannelStatusError) ? "未知错误" : channel.ChannelStatusError;
+        return $"最近检测：{checkedAt}；失败原因：{err}";
     }
 
     private Task SelectAllFiltered()

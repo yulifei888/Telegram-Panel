@@ -1,6 +1,8 @@
 @page "/groups"
 @inject GroupManagementService GroupManagement
+@inject GroupCategoryManagementService GroupCategoryManagement
 @inject AccountManagementService AccountManagement
+@inject TelegramPanel.Web.Services.DataSyncService DataSync
 @inject IGroupService GroupService
 @inject ISnackbar Snackbar
 @inject IDialogService DialogService
@@ -13,26 +15,105 @@
 
 <MudText Typo="Typo.h4" Class="mb-4">群组列表</MudText>
 
+<MudPaper Class="pa-4 mb-4" Elevation="0" Outlined="true">
+    <MudStack Row="true" Spacing="2" AlignItems="AlignItems.Center" Style="flex-wrap: wrap;">
+        <MudSelect @bind-Value="filterAccount" @bind-Value:after="OnFiltersChanged" Label="筛选账号" Variant="Variant.Outlined" Dense="true"
+                   Class="tp-input-full-xs" Style="min-width: 200px; flex: 1; max-width: 400px;">
+            <MudSelectItem Value="0">全部账号</MudSelectItem>
+            @foreach (var account in accounts)
+            {
+                <MudSelectItem Value="@account.Id">@FormatAccountLabel(account)</MudSelectItem>
+            }
+        </MudSelect>
+        <MudSelect @bind-Value="filterType" @bind-Value:after="OnFiltersChanged" Label="群组类型" Variant="Variant.Outlined" Dense="true"
+                   Class="tp-input-full-xs" Style="min-width: 120px; flex: 0 1 150px;">
+            <MudSelectItem Value='@("all")'>全部</MudSelectItem>
+            <MudSelectItem Value='@("public")'>公开</MudSelectItem>
+            <MudSelectItem Value='@("private")'>私密</MudSelectItem>
+        </MudSelect>
+        <MudSelect @bind-Value="filterMembershipRole" @bind-Value:after="OnFiltersChanged" Label="账号角色" Variant="Variant.Outlined" Dense="true"
+                   Class="tp-input-full-xs" Style="min-width: 140px; flex: 0 1 180px;">
+            <MudSelectItem Value='@("all")'>全部角色</MudSelectItem>
+            <MudSelectItem Value='@("creator")'>我创建</MudSelectItem>
+            <MudSelectItem Value='@("admin")'>我管理</MudSelectItem>
+            <MudSelectItem Value='@("member")'>非管理员</MudSelectItem>
+        </MudSelect>
+        <MudSelect @bind-Value="filterCategoryId" @bind-Value:after="OnFiltersChanged" Label="群组分类" Variant="Variant.Outlined" Dense="true"
+                   Class="tp-input-full-xs" Style="min-width: 160px; flex: 0 1 220px;">
+            <MudSelectItem Value='@(-1)'>全部分类</MudSelectItem>
+            <MudSelectItem Value='@(0)'>未分类</MudSelectItem>
+            @foreach (var category in categories)
+            {
+                <MudSelectItem Value="@category.Id">@category.Name</MudSelectItem>
+            }
+        </MudSelect>
+        <MudTextField @bind-Value="searchString" Placeholder="搜索群组..." Adornment="Adornment.Start"
+                      AdornmentIcon="@Icons.Material.Filled.Search" IconSize="Size.Medium" Class="mt-0 tp-input-full-xs"
+                      Style="min-width: 200px; flex: 1; max-width: 400px;"
+                      Immediate="true" @bind-Value:after="OnSearchChanged" />
+    </MudStack>
+</MudPaper>
+
+<MudStack Row="true" Spacing="2" AlignItems="AlignItems.Center" Class="mb-2" Style="flex-wrap: wrap;">
+    <MudButton Variant="Variant.Outlined" Color="Color.Primary" StartIcon="@SelectionToggleIcon"
+               Disabled="@(loading || groups.Count == 0)" OnClick="CycleSelectionToggle" Size="Size.Small">
+        @SelectionToggleText
+    </MudButton>
+
+    <MudButton Variant="Variant.Outlined" Color="Color.Primary" StartIcon="@Icons.Material.Filled.Add"
+               Href="/groups/create" Size="Size.Small">
+        创建群组
+    </MudButton>
+    <MudButton Variant="Variant.Outlined" Color="Color.Default" StartIcon="@Icons.Material.Filled.Folder"
+               Href="/groups/categories" Size="Size.Small">
+        分类管理
+    </MudButton>
+
+    <MudButton Variant="Variant.Outlined" Color="Color.Info" StartIcon="@Icons.Material.Filled.Sync"
+               Disabled="@(loading || filterAccount <= 0)" OnClick="SyncCurrentAccountGroups" Size="Size.Small">
+        同步当前
+    </MudButton>
+    <MudButton Variant="Variant.Outlined" Color="Color.Info" StartIcon="@Icons.Material.Filled.Sync"
+               Disabled="@loading" OnClick="SyncAllAccountsGroups" Size="Size.Small">
+        同步全部
+    </MudButton>
+
+    <MudMenu Label="批量操作" Variant="Variant.Outlined" Color="Color.Default" StartIcon="@Icons.Material.Filled.MoreHoriz"
+             Size="Size.Small" Disabled="@loading" Dense="true" EndIcon="@Icons.Material.Filled.KeyboardArrowDown">
+        <MudMenuItem Disabled="@(selectedGroups.Count == 0)" OnClick="BatchCopyLinksSelected">批量复制加入链接（已选）</MudMenuItem>
+        <MudMenuItem Disabled="@(selectedGroups.Count == 0)" OnClick="BatchExportLinksSelected">批量导出加入链接（已选）</MudMenuItem>
+        <MudMenuItem Disabled="@(selectedGroups.Count == 0)" OnClick="OpenBatchSetCategorySelected">批量修改分类（已选）</MudMenuItem>
+        <MudDivider />
+        <MudMenuItem Disabled="@(selectedGroups.Count == 0)" OnClick="LeaveSelectedGroups">批量退出群组（已选）</MudMenuItem>
+        <MudMenuItem Disabled="@(selectedGroups.Count == 0)" Icon="@Icons.Material.Filled.Warning" IconColor="Color.Error" OnClick="DisbandSelectedGroups">批量解散群组（已选）</MudMenuItem>
+        <MudMenuItem Disabled="@(selectedGroups.Count == 0)" Icon="@Icons.Material.Filled.Delete" IconColor="Color.Error" OnClick="DeleteSelectedGroups">批量删除（已选）</MudMenuItem>
+    </MudMenu>
+
+    @if (selectedGroups.Count > 0)
+    {
+        <MudChip T="string" Size="Size.Small" Color="Color.Info" Class="ml-2">已选 @selectedGroups.Count</MudChip>
+    }
+    else
+    {
+        <MudText Typo="Typo.caption" Color="Color.Secondary" Class="ml-2">群组 (@totalCount)</MudText>
+    }
+</MudStack>
+
 <MudCard>
     <MudCardContent>
-        <MudTable Items="@groups" Hover="true" Breakpoint="Breakpoint.Sm" Loading="@loading" Filter="new Func<Group,bool>(FilterFunc)">
-            <ToolBarContent>
-                <MudText Typo="Typo.h6">我的群组 (@groups.Count)</MudText>
-                <MudSpacer />
-                <MudSelect @bind-Value="filterAccount" Label="筛选账号" Variant="Variant.Outlined" Dense="true" Class="mr-2" Style="min-width: 200px;">
-                    <MudSelectItem Value="0">全部账号</MudSelectItem>
-                    @foreach (var account in accounts)
-                    {
-                        <MudSelectItem Value="@account.Id">@account.DisplayPhone (@account.Username)</MudSelectItem>
-                    }
-                </MudSelect>
-                <MudTextField @bind-Value="searchString" Placeholder="搜索群组..." Adornment="Adornment.Start"
-                              AdornmentIcon="@Icons.Material.Filled.Search" IconSize="Size.Medium" Class="mt-0" />
-            </ToolBarContent>
+        <MudTable ServerData="LoadGroupsServerData" Hover="true" Breakpoint="Breakpoint.Sm" Loading="@loading"
+                  Class="tp-table"
+                  MultiSelection="true" @bind-SelectedItems="selectedGroups" @ref="_table">
             <HeaderContent>
                 <MudTh>群组名称</MudTh>
                 <MudTh>用户名</MudTh>
+                <MudTh>类型</MudTh>
+                <MudTh>群组分类</MudTh>
                 <MudTh>成员数</MudTh>
+                @if (filterAccount > 0)
+                {
+                    <MudTh>当前账号角色</MudTh>
+                }
                 <MudTh>创建账号</MudTh>
                 <MudTh>最后同步</MudTh>
                 <MudTh>操作</MudTh>
@@ -60,25 +141,53 @@
                         <span>-</span>
                     }
                 </MudTd>
+                <MudTd DataLabel="类型">
+                    <MudChip T="string" Size="Size.Small" Color="@(string.IsNullOrWhiteSpace(context.Username) ? Color.Default : Color.Primary)">
+                        @(string.IsNullOrWhiteSpace(context.Username) ? "私密" : "公开")
+                    </MudChip>
+                </MudTd>
+                <MudTd DataLabel="群组分类">
+                    <MudChip T="string" Size="Size.Small" Color="@(context.CategoryId.HasValue ? Color.Info : Color.Default)">
+                        @(context.Category?.Name ?? "未分类")
+                    </MudChip>
+                </MudTd>
                 <MudTd DataLabel="成员数">@context.MemberCount</MudTd>
+                @if (filterAccount > 0)
+                {
+                    <MudTd DataLabel="当前账号角色">
+                        <MudChip T="string" Size="Size.Small" Color="@GetCurrentAccountRoleColor(context)">
+                            @GetCurrentAccountRoleLabel(context)
+                        </MudChip>
+                    </MudTd>
+                }
                 <MudTd DataLabel="创建账号">
                     @if (context.CreatorAccount != null)
                     {
                         <span>@context.CreatorAccount.DisplayPhone</span>
                     }
-                    else
+                    else if (context.CreatorAccountId != null)
                     {
                         <span>账号 @context.CreatorAccountId</span>
+                    }
+                    else
+                    {
+                        <span>-</span>
                     }
                 </MudTd>
                 <MudTd DataLabel="最后同步"><PanelTime Value="context.SyncedAt" /></MudTd>
                 <MudTd DataLabel="操作">
-                    <MudMenu Icon="@Icons.Material.Filled.MoreVert" Size="Size.Small">
-                        <MudMenuItem Icon="@Icons.Material.Filled.Info" OnClick="@(() => ShowDetails(context))">查看详情</MudMenuItem>
-                        <MudMenuItem Icon="@Icons.Material.Filled.Link" OnClick="@(async () => await CopyLink(context))">复制链接</MudMenuItem>
-                        <MudDivider />
-                        <MudMenuItem Icon="@Icons.Material.Filled.Delete" IconColor="Color.Error" OnClick="@(() => DeleteGroup(context.Id))">删除群组</MudMenuItem>
-                    </MudMenu>
+                    <MudStack Row="true" Spacing="1" AlignItems="AlignItems.Center" Style="flex-wrap: wrap;">
+                        <MudIconButton Icon="@Icons.Material.Filled.Info" Size="Size.Small" Color="Color.Info"
+                                       OnClick="@(async () => await ShowDetails(context))" />
+                        <MudMenu Icon="@Icons.Material.Filled.MoreVert" Size="Size.Small" Dense="true">
+                            <MudMenuItem Icon="@Icons.Material.Filled.People" OnClick="@(async () => await ShowSystemAccounts(context))">本系统账号</MudMenuItem>
+                            <MudMenuItem Icon="@Icons.Material.Filled.Link" OnClick="@(async () => await CopyLinkAsync(context))">复制链接</MudMenuItem>
+                            <MudDivider />
+                            <MudMenuItem Icon="@Icons.Material.Filled.ExitToApp" OnClick="@(async () => await LeaveGroup(context))">退出群组</MudMenuItem>
+                            <MudMenuItem Icon="@Icons.Material.Filled.Warning" IconColor="Color.Error" OnClick="@(async () => await DisbandGroup(context))">解散群组</MudMenuItem>
+                            <MudMenuItem Icon="@Icons.Material.Filled.Delete" IconColor="Color.Error" OnClick="@(() => DeleteGroup(context.Id))">删除群组</MudMenuItem>
+                        </MudMenu>
+                    </MudStack>
                 </MudTd>
             </RowTemplate>
             <NoRecordsContent>
@@ -87,21 +196,66 @@
             <LoadingContent>
                 <MudProgressCircular Indeterminate="true" />
             </LoadingContent>
+            <PagerContent>
+                <MudTablePager PageSizeOptions="new int[] { 20, 50, 100, 200 }" />
+            </PagerContent>
         </MudTable>
     </MudCardContent>
 </MudCard>
 
 @code {
+    [SupplyParameterFromQuery(Name = "accountId")]
+    public int? QueryAccountId { get; set; }
+
+    private MudTable<Group>? _table;
     private List<Group> groups = new();
     private List<Account> accounts = new();
+    private List<GroupCategory> categories = new();
+    private int totalCount;
     private bool loading = true;
     private string searchString = "";
     private int filterAccount = 0;
+    private int filterCategoryId = -1;
+    private string filterType = "all";
+    private string filterMembershipRole = "all";
+    private HashSet<Group> selectedGroups = new();
+    private int? _lastAppliedQueryAccountId;
+    private CancellationTokenSource? _searchDebounceCts;
+
+    private SelectionToggleMode _selectionToggleMode = SelectionToggleMode.SelectAll;
+    private string SelectionToggleText => _selectionToggleMode switch
+    {
+        SelectionToggleMode.SelectAll => "全选本页",
+        SelectionToggleMode.Invert => "反选本页",
+        SelectionToggleMode.Clear => "清空选择",
+        _ => "全选本页"
+    };
+
+    private string SelectionToggleIcon => _selectionToggleMode switch
+    {
+        SelectionToggleMode.SelectAll => Icons.Material.Filled.SelectAll,
+        SelectionToggleMode.Invert => Icons.Material.Filled.Flip,
+        SelectionToggleMode.Clear => Icons.Material.Filled.Clear,
+        _ => Icons.Material.Filled.SelectAll
+    };
 
     protected override async Task OnInitializedAsync()
     {
         await LoadAccounts();
-        await LoadGroups();
+        await LoadCategories();
+    }
+
+    protected override async Task OnParametersSetAsync()
+    {
+        var queryAccountId = QueryAccountId.GetValueOrDefault();
+        if (_lastAppliedQueryAccountId == queryAccountId)
+            return;
+
+        _lastAppliedQueryAccountId = queryAccountId;
+        filterAccount = queryAccountId > 0 ? queryAccountId : 0;
+
+        if (_table != null)
+            await ReloadTable();
     }
 
     private async Task LoadAccounts()
@@ -119,17 +273,44 @@
         }
     }
 
-    private async Task LoadGroups()
+    private async Task LoadCategories()
+    {
+        try
+        {
+            var list = await GroupCategoryManagement.GetAllCategoriesAsync();
+            categories = list.ToList();
+        }
+        catch (Exception ex)
+        {
+            Snackbar.Add($"加载分类失败：{ex.Message}", Severity.Error);
+        }
+    }
+
+    private async Task<TableData<Group>> LoadGroupsServerData(TableState state, CancellationToken cancellationToken)
     {
         loading = true;
         try
         {
-            var groupList = await GroupManagement.GetAllGroupsAsync();
-            groups = groupList.ToList();
+            var (items, total) = await GroupManagement.QueryGroupsForViewPagedAsync(
+                accountId: filterAccount,
+                categoryId: filterCategoryId,
+                filterType: filterType,
+                membershipRole: filterMembershipRole,
+                search: searchString,
+                pageIndex: state.Page,
+                pageSize: state.PageSize,
+                cancellationToken: cancellationToken);
+
+            groups = items.ToList();
+            totalCount = total;
+            selectedGroups.Clear();
+
+            return new TableData<Group> { Items = groups, TotalItems = totalCount };
         }
         catch (Exception ex)
         {
             Snackbar.Add($"加载失败：{ex.Message}", Severity.Error);
+            return new TableData<Group> { Items = Array.Empty<Group>(), TotalItems = 0 };
         }
         finally
         {
@@ -137,35 +318,366 @@
         }
     }
 
-    private bool FilterFunc(Group group)
+    private async Task ReloadTable()
     {
-        if (filterAccount > 0 && group.CreatorAccountId != filterAccount)
-            return false;
-
-        if (string.IsNullOrWhiteSpace(searchString))
-            return true;
-
-        if (group.Title.Contains(searchString, StringComparison.OrdinalIgnoreCase))
-            return true;
-
-        if (group.Username?.Contains(searchString, StringComparison.OrdinalIgnoreCase) == true)
-            return true;
-
-        return false;
+        selectedGroups.Clear();
+        if (_table != null)
+            await _table.ReloadServerData();
     }
 
-    private void ShowDetails(Group group)
+    private Task SelectAllFiltered()
+    {
+        selectedGroups = groups.ToHashSet();
+        return Task.CompletedTask;
+    }
+
+    private Task InvertSelection()
+    {
+        var targets = groups.ToList();
+        foreach (var group in targets)
+        {
+            if (selectedGroups.Contains(group))
+                selectedGroups.Remove(group);
+            else
+                selectedGroups.Add(group);
+        }
+
+        return Task.CompletedTask;
+    }
+
+    private Task ClearSelection()
+    {
+        selectedGroups.Clear();
+        return Task.CompletedTask;
+    }
+
+    private async Task OnFiltersChanged()
+    {
+        await ReloadTable();
+    }
+
+    private async Task OnSearchChanged()
+    {
+        _searchDebounceCts?.Cancel();
+        _searchDebounceCts?.Dispose();
+        _searchDebounceCts = new CancellationTokenSource();
+
+        var token = _searchDebounceCts.Token;
+        try
+        {
+            await Task.Delay(300, token);
+            await ReloadTable();
+        }
+        catch (OperationCanceledException)
+        {
+            // ignore
+        }
+    }
+
+    private async Task CycleSelectionToggle()
+    {
+        switch (_selectionToggleMode)
+        {
+            case SelectionToggleMode.SelectAll:
+                await SelectAllFiltered();
+                _selectionToggleMode = SelectionToggleMode.Invert;
+                break;
+            case SelectionToggleMode.Invert:
+                await InvertSelection();
+                _selectionToggleMode = SelectionToggleMode.Clear;
+                break;
+            case SelectionToggleMode.Clear:
+                await ClearSelection();
+                _selectionToggleMode = SelectionToggleMode.SelectAll;
+                break;
+            default:
+                _selectionToggleMode = SelectionToggleMode.SelectAll;
+                break;
+        }
+    }
+
+    private enum SelectionToggleMode
+    {
+        SelectAll = 0,
+        Invert = 1,
+        Clear = 2
+    }
+
+    private static string FormatAccountLabel(Account account)
+    {
+        var nickname = string.IsNullOrWhiteSpace(account.Nickname) ? null : account.Nickname.Trim();
+        var username = string.IsNullOrWhiteSpace(account.Username) ? null : account.Username.Trim();
+
+        var namePart = nickname ?? account.Phone;
+        if (!string.IsNullOrWhiteSpace(username))
+            return $"{namePart} (@{username})";
+        return namePart;
+    }
+
+    private AccountGroup? GetCurrentAccountRelation(Group group)
+    {
+        if (filterAccount <= 0)
+            return null;
+
+        return group.AccountGroups?
+            .Where(x => x.AccountId == filterAccount)
+            .OrderByDescending(x => x.IsCreator)
+            .ThenByDescending(x => x.IsAdmin)
+            .FirstOrDefault();
+    }
+
+    private string GetCurrentAccountRoleLabel(Group group)
+    {
+        var relation = GetCurrentAccountRelation(group);
+        if (relation == null)
+            return "未同步";
+        if (relation.IsCreator)
+            return "创建者";
+        if (relation.IsAdmin)
+            return "管理员";
+        return "成员";
+    }
+
+    private Color GetCurrentAccountRoleColor(Group group)
+    {
+        var relation = GetCurrentAccountRelation(group);
+        if (relation == null)
+            return Color.Default;
+        if (relation.IsCreator)
+            return Color.Success;
+        if (relation.IsAdmin)
+            return Color.Info;
+        return Color.Default;
+    }
+
+    private async Task BatchCopyLinksSelected()
+    {
+        if (loading)
+            return;
+
+        var targets = selectedGroups.ToList();
+        if (targets.Count == 0)
+        {
+            Snackbar.Add("未选择任何群组", Severity.Info);
+            return;
+        }
+
+        bool? result = await DialogService.ShowMessageBox(
+            "确认复制",
+            $"将为 {targets.Count} 个群组生成加入链接并复制到剪贴板。是否继续？",
+            yesText: "继续", cancelText: "取消");
+
+        if (result != true)
+            return;
+
+        loading = true;
+        try
+        {
+            var lines = new List<string>
+            {
+                $"# ExportedAtUtc: {DateTime.UtcNow:O}",
+                "# Format: <TelegramId>\\t<Title>\\t<Link>",
+                ""
+            };
+
+            var ok = 0;
+            var skipped = 0;
+            var failed = 0;
+
+            foreach (var group in targets)
+            {
+                var executeAccountId = await GroupManagement.ResolveExecuteAccountIdAsync(
+                    group,
+                    preferredAccountId: filterAccount > 0 ? filterAccount : null);
+                if (executeAccountId is not > 0)
+                {
+                    skipped++;
+                    lines.Add($"{group.TelegramId}\t{group.Title}\t(无可用执行账号)");
+                    continue;
+                }
+
+                try
+                {
+                    var link = await GroupService.ExportJoinLinkAsync(executeAccountId.Value, group.TelegramId);
+                    ok++;
+                    lines.Add($"{group.TelegramId}\t{group.Title}\t{link}");
+                }
+                catch
+                {
+                    failed++;
+                    lines.Add($"{group.TelegramId}\t{group.Title}\t(无法生成/不可见/无权限)");
+                }
+            }
+
+            var text = string.Join(Environment.NewLine, lines);
+            await JS.InvokeVoidAsync("telegramPanel.copyText", text);
+            Snackbar.Add($"已复制加入链接：成功 {ok}/{targets.Count}，失败 {failed}/{targets.Count}，跳过 {skipped}/{targets.Count}", failed == 0 ? Severity.Success : Severity.Warning);
+        }
+        catch (Exception ex)
+        {
+            Snackbar.Add($"复制失败：{ex.Message}", Severity.Error);
+        }
+        finally
+        {
+            loading = false;
+        }
+    }
+
+    private async Task BatchExportLinksSelected()
+    {
+        if (loading)
+            return;
+
+        var targets = selectedGroups.ToList();
+        if (targets.Count == 0)
+        {
+            Snackbar.Add("未选择任何群组", Severity.Info);
+            return;
+        }
+
+        bool? result = await DialogService.ShowMessageBox(
+            "确认导出",
+            $"将为 {targets.Count} 个群组生成加入链接并导出。是否继续？",
+            yesText: "继续", cancelText: "取消");
+
+        if (result != true)
+            return;
+
+        var ids = string.Join(",", targets.Select(x => x.TelegramId));
+        var url = $"/downloads/groups/invites.txt?ids={Uri.EscapeDataString(ids)}";
+        if (filterAccount > 0)
+            url += $"&accountId={filterAccount}";
+
+        Navigation.NavigateTo(url, forceLoad: true);
+        await Task.CompletedTask;
+    }
+
+    private async Task OpenBatchSetCategorySelected()
+    {
+        var targets = selectedGroups.ToList();
+        if (targets.Count == 0)
+        {
+            Snackbar.Add("未选择任何群组", Severity.Info);
+            return;
+        }
+
+        if (categories.Count == 0)
+            await LoadCategories();
+
+        var parameters = new DialogParameters
+        {
+            ["Categories"] = categories,
+            ["SelectedCount"] = targets.Count
+        };
+        var options = new DialogOptions { CloseOnEscapeKey = true, MaxWidth = MaxWidth.Small, FullWidth = true };
+        var dialog = DialogService.Show<BatchSetGroupCategoryDialog>("批量修改分类", parameters, options);
+        var result = await dialog.Result;
+        if (result is not { Canceled: false })
+            return;
+
+        var categoryIdRaw = result.Data is int x ? x : 0;
+        int? categoryId = categoryIdRaw <= 0 ? null : categoryIdRaw;
+
+        loading = true;
+        try
+        {
+            foreach (var group in targets)
+                await GroupManagement.UpdateGroupCategoryAsync(group.Id, categoryId);
+
+            selectedGroups.Clear();
+            await ReloadTable();
+            Snackbar.Add($"分类已更新：{targets.Count} 个群组", Severity.Success);
+        }
+        catch (Exception ex)
+        {
+            Snackbar.Add($"修改分类失败：{ex.Message}", Severity.Error);
+        }
+        finally
+        {
+            loading = false;
+        }
+    }
+
+    private async Task SyncCurrentAccountGroups()
+    {
+        if (loading || filterAccount <= 0)
+            return;
+
+        loading = true;
+        try
+        {
+            var summary = await DataSync.SyncAccountAsync(filterAccount, CancellationToken.None);
+
+            foreach (var failure in summary.AccountFailures)
+                Snackbar.Add($"账号 {failure.Phone} 同步失败：{failure.Error}", Severity.Warning);
+
+            Snackbar.Add($"同步完成：{summary.TotalChannelsSynced} 个频道，{summary.TotalGroupsSynced} 个群组", summary.AccountFailures.Count == 0 ? Severity.Success : Severity.Warning);
+            await ReloadTable();
+        }
+        catch (Exception ex)
+        {
+            Snackbar.Add($"同步失败：{ex.Message}", Severity.Error);
+        }
+        finally
+        {
+            loading = false;
+        }
+    }
+
+    private async Task SyncAllAccountsGroups()
+    {
+        if (loading)
+            return;
+
+        loading = true;
+        try
+        {
+            var summary = await DataSync.SyncAllActiveAccountsAsync(CancellationToken.None);
+
+            foreach (var failure in summary.AccountFailures)
+                Snackbar.Add($"账号 {failure.Phone} 同步失败：{failure.Error}", Severity.Warning);
+
+            Snackbar.Add($"同步完成：{summary.TotalChannelsSynced} 个频道，{summary.TotalGroupsSynced} 个群组", summary.AccountFailures.Count == 0 ? Severity.Success : Severity.Warning);
+            await ReloadTable();
+        }
+        catch (Exception ex)
+        {
+            Snackbar.Add($"同步失败：{ex.Message}", Severity.Error);
+        }
+        finally
+        {
+            loading = false;
+        }
+    }
+
+    private async Task ShowDetails(Group group)
     {
         var parameters = new DialogParameters { ["GroupDbId"] = group.Id };
         var options = new DialogOptions { CloseOnEscapeKey = true, MaxWidth = MaxWidth.Large, FullWidth = true };
         DialogService.Show<GroupDetailsDialog>("群组详情", parameters, options);
+        await Task.CompletedTask;
     }
 
-    private async Task CopyLink(Group group)
+    private async Task ShowSystemAccounts(Group group)
+    {
+        var parameters = new DialogParameters { ["GroupDbId"] = group.Id };
+        var options = new DialogOptions { CloseOnEscapeKey = true, MaxWidth = MaxWidth.Medium, FullWidth = true };
+        DialogService.Show<GroupSystemAccountsDialog>("本系统账号", parameters, options);
+        await Task.CompletedTask;
+    }
+
+    private async Task CopyLinkAsync(Group group)
     {
         try
         {
-            var link = await GroupService.ExportJoinLinkAsync(group.CreatorAccountId, group.TelegramId);
+            var executeAccountId = await ResolveGroupExecuteAccountIdAsync(group);
+            if (executeAccountId is not > 0)
+            {
+                Snackbar.Add("无法导出链接：该群组暂无可用执行账号，请先同步对应账号的群组数据", Severity.Warning);
+                return;
+            }
+
+            var link = await GroupService.ExportJoinLinkAsync(executeAccountId.Value, group.TelegramId);
             await JS.InvokeVoidAsync("telegramPanel.copyText", link);
             Snackbar.Add("已复制链接", Severity.Success);
         }
@@ -175,10 +687,250 @@
         }
     }
 
+    private async Task<int?> ResolveGroupExecuteAccountIdAsync(Group group)
+    {
+        return await GroupManagement.ResolveExecuteAccountIdAsync(
+            group,
+            preferredAccountId: filterAccount > 0 ? filterAccount : null);
+    }
+
+    private async Task<int?> ResolveGroupDisbandAccountIdAsync(Group group)
+    {
+        if (filterAccount > 0 && group.CreatorAccountId == filterAccount)
+            return filterAccount;
+
+        if (group.CreatorAccountId is > 0)
+            return group.CreatorAccountId.Value;
+
+        return await ResolveGroupExecuteAccountIdAsync(group);
+    }
+
+    private async Task<bool> ConfirmAdminPasswordAsync(string prompt, string confirmText)
+    {
+        var parameters = new DialogParameters
+        {
+            ["Prompt"] = prompt,
+            ["ConfirmText"] = confirmText
+        };
+        var options = new DialogOptions { CloseOnEscapeKey = true, MaxWidth = MaxWidth.Small, FullWidth = true };
+        var dialog = DialogService.Show<AdminPasswordConfirmDialog>("后台密码确认", parameters, options);
+        var result = await dialog.Result;
+        return result is { Canceled: false };
+    }
+
+    private void ShowBatchFailureWarnings(IReadOnlyList<string> failures, string actionName)
+    {
+        foreach (var failure in failures.Take(3))
+            Snackbar.Add($"{actionName}失败：{failure}", Severity.Warning);
+
+        if (failures.Count > 3)
+            Snackbar.Add($"另有 {failures.Count - 3} 条{actionName}失败，请重试或逐个处理", Severity.Warning);
+    }
+
+    private async Task LeaveGroup(Group group)
+    {
+        bool? result = await DialogService.ShowMessageBox(
+            "确认退出",
+            $"确定要让执行账号退出群组 {group.Title} 吗？若系统内其他账号仍在该群组中，群组记录可能继续显示。",
+            yesText: "退出", cancelText: "取消");
+
+        if (result != true)
+            return;
+
+        try
+        {
+            var executeAccountId = await ResolveGroupExecuteAccountIdAsync(group);
+            if (executeAccountId is not > 0)
+            {
+                Snackbar.Add("退出失败：该群组暂无可用执行账号", Severity.Warning);
+                return;
+            }
+
+            await GroupService.LeaveGroupAsync(executeAccountId.Value, group.TelegramId);
+            await GroupManagement.RemoveAccountGroupAsync(group.Id, executeAccountId.Value);
+            await ReloadTable();
+            Snackbar.Add($"已退出群组：{group.Title}", Severity.Success);
+        }
+        catch (Exception ex)
+        {
+            Snackbar.Add($"退出失败：{ex.Message}", Severity.Error);
+        }
+    }
+
+    private async Task LeaveSelectedGroups()
+    {
+        var targets = selectedGroups.ToList();
+        if (targets.Count == 0)
+        {
+            Snackbar.Add("未选择任何群组", Severity.Info);
+            return;
+        }
+
+        bool? result = await DialogService.ShowMessageBox(
+            "确认批量退出",
+            $"确定要让执行账号退出选中的 {targets.Count} 个群组吗？若系统内其他账号仍在这些群组中，群组记录可能继续显示。",
+            yesText: "退出", cancelText: "取消");
+
+        if (result != true)
+            return;
+
+        loading = true;
+        var successCount = 0;
+        var failures = new List<string>();
+        try
+        {
+            foreach (var group in targets)
+            {
+                try
+                {
+                    var executeAccountId = await ResolveGroupExecuteAccountIdAsync(group);
+                    if (executeAccountId is not > 0)
+                        throw new InvalidOperationException("暂无可用执行账号");
+
+                    await GroupService.LeaveGroupAsync(executeAccountId.Value, group.TelegramId);
+                    await GroupManagement.RemoveAccountGroupAsync(group.Id, executeAccountId.Value);
+                    successCount++;
+                }
+                catch (Exception ex)
+                {
+                    failures.Add($"{group.Title}：{ex.Message}");
+                }
+            }
+
+            selectedGroups.Clear();
+            await ReloadTable();
+            Snackbar.Add(
+                $"批量退出完成：成功 {successCount} 个，失败 {failures.Count} 个",
+                failures.Count == 0 ? Severity.Success : successCount > 0 ? Severity.Warning : Severity.Error);
+            ShowBatchFailureWarnings(failures, "退出群组");
+        }
+        finally
+        {
+            loading = false;
+        }
+    }
+
+    private async Task DisbandGroup(Group group)
+    {
+        var confirmed = await ConfirmAdminPasswordAsync(
+            $"确定要解散群组 {group.Title} 吗？此操作会在 Telegram 侧删除群组，并从本地面板移除记录。",
+            "确认解散");
+        if (!confirmed)
+            return;
+
+        try
+        {
+            var executeAccountId = await ResolveGroupDisbandAccountIdAsync(group);
+            if (executeAccountId is not > 0)
+            {
+                Snackbar.Add("解散失败：该群组暂无可用执行账号", Severity.Warning);
+                return;
+            }
+
+            await GroupService.DisbandGroupAsync(executeAccountId.Value, group.TelegramId);
+            await GroupManagement.DeleteGroupAsync(group.Id);
+            await ReloadTable();
+            Snackbar.Add($"已解散群组：{group.Title}", Severity.Success);
+        }
+        catch (Exception ex)
+        {
+            Snackbar.Add($"解散失败：{ex.Message}", Severity.Error);
+        }
+    }
+
+    private async Task DisbandSelectedGroups()
+    {
+        var targets = selectedGroups.ToList();
+        if (targets.Count == 0)
+        {
+            Snackbar.Add("未选择任何群组", Severity.Info);
+            return;
+        }
+
+        var confirmed = await ConfirmAdminPasswordAsync(
+            $"确定要解散选中的 {targets.Count} 个群组吗？此操作会在 Telegram 侧删除群组，并从本地面板移除记录。",
+            "确认批量解散");
+        if (!confirmed)
+            return;
+
+        loading = true;
+        var successCount = 0;
+        var failures = new List<string>();
+        try
+        {
+            foreach (var group in targets)
+            {
+                try
+                {
+                    var executeAccountId = await ResolveGroupDisbandAccountIdAsync(group);
+                    if (executeAccountId is not > 0)
+                        throw new InvalidOperationException("暂无可用执行账号");
+
+                    await GroupService.DisbandGroupAsync(executeAccountId.Value, group.TelegramId);
+                    await GroupManagement.DeleteGroupAsync(group.Id);
+                    successCount++;
+                }
+                catch (Exception ex)
+                {
+                    failures.Add($"{group.Title}：{ex.Message}");
+                }
+            }
+
+            selectedGroups.Clear();
+            await ReloadTable();
+            Snackbar.Add(
+                $"批量解散完成：成功 {successCount} 个，失败 {failures.Count} 个",
+                failures.Count == 0 ? Severity.Success : successCount > 0 ? Severity.Warning : Severity.Error);
+            ShowBatchFailureWarnings(failures, "解散群组");
+        }
+        finally
+        {
+            loading = false;
+        }
+    }
+
+    private async Task DeleteSelectedGroups()
+    {
+        var targets = selectedGroups.ToList();
+        if (targets.Count == 0)
+        {
+            Snackbar.Add("未选择任何群组", Severity.Info);
+            return;
+        }
+
+        bool? result = await DialogService.ShowMessageBox(
+            "确认删除",
+            $"确定要删除选中的 {targets.Count} 个群组吗？此操作不可恢复。",
+            yesText: "删除", cancelText: "取消");
+
+        if (result != true)
+            return;
+
+        loading = true;
+        try
+        {
+            foreach (var group in targets)
+                await GroupManagement.DeleteGroupAsync(group.Id);
+
+            selectedGroups.Clear();
+            await ReloadTable();
+            Snackbar.Add($"删除成功：{targets.Count} 个群组", Severity.Success);
+        }
+        catch (Exception ex)
+        {
+            Snackbar.Add($"删除失败：{ex.Message}", Severity.Error);
+        }
+        finally
+        {
+            loading = false;
+        }
+    }
+
     private async Task DeleteGroup(int id)
     {
         var group = groups.FirstOrDefault(g => g.Id == id);
-        if (group == null) return;
+        if (group == null)
+            return;
 
         bool? result = await DialogService.ShowMessageBox(
             "确认删除",
@@ -190,7 +942,7 @@
             try
             {
                 await GroupManagement.DeleteGroupAsync(id);
-                groups.Remove(group);
+                await ReloadTable();
                 Snackbar.Add("删除成功", Severity.Success);
             }
             catch (Exception ex)

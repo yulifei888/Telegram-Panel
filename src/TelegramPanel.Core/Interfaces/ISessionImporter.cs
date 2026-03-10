@@ -15,7 +15,8 @@ public interface ISessionImporter
         int apiId,
         string apiHash,
         long? userId = null,
-        string? phoneHint = null);
+        string? phoneHint = null,
+        string? sessionKey = null);
 
     /// <summary>
     /// 批量导入Session文件

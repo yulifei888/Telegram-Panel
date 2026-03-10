@@ -1,0 +1,147 @@
+@namespace TelegramPanel.Web.Components.Dialogs
+@using TelegramPanel.Data.Entities
+
+<MudDialog>
+    <DialogContent>
+        <MudStack Spacing="2">
+            <MudText Typo="Typo.body2">@Prompt</MudText>
+
+            @if (options.Count == 0)
+            {
+                <MudAlert Severity="Severity.Info" Variant="Variant.Outlined">
+                    当前没有可删除的 Bot 绑定。
+                </MudAlert>
+            }
+            else
+            {
+                <MudStack Row="true" Spacing="1" AlignItems="AlignItems.Center" Style="flex-wrap: wrap;">
+                    <MudButton Variant="Variant.Outlined" Size="Size.Small" Color="Color.Primary"
+                               OnClick="SelectCurrentBot"
+                               Disabled="@(!options.Any(x => x.Id == CurrentBotId))">
+                        仅当前 Bot
+                    </MudButton>
+                    <MudButton Variant="Variant.Outlined" Size="Size.Small" Color="Color.Default" OnClick="SelectAll">
+                        全选
+                    </MudButton>
+                    <MudButton Variant="Variant.Outlined" Size="Size.Small" Color="Color.Default" OnClick="ClearAll">
+                        清空
+                    </MudButton>
+                    <MudSpacer />
+                    <MudChip T="string" Size="Size.Small" Color="Color.Info">
+                        已选 @selectedBotIds.Count / @options.Count
+                    </MudChip>
+                </MudStack>
+
+                <MudPaper Class="pa-2" Outlined="true">
+                    <MudStack Spacing="1">
+                        @foreach (var bot in options)
+                        {
+                            <MudCheckBox T="bool"
+                                         Label="@BuildBotLabel(bot)"
+                                         Value="@IsChecked(bot.Id)"
+                                         ValueChanged="@(value => SetChecked(bot.Id, value))" />
+                        }
+                    </MudStack>
+                </MudPaper>
+            }
+        </MudStack>
+    </DialogContent>
+    <DialogActions>
+        <MudButton Variant="Variant.Text" Color="Color.Default" OnClick="Cancel">取消</MudButton>
+        <MudButton Variant="Variant.Filled" Color="Color.Error" OnClick="Confirm"
+                   Disabled="@(options.Count == 0 || selectedBotIds.Count == 0)">
+            删除选中绑定
+        </MudButton>
+    </DialogActions>
+</MudDialog>
+
+@code {
+    [CascadingParameter] private MudDialogInstance MudDialog { get; set; } = default!;
+
+    [Parameter] public string Prompt { get; set; } = "";
+    [Parameter] public List<Bot> Bots { get; set; } = new();
+    [Parameter] public int CurrentBotId { get; set; }
+
+    private List<Bot> options = new();
+    private HashSet<int> selectedBotIds = new();
+
+    protected override void OnParametersSet()
+    {
+        options = (Bots ?? new List<Bot>())
+            .Where(x => x.Id > 0)
+            .GroupBy(x => x.Id)
+            .Select(x => x.First())
+            .OrderBy(x => x.Name, StringComparer.OrdinalIgnoreCase)
+            .ToList();
+
+        selectedBotIds = new HashSet<int>();
+        if (options.Count == 0)
+            return;
+
+        if (CurrentBotId > 0 && options.Any(x => x.Id == CurrentBotId))
+        {
+            selectedBotIds.Add(CurrentBotId);
+            return;
+        }
+
+        foreach (var bot in options)
+            selectedBotIds.Add(bot.Id);
+    }
+
+    private bool IsChecked(int botId) => selectedBotIds.Contains(botId);
+
+    private void SetChecked(int botId, bool selected)
+    {
+        if (selected)
+            selectedBotIds.Add(botId);
+        else
+            selectedBotIds.Remove(botId);
+    }
+
+    private void SelectCurrentBot()
+    {
+        selectedBotIds.Clear();
+        if (CurrentBotId > 0)
+            selectedBotIds.Add(CurrentBotId);
+    }
+
+    private void SelectAll()
+    {
+        selectedBotIds.Clear();
+        foreach (var bot in options)
+            selectedBotIds.Add(bot.Id);
+    }
+
+    private void ClearAll()
+    {
+        selectedBotIds.Clear();
+    }
+
+    private static string BuildBotLabel(Bot bot)
+    {
+        var name = string.IsNullOrWhiteSpace(bot.Name) ? $"Bot {bot.Id}" : bot.Name.Trim();
+        var username = string.IsNullOrWhiteSpace(bot.Username) ? null : "@" + bot.Username.Trim().TrimStart('@');
+        return string.IsNullOrWhiteSpace(username) ? name : $"{name}（{username}）";
+    }
+
+    private void Cancel()
+    {
+        MudDialog.Cancel();
+    }
+
+    private void Confirm()
+    {
+        var result = selectedBotIds
+            .Where(x => x > 0)
+            .OrderBy(x => x)
+            .ToList();
+
+        if (result.Count == 0)
+        {
+            MudDialog.Cancel();
+            return;
+        }
+
+        MudDialog.Close(DialogResult.Ok(result));
+    }
+}

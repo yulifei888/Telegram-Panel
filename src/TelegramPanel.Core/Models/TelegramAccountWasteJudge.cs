@@ -61,6 +61,21 @@ public static class TelegramAccountWasteJudge
             return true;
         }
 
+        // Session 冲突/撤销：实际使用中通常都需要重新登录生成新 session，否则无法稳定使用
+        if (summary.Contains("Session 冲突", StringComparison.OrdinalIgnoreCase)
+            || summary.Contains("AUTH_KEY_DUPLICATED", StringComparison.OrdinalIgnoreCase))
+        {
+            reason = "Session 冲突";
+            return true;
+        }
+
+        if (summary.Contains("Session 已被撤销", StringComparison.OrdinalIgnoreCase)
+            || summary.Contains("SESSION_REVOKED", StringComparison.OrdinalIgnoreCase))
+        {
+            reason = "Session 已被撤销";
+            return true;
+        }
+
         if (summary.Contains("Session 无法读取", StringComparison.OrdinalIgnoreCase)
             || summary.Contains("Can't read session block", StringComparison.OrdinalIgnoreCase))
         {

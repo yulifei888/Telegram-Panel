@@ -311,7 +311,7 @@
         var root = await LoadOrCreateLocalConfigAsync();
         var external = EnsureObject(root, "ExternalApi");
 
-        var options = new JsonSerializerOptions { WriteIndented = true };
+        var options = LocalConfigFile.CreateIndentedJsonSerializerOptions();
         external["Apis"] = JsonSerializer.SerializeToNode(list, options) ?? new JsonArray();
 
         await SaveLocalConfigAsync(root);
@@ -333,7 +333,7 @@
 
     private async Task SaveLocalConfigAsync(JsonObject root)
     {
-        var json = root.ToJsonString(new JsonSerializerOptions { WriteIndented = true });
+        var json = LocalConfigFile.ToIndentedJson(root);
         var path = LocalConfigPath;
         await LocalConfigFile.EnsureExistsAsync(path);
         await LocalConfigFile.WriteJsonAtomicallyAsync(path, json);

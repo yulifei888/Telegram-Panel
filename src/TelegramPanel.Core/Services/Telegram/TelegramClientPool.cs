@@ -5,6 +5,8 @@ using System.Threading;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging;
 using TelegramPanel.Core.Interfaces;
+using TelegramPanel.Core.Models;
+using TL;
 using WTelegram;
 
 namespace TelegramPanel.Core.Services.Telegram;
@@ -19,13 +21,19 @@ public class TelegramClientPool : ITelegramClientPool, IDisposable
     private readonly ConcurrentDictionary<int, SemaphoreSlim> _locks = new();
     private readonly IConfiguration _configuration;
     private readonly ILogger<TelegramClientPool> _logger;
+    private readonly TelegramAccountUpdateHub _updateHub;
     private bool _disposed;
     private static int _wtelegramLogConfigured;
+    private readonly ConcurrentDictionary<int, UpdateManager> _updateManagers = new();
 
-    public TelegramClientPool(IConfiguration configuration, ILogger<TelegramClientPool> logger)
+    public TelegramClientPool(
+        IConfiguration configuration,
+        ILogger<TelegramClientPool> logger,
+        TelegramAccountUpdateHub updateHub)
     {
         _configuration = configuration;
         _logger = logger;
+        _updateHub = updateHub;
         ConfigureWTelegramLoggingOnce();
     }
 
@@ -99,6 +107,10 @@ public class TelegramClientPool : ITelegramClientPool, IDisposable
             var client = new Client(Config);
             TryRebindApiIdForLoadedSession(client, apiId);
 
+            UpdateManager? updateManager = null;
+            updateManager = client.WithUpdateManager(update => HandleTelegramUpdateAsync(accountId, updateManager!, update));
+            _updateManagers[accountId] = updateManager;
+
             // 设置日志回调
             client.OnOther += (update) =>
             {
@@ -149,6 +161,7 @@ public class TelegramClientPool : ITelegramClientPool, IDisposable
         if (_clients.TryRemove(accountId, out var client))
         {
             _logger.LogInformation("Removing Telegram client for account {AccountId}", accountId);
+            _updateManagers.TryRemove(accountId, out _);
 
             try
             {
@@ -184,6 +197,7 @@ public class TelegramClientPool : ITelegramClientPool, IDisposable
         }
 
         _clients.Clear();
+        _updateManagers.Clear();
 
         foreach (var lockObj in _locks.Values)
         {
@@ -282,15 +296,92 @@ public class TelegramClientPool : ITelegramClientPool, IDisposable
                 return;
             }
 
-            if (message.Contains("exception", StringComparison.OrdinalIgnoreCase)
-                || message.Contains("unhandled", StringComparison.OrdinalIgnoreCase)
-                || message.Contains("fatal", StringComparison.OrdinalIgnoreCase))
-            {
-                _logger.LogError("WTelegram({Level}): {Message}", level, message);
-                return;
-            }
-
             _logger.LogDebug("WTelegram({Level}): {Message}", level, message);
         };
+    }
+
+    private async Task HandleTelegramUpdateAsync(int accountId, UpdateManager updateManager, Update update)
+    {
+        switch (update)
+        {
+            case UpdateNewChannelMessage { message: Message message }:
+                await PublishMessageUpdateAsync(accountId, updateManager, message, isEdited: false);
+                return;
+            case UpdateNewMessage { message: Message message }:
+                await PublishMessageUpdateAsync(accountId, updateManager, message, isEdited: false);
+                return;
+            case UpdateEditChannelMessage { message: Message message }:
+                await PublishMessageUpdateAsync(accountId, updateManager, message, isEdited: true);
+                return;
+            case UpdateEditMessage { message: Message message }:
+                await PublishMessageUpdateAsync(accountId, updateManager, message, isEdited: true);
+                return;
+        }
+    }
+
+    private async Task PublishMessageUpdateAsync(int accountId, UpdateManager updateManager, Message message, bool isEdited)
+    {
+        try
+        {
+            var senderUserId = (message.from_id as PeerUser)?.user_id;
+            User? sender = null;
+            if (senderUserId.HasValue
+                && updateManager.Users.TryGetValue(senderUserId.Value, out var userBase)
+                && userBase is User user)
+            {
+                sender = user;
+            }
+
+            var buttons = ExtractInlineButtons(message.reply_markup);
+            var reply = message.reply_to as MessageReplyHeader;
+            var update = new TelegramAccountMessageUpdate(
+                AccountId: accountId,
+                ReceivedAtUtc: DateTimeOffset.UtcNow,
+                IsEdited: isEdited,
+                Message: message,
+                SenderUserId: senderUserId,
+                SenderUsername: sender?.username,
+                SenderIsBot: sender?.IsBot == true,
+                ReplyToMessageId: reply?.reply_to_msg_id,
+                ThreadId: reply?.reply_to_top_id,
+                Buttons: buttons);
+
+            await _updateHub.PublishAsync(update);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogDebug(ex, "Failed to publish Telegram message update (accountId={AccountId}, messageId={MessageId})", accountId, message.id);
+        }
+    }
+
+    private static IReadOnlyList<TelegramInlineButton> ExtractInlineButtons(ReplyMarkup? replyMarkup)
+    {
+        if (replyMarkup is not ReplyInlineMarkup inlineMarkup || inlineMarkup.rows == null || inlineMarkup.rows.Length == 0)
+            return Array.Empty<TelegramInlineButton>();
+
+        var result = new List<TelegramInlineButton>();
+        var index = 0;
+        for (var rowIndex = 0; rowIndex < inlineMarkup.rows.Length; rowIndex++)
+        {
+            var row = inlineMarkup.rows[rowIndex];
+            var buttons = row?.buttons;
+            if (buttons == null || buttons.Length == 0)
+                continue;
+
+            for (var columnIndex = 0; columnIndex < buttons.Length; columnIndex++)
+            {
+                if (buttons[columnIndex] is not KeyboardButtonCallback callback)
+                    continue;
+
+                var text = (callback.text ?? string.Empty).Trim();
+                if (text.Length == 0 || callback.data == null || callback.data.Length == 0)
+                    continue;
+
+                result.Add(new TelegramInlineButton(index, rowIndex, columnIndex, text, callback.data));
+                index++;
+            }
+        }
+
+        return result;
     }
 }

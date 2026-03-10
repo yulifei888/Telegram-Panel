@@ -1,9 +1,11 @@
-using Microsoft.Extensions.Logging;
+using System.Linq;
 using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.Logging;
 using TelegramPanel.Core.Interfaces;
 using TelegramPanel.Core.Models;
 using TelegramPanel.Core.Services;
 using TL;
+using WTelegram;
 
 namespace TelegramPanel.Core.Services.Telegram;
 
@@ -31,84 +33,581 @@ public class GroupService : IGroupService
 
     public async Task<List<GroupInfo>> GetOwnedGroupsAsync(int accountId)
     {
+        var groups = await GetVisibleGroupsAsync(accountId);
+        return groups.Where(x => x.IsCreator).ToList();
+    }
+
+    public async Task<GroupInfo> CreateGroupAsync(int accountId, string title, string about, bool isPublic = false, string? username = null)
+    {
         var client = await GetOrCreateConnectedClientAsync(accountId);
 
-        var ownedGroups = new List<GroupInfo>();
-        var dialogs = await client.Messages_GetAllDialogs();
+        _logger.LogInformation("Creating group '{Title}' for account {AccountId}", title, accountId);
 
-        foreach (var (id, chat) in dialogs.chats)
+        if (isPublic)
         {
-            // 处理基础群组（Chat类型，非Channel）
-            // 注意：基础 Chat 类型无法直接判断创建者，需要通过 GetFullChat 获取
+            username = username?.Trim().TrimStart('@');
+            if (string.IsNullOrWhiteSpace(username))
+                throw new InvalidOperationException("公开群组需要设置用户名");
+        }
+
+        UpdatesBase updates;
+        try
+        {
+            updates = await client.Channels_CreateChannel(
+                title: title,
+                about: about,
+                broadcast: false,
+                megagroup: true
+            );
+        }
+        catch (RpcException ex) when (ex.Code == 420 && string.Equals(ex.Message, "FROZEN_METHOD_INVALID", StringComparison.OrdinalIgnoreCase))
+        {
+            throw new InvalidOperationException(
+                "Telegram 返回 FROZEN_METHOD_INVALID：当前 ApiId/ApiHash 或账号被 Telegram 限制调用创建群组接口。" +
+                "建议：在【系统设置】更换全局 ApiId/ApiHash（推荐使用你自己在 my.telegram.org 申请的），" +
+                "并重新导入/重新登录生成 session 后再试。",
+                ex);
+        }
+
+        var group = updates.Chats.Values.OfType<Channel>().FirstOrDefault(c => !c.IsChannel)
+            ?? throw new InvalidOperationException("群组创建失败");
+
+        if (isPublic && !string.IsNullOrWhiteSpace(username))
+        {
+            var available = await client.Channels_CheckUsername(group, username);
+            if (!available)
+                throw new InvalidOperationException($"用户名 '{username}' 不可用");
+
+            try
+            {
+                await client.Channels_UpdateUsername(group, username);
+            }
+            catch (RpcException ex) when (ex.Message.Contains("USERNAME_NOT_MODIFIED", StringComparison.OrdinalIgnoreCase))
+            {
+                // 视为成功
+            }
+        }
+
+        return new GroupInfo
+        {
+            TelegramId = group.id,
+            AccessHash = group.access_hash,
+            Title = group.title,
+            Username = isPublic ? username : group.MainUsername,
+            MemberCount = 0,
+            About = about,
+            CreatorAccountId = accountId,
+            IsCreator = true,
+            IsAdmin = true,
+            CreatedAt = group.date,
+            SyncedAt = DateTime.UtcNow
+        };
+    }
+
+    public async Task<List<GroupInfo>> GetVisibleGroupsAsync(int accountId, CancellationToken cancellationToken = default)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+
+        var client = await GetOrCreateConnectedClientAsync(accountId, cancellationToken);
+
+        var groups = new List<GroupInfo>();
+        var dialogs = await ExecuteTelegramRequestAsync(
+            accountId,
+            "拉取频道/群组对话列表",
+            () => client.Messages_GetAllDialogs(),
+            cancellationToken,
+            resetClientOnTimeout: true);
+
+        foreach (var (_, chat) in dialogs.chats)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            // 基础群组（Chat 类型，非 Channel）
             if (chat is Chat basicChat && basicChat.IsActive)
             {
+                var memberCount = (int)basicChat.participants_count;
+                var about = ReadString(basicChat, null, "about", "About");
+                var username = ReadString(basicChat, null, "username", "Username", "MainUsername");
+                var isCreator = false;
+                var isAdmin = false;
+
                 try
                 {
-                    // 获取完整信息来判断是否为创建者
-                    var fullChat = await client.Messages_GetFullChat(basicChat.id);
-                    if (fullChat.full_chat is ChatFull cf && cf.participants is ChatParticipants cp)
+                    var fullChat = await ExecuteTelegramRequestAsync(
+                        accountId,
+                        $"拉取基础群详情({basicChat.id})",
+                        () => client.Messages_GetFullChat(basicChat.id),
+                        cancellationToken,
+                        resetClientOnTimeout: false);
+                    if (fullChat.full_chat is ChatFull cf)
                     {
-                        // 检查当前用户是否为创建者
-                        var creator = cp.participants.OfType<ChatParticipantCreator>()
-                            .FirstOrDefault(p => p.user_id == client.User!.id);
-                        if (creator != null)
+                        about = ReadString(cf, about, "about", "About");
+                        memberCount = Math.Max(memberCount, ReadInt(cf, memberCount, "participants_count", "ParticipantsCount", "participantsCount"));
+
+                        if (cf.participants is ChatParticipants cp)
                         {
-                            ownedGroups.Add(new GroupInfo
-                            {
-                                TelegramId = basicChat.id,
-                                Title = basicChat.title,
-                                MemberCount = basicChat.participants_count,
-                                CreatorAccountId = accountId,
-                                SyncedAt = DateTime.UtcNow
-                            });
+                            memberCount = Math.Max(memberCount, cp.participants.Count());
+                            var self = cp.participants.FirstOrDefault(p => GetChatParticipantUserId(p) == client.User!.id);
+                            isCreator = self is ChatParticipantCreator;
+                            isAdmin = isCreator || self is ChatParticipantAdmin;
                         }
                     }
                 }
                 catch (Exception ex)
                 {
-                    _logger.LogWarning(ex, "Failed to get full chat info for {ChatId}", basicChat.id);
+                    if (TryGetFloodWaitSeconds(ex.Message, out var seconds))
+                    {
+                        _logger.LogWarning("GetFullChat hit rate limit, retry after {Seconds}s (chatId={ChatId})", seconds, basicChat.id);
+                        await Task.Delay(TimeSpan.FromSeconds(seconds));
+                    }
+                    else
+                    {
+                        _logger.LogWarning("Failed to get full chat info for {ChatId}: {Error}", basicChat.id, ex.Message);
+                        _logger.LogDebug(ex, "GetFullChat debug details (chatId={ChatId})", basicChat.id);
+                    }
                 }
+
+                groups.Add(new GroupInfo
+                {
+                    TelegramId = basicChat.id,
+                    Title = basicChat.title,
+                    Username = username,
+                    MemberCount = memberCount,
+                    About = about,
+                    CreatorAccountId = isCreator ? accountId : null,
+                    IsCreator = isCreator,
+                    IsAdmin = isAdmin,
+                    SyncedAt = DateTime.UtcNow
+                });
+
+                continue;
             }
-            // 处理超级群组（Channel类型但megagroup=true, 即 !IsChannel）
-            else if (chat is Channel channel && channel.IsActive && !channel.IsChannel)
+
+            // 超级群组（Channel 类型但 megagroup=true，即 !IsChannel）
+            if (chat is not Channel channel || !channel.IsActive || channel.IsChannel)
+                continue;
+
+            try
             {
+                var isCreator =
+                    ReadBool(channel, "creator", "Creator", "is_creator", "IsCreator")
+                    || ReadFlagsHas(channel, flagName: "creator", memberNames: new[] { "flags", "Flags" });
+                var adminRights = ReadObject(channel, "admin_rights", "AdminRights", "adminRights");
+                var isAdmin = isCreator || adminRights != null;
+
+                var memberCount = ReadInt(channel, 0, "participants_count", "ParticipantsCount", "participantsCount", "memberCount", "MemberCount");
+                string? about = null;
                 try
                 {
-                    // 通过获取管理员列表来检查当前用户是否为创建者
-                    var participants = await client.Channels_GetParticipants(channel, new ChannelParticipantsAdmins());
-                    var isCreator = participants.participants
-                        .OfType<ChannelParticipantCreator>()
-                        .Any(p => p.user_id == client.User!.id);
-
-                    if (!isCreator) continue;
-
-                    var fullChannel = await client.Channels_GetFullChannel(channel);
-                    ownedGroups.Add(new GroupInfo
-                    {
-                        TelegramId = channel.id,
-                        AccessHash = channel.access_hash,
-                        Title = channel.title,
-                        Username = channel.MainUsername,
-                        MemberCount = fullChannel.full_chat.ParticipantsCount,
-                        CreatorAccountId = accountId,
-                        SyncedAt = DateTime.UtcNow
-                    });
+                    var fullChannel = await ExecuteTelegramRequestAsync(
+                        accountId,
+                        $"拉取超级群详情({channel.id})",
+                        () => client.Channels_GetFullChannel(channel),
+                        cancellationToken,
+                        resetClientOnTimeout: false);
+                    memberCount = fullChannel.full_chat.ParticipantsCount;
+                    about = (fullChannel.full_chat as ChannelFull)?.about;
                 }
                 catch (Exception ex)
                 {
-                    _logger.LogWarning(ex, "Failed to get full group info for {GroupId}", channel.id);
+                    if (ex.Message.Contains("CHANNEL_MONOFORUM_UNSUPPORTED", StringComparison.OrdinalIgnoreCase))
+                    {
+                        _logger.LogDebug("Skipping full info for group {GroupId}: {Error}", channel.id, ex.Message);
+                    }
+                    else if (TryGetFloodWaitSeconds(ex.Message, out var seconds))
+                    {
+                        _logger.LogWarning("GetFullGroup hit rate limit, retry after {Seconds}s (groupId={GroupId})", seconds, channel.id);
+                        await Task.Delay(TimeSpan.FromSeconds(seconds));
+                    }
+                    else
+                    {
+                        _logger.LogWarning("Failed to get full group info for {GroupId}: {Error}", channel.id, ex.Message);
+                        _logger.LogDebug(ex, "GetFullGroup debug details (groupId={GroupId})", channel.id);
+                    }
                 }
+
+                groups.Add(new GroupInfo
+                {
+                    TelegramId = channel.id,
+                    AccessHash = channel.access_hash,
+                    Title = channel.title,
+                    Username = channel.MainUsername,
+                    MemberCount = memberCount,
+                    About = about,
+                    CreatorAccountId = isCreator ? accountId : null,
+                    IsCreator = isCreator,
+                    IsAdmin = isAdmin,
+                    CreatedAt = channel.date,
+                    SyncedAt = DateTime.UtcNow
+                });
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "Failed to get visible group info for {GroupId}", channel.id);
             }
         }
 
-        _logger.LogInformation("Found {Count} owned groups for account {AccountId}", ownedGroups.Count, accountId);
-        return ownedGroups;
+        _logger.LogInformation("Found {Count} visible groups for account {AccountId}", groups.Count, accountId);
+        return groups;
+    }
+
+    private static bool TryGetFloodWaitSeconds(string message, out int seconds)
+    {
+        seconds = 0;
+        if (string.IsNullOrWhiteSpace(message))
+            return false;
+
+        var idx = message.IndexOf("FLOOD_WAIT_", StringComparison.OrdinalIgnoreCase);
+        if (idx < 0)
+            return false;
+
+        var tail = message.Substring(idx + "FLOOD_WAIT_".Length);
+        var num = new string(tail.TakeWhile(char.IsDigit).ToArray());
+        if (!int.TryParse(num, out seconds))
+            return false;
+
+        if (seconds < 1) seconds = 1;
+        if (seconds > 120) seconds = 120;
+        return true;
+    }
+
+    private static bool ReadBool(object obj, params string[] names)
+    {
+        foreach (var name in names)
+        {
+            if (TryReadMember(obj, name, out var value) && value is bool b)
+                return b;
+        }
+
+        return false;
+    }
+
+    private static bool ReadFlagsHas(object obj, string flagName, string[] memberNames)
+    {
+        foreach (var memberName in memberNames)
+        {
+            if (!TryReadMember(obj, memberName, out var value) || value == null)
+                continue;
+
+            if (value is Enum enumValue)
+            {
+                var flagEnum = TryGetEnumFlag(enumValue.GetType(), flagName);
+                if (flagEnum != null)
+                    return enumValue.HasFlag(flagEnum);
+                continue;
+            }
+
+            if (value is int intFlags)
+                return ReadNumericFlagsHas(obj, flagName, intFlags);
+            if (value is long longFlags)
+                return ReadNumericFlagsHas(obj, flagName, longFlags);
+        }
+
+        return false;
+    }
+
+    private static bool ReadNumericFlagsHas(object obj, string flagName, long flagsValue)
+    {
+        var flagsType = obj.GetType().GetNestedType("Flags");
+        if (flagsType == null || !flagsType.IsEnum)
+            return false;
+
+        var flagEnum = TryGetEnumFlag(flagsType, flagName);
+        if (flagEnum == null)
+            return false;
+
+        var flagValue = Convert.ToInt64(flagEnum);
+        return (flagsValue & flagValue) == flagValue;
+    }
+
+    private static Enum? TryGetEnumFlag(Type enumType, string flagName)
+    {
+        var names = Enum.GetNames(enumType);
+        var match = names.FirstOrDefault(n => string.Equals(n, flagName, StringComparison.OrdinalIgnoreCase));
+        if (match == null)
+            return null;
+
+        return (Enum)Enum.Parse(enumType, match);
+    }
+
+    private static int ReadInt(object obj, int fallback, params string[] names)
+    {
+        foreach (var name in names)
+        {
+            if (TryReadMember(obj, name, out var value))
+            {
+                if (value is int i) return i;
+                if (value is long l) return unchecked((int)l);
+                if (value is short s) return s;
+                if (value is byte by) return by;
+            }
+        }
+
+        return fallback;
+    }
+
+    private static long ReadLong(object obj, long fallback, params string[] names)
+    {
+        foreach (var name in names)
+        {
+            if (TryReadMember(obj, name, out var value))
+            {
+                if (value is long l) return l;
+                if (value is int i) return i;
+                if (value is short s) return s;
+                if (value is byte by) return by;
+            }
+        }
+
+        return fallback;
+    }
+
+    private static string? ReadString(object obj, string? fallback, params string[] names)
+    {
+        foreach (var name in names)
+        {
+            if (TryReadMember(obj, name, out var value) && value is string s)
+                return s;
+        }
+
+        return fallback;
+    }
+
+    private static object? ReadObject(object obj, params string[] names)
+    {
+        foreach (var name in names)
+        {
+            if (TryReadMember(obj, name, out var value) && value != null)
+                return value;
+        }
+
+        return null;
+    }
+
+    private static bool TryReadMember(object obj, string name, out object? value)
+    {
+        var type = obj.GetType();
+
+        var prop = type.GetProperty(name);
+        if (prop != null && prop.CanRead)
+        {
+            value = prop.GetValue(obj);
+            return true;
+        }
+
+        var field = type.GetField(name);
+        if (field != null)
+        {
+            value = field.GetValue(obj);
+            return true;
+        }
+
+        value = null;
+        return false;
+    }
+
+    private static long GetChatParticipantUserId(object participant)
+    {
+        return ReadLong(participant, 0, "user_id", "UserId", "userId");
     }
 
     public async Task<GroupInfo?> GetGroupInfoAsync(int accountId, long groupId)
     {
-        var groups = await GetOwnedGroupsAsync(accountId);
+        var groups = await GetVisibleGroupsAsync(accountId);
         return groups.FirstOrDefault(g => g.TelegramId == groupId);
+    }
+
+    public async Task<bool> UpdateGroupInfoAsync(int accountId, long groupId, string title, string? about)
+    {
+        var client = await GetOrCreateConnectedClientAsync(accountId);
+        var group = await GetEditableMegaGroupAsync(accountId, client, groupId, CancellationToken.None);
+
+        title = (title ?? string.Empty).Trim();
+        about = string.IsNullOrWhiteSpace(about) ? null : about.Trim();
+        if (string.IsNullOrWhiteSpace(title))
+            throw new ArgumentException("群组标题不能为空", nameof(title));
+
+        await client.Channels_EditTitle(group, title);
+        if (about != null)
+            await client.Messages_EditChatAbout(group, about);
+
+        return true;
+    }
+
+    public async Task<bool> SetGroupVisibilityAsync(int accountId, long groupId, bool isPublic, string? username = null)
+    {
+        var client = await GetOrCreateConnectedClientAsync(accountId);
+        var group = await GetEditableMegaGroupAsync(accountId, client, groupId, CancellationToken.None);
+
+        if (isPublic)
+        {
+            username = (username ?? string.Empty).Trim().TrimStart('@');
+            if (string.IsNullOrWhiteSpace(username))
+                throw new InvalidOperationException("公开群组需要设置用户名");
+
+            var current = (group.MainUsername ?? string.Empty).Trim();
+            if (string.Equals(current, username, StringComparison.OrdinalIgnoreCase))
+                return true;
+
+            var available = await client.Channels_CheckUsername(group, username);
+            if (!available)
+                throw new InvalidOperationException($"用户名 '{username}' 不可用");
+
+            try
+            {
+                await client.Channels_UpdateUsername(group, username);
+            }
+            catch (RpcException ex) when (ex.Message.Contains("USERNAME_NOT_MODIFIED", StringComparison.OrdinalIgnoreCase))
+            {
+                return true;
+            }
+        }
+        else
+        {
+            if (string.IsNullOrWhiteSpace(group.MainUsername))
+                return true;
+
+            await client.Channels_UpdateUsername(group, string.Empty);
+        }
+
+        return true;
+    }
+
+    public async Task<bool> SetGroupPhotoAsync(
+        int accountId,
+        long groupId,
+        Stream fileStream,
+        string fileName,
+        CancellationToken cancellationToken = default)
+    {
+        var client = await GetOrCreateConnectedClientAsync(accountId, cancellationToken);
+        var group = await GetEditableMegaGroupAsync(accountId, client, groupId, cancellationToken);
+
+        if (fileStream == null)
+            throw new ArgumentException("头像文件为空", nameof(fileStream));
+
+        fileName = (fileName ?? "group_photo.jpg").Trim();
+        if (string.IsNullOrWhiteSpace(fileName))
+            fileName = "group_photo.jpg";
+
+        try
+        {
+            await using var encoded = await TelegramImageProcessor.PrepareAvatarJpegAsync(fileStream, cancellationToken);
+            var uploaded = await client.UploadFileAsync(encoded, fileName);
+            if (uploaded == null)
+                throw new InvalidOperationException("群组头像上传失败：上传结果为空");
+
+            await client.Channels_EditPhoto(group, new InputChatUploadedPhoto
+            {
+                flags = InputChatUploadedPhoto.Flags.has_file,
+                file = uploaded
+            });
+
+            return true;
+        }
+        catch (SixLabors.ImageSharp.UnknownImageFormatException)
+        {
+            throw new InvalidOperationException("不支持的图片格式（建议使用 JPG/PNG）");
+        }
+    }
+
+    private async Task<Channel> GetEditableMegaGroupAsync(int accountId, Client client, long groupId, CancellationToken cancellationToken)
+    {
+        var dialogs = await ExecuteTelegramRequestAsync(
+            accountId,
+            "拉取频道/群组对话列表",
+            () => client.Messages_GetAllDialogs(),
+            cancellationToken,
+            resetClientOnTimeout: true);
+
+        var normalizedId = groupId > 0 ? groupId : Math.Abs(groupId);
+        var mega = dialogs.chats.Values.OfType<Channel>()
+            .FirstOrDefault(x => x.IsActive && !x.IsChannel && x.id == normalizedId);
+        if (mega != null)
+            return mega;
+
+        if (dialogs.chats.Values.OfType<Chat>().Any(x => x.IsActive && x.id == normalizedId))
+            throw new InvalidOperationException("当前仅支持超级群组自动修改资料/公开状态");
+
+        throw new InvalidOperationException($"群组 {groupId} not found");
+    }
+
+    public async Task<bool> LeaveGroupAsync(int accountId, long groupId)
+    {
+        try
+        {
+            var client = await GetOrCreateConnectedClientAsync(accountId);
+            var dialogs = await ExecuteTelegramRequestAsync(
+                accountId,
+                "拉取频道/群组对话列表",
+                () => client.Messages_GetAllDialogs(),
+                CancellationToken.None,
+                resetClientOnTimeout: true);
+
+            var normalizedId = groupId > 0 ? groupId : Math.Abs(groupId);
+            var chat = dialogs.chats.Values.FirstOrDefault(x =>
+                x switch
+                {
+                    Chat basicChat => basicChat.id == normalizedId,
+                    Channel channel => !channel.IsChannel && channel.id == normalizedId,
+                    _ => false
+                });
+
+            if (chat == null)
+                throw new InvalidOperationException($"群组 {groupId} not found");
+
+            await ExecuteTelegramRequestAsync(
+                accountId,
+                $"退出群组({normalizedId})",
+                () => client.LeaveChat(chat.ToInputPeer()),
+                CancellationToken.None,
+                resetClientOnTimeout: false);
+
+            return true;
+        }
+        catch (RpcException ex) when (ex.Code == 400 && string.Equals(ex.Message, "USER_NOT_PARTICIPANT", StringComparison.OrdinalIgnoreCase))
+        {
+            return true;
+        }
+    }
+
+    public async Task<bool> DisbandGroupAsync(int accountId, long groupId)
+    {
+        var client = await GetOrCreateConnectedClientAsync(accountId);
+        var dialogs = await ExecuteTelegramRequestAsync(
+            accountId,
+            "拉取频道/群组对话列表",
+            () => client.Messages_GetAllDialogs(),
+            CancellationToken.None,
+            resetClientOnTimeout: true);
+
+        var normalizedId = groupId > 0 ? groupId : Math.Abs(groupId);
+        var chat = dialogs.chats.Values.FirstOrDefault(x =>
+            x switch
+            {
+                Chat basicChat => basicChat.id == normalizedId,
+                Channel channel => !channel.IsChannel && channel.id == normalizedId,
+                _ => false
+            });
+
+        if (chat == null)
+            throw new InvalidOperationException($"群组 {groupId} not found");
+
+        if (chat is Chat)
+            throw new InvalidOperationException("基础群暂不支持一键解散，请在 Telegram 客户端手动操作或先升级为超级群");
+
+        if (chat is not Channel megaGroup)
+            throw new InvalidOperationException("仅支持解散超级群");
+
+        var input = new InputChannel(megaGroup.id, megaGroup.access_hash);
+        await ExecuteTelegramRequestAsync(
+            accountId,
+            $"解散群组({normalizedId})",
+            () => client.Channels_DeleteChannel(input),
+            CancellationToken.None,
+            resetClientOnTimeout: false);
+
+        return true;
     }
 
     public async Task<string> ExportJoinLinkAsync(int accountId, long groupId)
@@ -116,7 +615,6 @@ public class GroupService : IGroupService
         var client = await GetOrCreateConnectedClientAsync(accountId);
         var dialogs = await client.Messages_GetAllDialogs();
 
-        // 基础群组（Chat）
         var basic = dialogs.chats.Values.OfType<Chat>().FirstOrDefault(c => c.IsActive && c.id == groupId);
         if (basic != null)
         {
@@ -133,7 +631,6 @@ public class GroupService : IGroupService
             return link;
         }
 
-        // 超级群组（Channel 但 megagroup=true，即 !IsChannel）
         var mega = dialogs.chats.Values.OfType<Channel>().FirstOrDefault(c => c.IsActive && !c.IsChannel && c.id == groupId);
         if (mega != null)
         {
@@ -161,7 +658,6 @@ public class GroupService : IGroupService
         var client = await GetOrCreateConnectedClientAsync(accountId);
         var dialogs = await client.Messages_GetAllDialogs();
 
-        // 基础群组（Chat）
         var basic = dialogs.chats.Values.OfType<Chat>().FirstOrDefault(c => c.IsActive && c.id == groupId);
         if (basic != null)
         {
@@ -205,7 +701,6 @@ public class GroupService : IGroupService
                 .ToList();
         }
 
-        // 超级群组（Channel but !IsChannel）
         var mega = dialogs.chats.Values.OfType<Channel>().FirstOrDefault(c => c.IsActive && !c.IsChannel && c.id == groupId);
         if (mega != null)
         {
@@ -253,8 +748,10 @@ public class GroupService : IGroupService
         throw new InvalidOperationException($"群组 {groupId} not found");
     }
 
-    private async Task<WTelegram.Client> GetOrCreateConnectedClientAsync(int accountId)
+    private async Task<WTelegram.Client> GetOrCreateConnectedClientAsync(int accountId, CancellationToken cancellationToken = default)
     {
+        cancellationToken.ThrowIfCancellationRequested();
+
         var existing = _clientPool.GetClient(accountId);
         if (existing?.User != null)
             return existing;
@@ -294,9 +791,22 @@ public class GroupService : IGroupService
 
         try
         {
-            await client.ConnectAsync();
+            await ExecuteTelegramRequestAsync(
+                accountId,
+                "连接 Telegram",
+                () => client.ConnectAsync(),
+                cancellationToken,
+                resetClientOnTimeout: true);
+
             if (client.User == null && (client.UserId != 0 || account.UserId != 0))
-                await client.LoginUserIfNeeded(reloginOnFailedResume: false);
+            {
+                await ExecuteTelegramRequestAsync(
+                    accountId,
+                    "恢复 Telegram 登录状态",
+                    () => client.LoginUserIfNeeded(reloginOnFailedResume: false),
+                    cancellationToken,
+                    resetClientOnTimeout: true);
+            }
         }
         catch (Exception ex)
         {
@@ -315,6 +825,70 @@ public class GroupService : IGroupService
             throw new InvalidOperationException("账号未登录或 session 已失效，请重新登录生成新的 session");
 
         return client;
+    }
+
+    private TimeSpan GetTelegramRequestTimeout()
+    {
+        var seconds = int.TryParse(_configuration["Telegram:RequestTimeoutSeconds"], out var parsedSeconds)
+            ? parsedSeconds
+            : 90;
+        return TimeSpan.FromSeconds(Math.Clamp(seconds, 15, 600));
+    }
+
+    private async Task ExecuteTelegramRequestAsync(
+        int accountId,
+        string operation,
+        Func<Task> action,
+        CancellationToken cancellationToken,
+        bool resetClientOnTimeout)
+    {
+        var timeout = GetTelegramRequestTimeout();
+
+        try
+        {
+            await action().WaitAsync(timeout, cancellationToken);
+        }
+        catch (TimeoutException)
+        {
+            _logger.LogWarning(
+                "Telegram request timed out after {TimeoutSeconds}s for account {AccountId}: {Operation}",
+                timeout.TotalSeconds,
+                accountId,
+                operation);
+
+            if (resetClientOnTimeout)
+                await _clientPool.RemoveClientAsync(accountId);
+
+            throw new TimeoutException($"Telegram 请求超时：{operation} 超过 {timeout.TotalSeconds:0} 秒，可能是 Session 失效、账号受限、网络异常或代理异常");
+        }
+    }
+
+    private async Task<T> ExecuteTelegramRequestAsync<T>(
+        int accountId,
+        string operation,
+        Func<Task<T>> action,
+        CancellationToken cancellationToken,
+        bool resetClientOnTimeout)
+    {
+        var timeout = GetTelegramRequestTimeout();
+
+        try
+        {
+            return await action().WaitAsync(timeout, cancellationToken);
+        }
+        catch (TimeoutException)
+        {
+            _logger.LogWarning(
+                "Telegram request timed out after {TimeoutSeconds}s for account {AccountId}: {Operation}",
+                timeout.TotalSeconds,
+                accountId,
+                operation);
+
+            if (resetClientOnTimeout)
+                await _clientPool.RemoveClientAsync(accountId);
+
+            throw new TimeoutException($"Telegram 请求超时：{operation} 超过 {timeout.TotalSeconds:0} 秒，可能是 Session 失效、账号受限、网络异常或代理异常");
+        }
     }
 
     private int ResolveApiId(TelegramPanel.Data.Entities.Account account)

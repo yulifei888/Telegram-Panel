@@ -1,6 +1,7 @@
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Configuration;
 using TelegramPanel.Core.Interfaces;
+using TL;
 using WTelegram;
 
 namespace TelegramPanel.Core.Services.Telegram;
@@ -24,7 +25,8 @@ public class SessionImporter : ISessionImporter
         int apiId,
         string apiHash,
         long? userId = null,
-        string? phoneHint = null)
+        string? phoneHint = null,
+        string? sessionKey = null)
     {
         if (!File.Exists(filePath))
         {
@@ -62,21 +64,36 @@ public class SessionImporter : ISessionImporter
                 "api_id" => apiId.ToString(),
                 "api_hash" => apiHash,
                 "session_pathname" => targetPath,
+                "session_key" => string.IsNullOrWhiteSpace(sessionKey) ? null! : sessionKey,
                 _ => null!
             };
 
             using var client = new Client(Config);
             await client.ConnectAsync();
 
-            if (client.User != null)
+            var self = client.User;
+            if (self == null)
             {
-                _logger.LogInformation("Session imported successfully for user {UserId}", client.User.id);
+                try
+                {
+                    var users = await client.Users_GetUsers(InputUser.Self);
+                    self = users.OfType<User>().FirstOrDefault();
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogWarning(ex, "Failed to fetch self user after session connect: {SessionPath}", targetPath);
+                }
+            }
+
+            if (self != null)
+            {
+                _logger.LogInformation("Session imported successfully for user {UserId}", self.id);
 
                 return new ImportResult(
                     Success: true,
-                    Phone: client.User.phone,
-                    UserId: client.User.id,
-                    Username: client.User.MainUsername,
+                    Phone: self.phone,
+                    UserId: self.id,
+                    Username: self.MainUsername,
                     SessionPath: targetPath
                 );
             }
@@ -135,17 +152,31 @@ public class SessionImporter : ISessionImporter
             using var client = new Client(Config);
             await client.ConnectAsync();
 
-            if (client.User != null)
+            var self = client.User;
+            if (self == null)
+            {
+                try
+                {
+                    var users = await client.Users_GetUsers(InputUser.Self);
+                    self = users.OfType<User>().FirstOrDefault();
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogWarning(ex, "Failed to fetch self user after string session connect: {SessionPath}", sessionPath);
+                }
+            }
+
+            if (self != null)
             {
                 // 重命名为手机号
-                var newPath = Path.Combine(sessionsPath, $"{client.User.phone}.session");
+                var newPath = Path.Combine(sessionsPath, $"{self.phone}.session");
                 File.Move(sessionPath, newPath, overwrite: true);
 
                 return new ImportResult(
                     Success: true,
-                    Phone: client.User.phone,
-                    UserId: client.User.id,
-                    Username: client.User.MainUsername,
+                    Phone: self.phone,
+                    UserId: self.id,
+                    Username: self.MainUsername,
                     SessionPath: newPath
                 );
             }

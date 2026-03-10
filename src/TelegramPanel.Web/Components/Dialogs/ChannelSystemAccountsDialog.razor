@@ -1,0 +1,134 @@
+@namespace TelegramPanel.Web.Components.Dialogs
+@inject ChannelManagementService ChannelManagement
+@inject ISnackbar Snackbar
+@using TelegramPanel.Core.Utils
+@using TelegramPanel.Data.Entities
+
+<MudDialog>
+    <DialogContent>
+        @if (loading)
+        {
+            <MudProgressLinear Indeterminate="true" />
+        }
+        else
+        {
+            <MudStack Spacing="2">
+                <MudText Typo="Typo.body2" Color="Color.Secondary">共 @memberships.Count 个本系统账号</MudText>
+
+                @if (memberships.Count == 0)
+                {
+                    <MudAlert Severity="Severity.Info" Variant="Variant.Outlined">该频道当前没有已同步的本系统账号关联</MudAlert>
+                }
+                else
+                {
+                    <MudTable Items="@memberships" Dense="true" Hover="true" Breakpoint="Breakpoint.Sm">
+                        <HeaderContent>
+                            <MudTh>手机号</MudTh>
+                            <MudTh>昵称</MudTh>
+                            <MudTh>用户名</MudTh>
+                            <MudTh>账号分类</MudTh>
+                            <MudTh>状态</MudTh>
+                            <MudTh>角色</MudTh>
+                            <MudTh>最后同步</MudTh>
+                        </HeaderContent>
+                        <RowTemplate>
+                            <MudTd DataLabel="手机号">@FormatPhone(context.Account?.Phone)</MudTd>
+                            <MudTd DataLabel="昵称">@(string.IsNullOrWhiteSpace(context.Account?.Nickname) ? "-" : context.Account!.Nickname)</MudTd>
+                            <MudTd DataLabel="用户名">@FormatUsername(context.Account?.Username)</MudTd>
+                            <MudTd DataLabel="账号分类">@(context.Account?.Category?.Name ?? "未分类")</MudTd>
+                            <MudTd DataLabel="状态">
+                                <MudChip T="string" Size="Size.Small" Color="@GetAccountStatusColor(context.Account)">@GetAccountStatusLabel(context.Account)</MudChip>
+                            </MudTd>
+                            <MudTd DataLabel="角色">
+                                <MudChip T="string" Size="Size.Small" Color="@GetRoleColor(context)">@GetRoleLabel(context)</MudChip>
+                            </MudTd>
+                            <MudTd DataLabel="最后同步"><PanelTime Value="context.SyncedAt" /></MudTd>
+                        </RowTemplate>
+                    </MudTable>
+                }
+            </MudStack>
+        }
+    </DialogContent>
+    <DialogActions>
+        <MudButton Variant="Variant.Text" Color="Color.Default" OnClick="Close">关闭</MudButton>
+    </DialogActions>
+</MudDialog>
+
+@code {
+    [CascadingParameter] private MudDialogInstance MudDialog { get; set; } = default!;
+    [Parameter] public int ChannelDbId { get; set; }
+
+    private bool loading = true;
+    private List<AccountChannel> memberships = new();
+
+    protected override async Task OnInitializedAsync()
+    {
+        await LoadAsync();
+    }
+
+    private async Task LoadAsync()
+    {
+        loading = true;
+        try
+        {
+            memberships = (await ChannelManagement.GetChannelAccountMembershipsAsync(ChannelDbId))
+                .Where(x => x.Account != null)
+                .OrderByDescending(x => x.IsCreator)
+                .ThenByDescending(x => x.IsAdmin)
+                .ThenBy(x => x.AccountId)
+                .ToList();
+        }
+        catch (Exception ex)
+        {
+            Snackbar.Add($"加载频道关联账号失败：{ex.Message}", Severity.Error);
+            memberships.Clear();
+        }
+        finally
+        {
+            loading = false;
+        }
+    }
+
+    private static string FormatPhone(string? phone)
+    {
+        return string.IsNullOrWhiteSpace(phone) ? "-" : PhoneNumberFormatter.FormatWithCountryCode(phone);
+    }
+
+    private static string FormatUsername(string? username)
+    {
+        return string.IsNullOrWhiteSpace(username) ? "-" : "@" + username.Trim();
+    }
+
+    private static string GetRoleLabel(AccountChannel membership)
+    {
+        if (membership.IsCreator)
+            return "创建者";
+        if (membership.IsAdmin)
+            return "管理员";
+        return "成员";
+    }
+
+    private static Color GetRoleColor(AccountChannel membership)
+    {
+        if (membership.IsCreator)
+            return Color.Success;
+        if (membership.IsAdmin)
+            return Color.Info;
+        return Color.Default;
+    }
+
+    private static string GetAccountStatusLabel(Account? account)
+    {
+        return account?.IsActive == false ? "停用" : "启用";
+    }
+
+    private static Color GetAccountStatusColor(Account? account)
+    {
+        return account?.IsActive == false ? Color.Default : Color.Success;
+    }
+
+    private void Close()
+    {
+        MudDialog.Close();
+    }
+}

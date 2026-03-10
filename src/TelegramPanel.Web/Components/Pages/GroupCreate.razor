@@ -1,0 +1,227 @@
+﻿@page "/groups/create"
+@inject IGroupService GroupService
+@inject AccountManagementService AccountManagement
+@inject TelegramPanel.Core.Services.AccountRiskService RiskService
+@inject GroupManagementService GroupManagement
+@inject GroupCategoryManagementService GroupCategoryManagement
+@inject ISnackbar Snackbar
+@inject NavigationManager Navigation
+@inject IDialogService DialogService
+@using TelegramPanel.Data.Entities
+@using TelegramPanel.Web.Components.Dialogs
+
+<PageTitle>创建群组 - Telegram Panel</PageTitle>
+
+<MudText Typo="Typo.h4" Class="mb-4">创建群组</MudText>
+
+<MudGrid>
+    <MudItem xs="12" md="8" Class="mx-auto">
+        <MudCard>
+            <MudCardContent>
+                <MudSelect @bind-Value="selectedAccountId" Label="选择账号" Variant="Variant.Outlined" Required="true">
+                    <MudSelectItem Value="0">-- 请选择账号 --</MudSelectItem>
+                    @foreach (var account in accounts)
+                    {
+                        <MudSelectItem Value="@account.Id">@FormatAccountLabel(account)</MudSelectItem>
+                    }
+                </MudSelect>
+
+                <MudSelect @bind-Value="selectedCategoryId" Label="群组分类" Variant="Variant.Outlined" Class="mt-4">
+                    <MudSelectItem Value="0">未分类</MudSelectItem>
+                    @foreach (var category in categories)
+                    {
+                        <MudSelectItem Value="@category.Id">@category.Name</MudSelectItem>
+                    }
+                </MudSelect>
+
+                <MudTextField @bind-Value="groupTitle" Label="群组名称" Variant="Variant.Outlined" Required="true" Class="mt-4"
+                              HelperText="最多255个字符" MaxLength="255" />
+
+                <MudTextField @bind-Value="groupAbout" Label="群组简介" Variant="Variant.Outlined" Lines="3" Class="mt-4"
+                              HelperText="最多255个字符" MaxLength="255" />
+
+                <MudSwitch @bind-Value="isPublic" Label="设为公开群组" Color="Color.Primary" Class="mt-4" />
+
+                @if (isPublic)
+                {
+                    <MudTextField @bind-Value="username" Label="群组用户名" Variant="Variant.Outlined" Class="mt-3"
+                                  Adornment="Adornment.Start" AdornmentText="&#64;" Required="true"
+                                  HelperText="5-32个字符，只能包含 a-z、0-9 和下划线" />
+                }
+
+                <MudAlert Severity="Severity.Info" Variant="Variant.Outlined" Dense="true" Class="mt-4">
+                    当前创建的是 Telegram 超级群组。创建成功后会自动写入本地数据库，并绑定到当前执行账号。
+                </MudAlert>
+            </MudCardContent>
+            <MudCardActions>
+                <MudButton Variant="Variant.Text" Color="Color.Default"
+                           OnClick="@(async (MouseEventArgs _) => await Cancel())">取消</MudButton>
+                <MudSpacer />
+                <MudButton Variant="Variant.Filled" Color="Color.Primary"
+                           Disabled="@(selectedAccountId == 0 || string.IsNullOrWhiteSpace(groupTitle) || creating)"
+                           OnClick="@(async (MouseEventArgs _) => await CreateGroup())">
+                    @if (creating)
+                    {
+                        <MudProgressCircular Size="Size.Small" Indeterminate="true" Class="mr-2" />
+                        <span>创建中...</span>
+                    }
+                    else
+                    {
+                        <span>创建群组</span>
+                    }
+                </MudButton>
+            </MudCardActions>
+        </MudCard>
+    </MudItem>
+</MudGrid>
+
+@code {
+    private List<Account> accounts = new();
+    private List<GroupCategory> categories = new();
+    private int selectedAccountId;
+    private int selectedCategoryId;
+    private string groupTitle = string.Empty;
+    private string groupAbout = string.Empty;
+    private bool isPublic;
+    private string username = string.Empty;
+    private bool creating;
+
+    protected override async Task OnInitializedAsync()
+    {
+        await LoadAccounts();
+        await LoadCategories();
+    }
+
+    private async Task LoadAccounts()
+    {
+        try
+        {
+            var accountList = await AccountManagement.GetActiveAccountsAsync();
+            accounts = accountList
+                .Where(a => a.Category?.ExcludeFromOperations != true)
+                .ToList();
+        }
+        catch (Exception ex)
+        {
+            Snackbar.Add($"加载账号列表失败：{ex.Message}", Severity.Error);
+        }
+    }
+
+    private async Task LoadCategories()
+    {
+        try
+        {
+            var list = await GroupCategoryManagement.GetAllCategoriesAsync();
+            categories = list.ToList();
+        }
+        catch (Exception ex)
+        {
+            Snackbar.Add($"加载群组分类失败：{ex.Message}", Severity.Error);
+        }
+    }
+
+    private async Task CreateGroup()
+    {
+        if (selectedAccountId == 0)
+        {
+            Snackbar.Add("请选择账号", Severity.Error);
+            return;
+        }
+
+        var title = groupTitle.Trim();
+        if (string.IsNullOrWhiteSpace(title))
+        {
+            Snackbar.Add("请输入群组名称", Severity.Error);
+            return;
+        }
+
+        var about = string.IsNullOrWhiteSpace(groupAbout) ? string.Empty : groupAbout.Trim();
+        var normalizedUsername = NormalizeUsername(username);
+        if (isPublic && string.IsNullOrWhiteSpace(normalizedUsername))
+        {
+            Snackbar.Add("公开群组需要设置用户名", Severity.Error);
+            return;
+        }
+
+        var account = await AccountManagement.GetAccountAsync(selectedAccountId);
+        if (account != null)
+        {
+            var riskCheck = RiskService.CheckLoginDuration(account);
+            if (riskCheck.IsRisky)
+            {
+                var parameters = new DialogParameters
+                {
+                    ["Message"] = riskCheck.Message,
+                    ["DetailedMessage"] = riskCheck.DetailedMessage,
+                    ["ShowRecommendations"] = true
+                };
+                var options = new DialogOptions { CloseOnEscapeKey = true, MaxWidth = MaxWidth.Medium };
+                var dialog = DialogService.Show<RiskWarningDialog>("风控警告", parameters, options);
+                var result = await dialog.Result;
+                if (result.Canceled)
+                    return;
+            }
+        }
+
+        creating = true;
+        try
+        {
+            var groupInfo = await GroupService.CreateGroupAsync(selectedAccountId, title, about, isPublic, normalizedUsername);
+            var now = DateTime.UtcNow;
+
+            var group = new Group
+            {
+                TelegramId = groupInfo.TelegramId,
+                AccessHash = groupInfo.AccessHash,
+                Title = groupInfo.Title,
+                Username = groupInfo.Username,
+                MemberCount = Math.Max(groupInfo.MemberCount, 1),
+                About = groupInfo.About,
+                CreatorAccountId = selectedAccountId,
+                CategoryId = selectedCategoryId > 0 ? selectedCategoryId : null,
+                CreatedAt = groupInfo.CreatedAt ?? now,
+                SyncedAt = now,
+                SystemCreatedAtUtc = now
+            };
+
+            var savedGroup = await GroupManagement.CreateOrUpdateGroupAsync(group);
+            await GroupManagement.UpsertAccountGroupAsync(selectedAccountId, savedGroup.Id, isCreator: true, isAdmin: true, syncedAtUtc: now);
+
+            Snackbar.Add($"群组 \"{title}\" 创建成功", Severity.Success);
+            Navigation.NavigateTo("/groups");
+        }
+        catch (Exception ex)
+        {
+            Snackbar.Add($"创建失败：{ex.Message}", Severity.Error);
+        }
+        finally
+        {
+            creating = false;
+        }
+    }
+
+    private Task Cancel()
+    {
+        Navigation.NavigateTo("/groups");
+        return Task.CompletedTask;
+    }
+
+    private static string? NormalizeUsername(string? value)
+    {
+        var normalized = value?.Trim().TrimStart('@');
+        return string.IsNullOrWhiteSpace(normalized) ? null : normalized;
+    }
+
+    private static string FormatAccountLabel(Account account)
+    {
+        var nickname = string.IsNullOrWhiteSpace(account.Nickname) ? null : account.Nickname.Trim();
+        var username = string.IsNullOrWhiteSpace(account.Username) ? null : account.Username.Trim();
+
+        var namePart = nickname ?? account.Phone;
+        if (!string.IsNullOrWhiteSpace(username))
+            return $"{namePart} (@{username})";
+        return namePart;
+    }
+}
+
+

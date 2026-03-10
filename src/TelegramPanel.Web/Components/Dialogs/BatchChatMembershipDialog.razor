@@ -11,24 +11,43 @@
             <MudAlert Severity="Severity.Warning" Variant="Variant.Outlined" Dense="true">
                 @if (IsJoin)
                 {
-                    <span>将使用所选账号订阅频道/加入群组。支持输入多个链接/用户名，换行分隔。</span>
+                    <span>将使用所选账号执行批量加入/订阅；识别为 Bot 的目标会执行启用（发送 /start）。</span>
                 }
                 else
                 {
-                    <span>将使用所选账号退出群组/取消订阅频道。支持输入多个链接/用户名，换行分隔。</span>
+                    <span>将使用所选账号执行批量退群/退订；识别为 Bot 的目标会执行停用（拉黑 Bot）。</span>
                 }
                 <MudText Typo="Typo.body2" Class="mt-1">
-                    支持：<b>https://t.me/xxx</b>、<b>t.me/+hash</b>、<b>@@username</b>、<b>username</b>、<b>tg://join?invite=hash</b>
+                    目标支持：<b>https://t.me/xxx</b>、<b>t.me/+hash</b>、<b>@@username</b>、<b>username</b>、<b>tg://join?invite=hash</b>、<b>t.me/bot_or_name?start=abc</b>、<b>@@name?start=abc</b>
                 </MudText>
             </MudAlert>
 
             <MudText Typo="Typo.subtitle2">选中账号：@accounts.Count 个</MudText>
 
-            <MudTextField @bind-Value="linksText" Label="频道/群链接列表（换行分隔）" Variant="Variant.Outlined" Lines="8"
-                          HelperText="每行一个链接或用户名；将逐个账号依次执行。" />
+            <MudTextField @bind-Value="targetsText" Label="目标列表（频道/群/Bot，换行分隔）" Variant="Variant.Outlined" Lines="10"
+                          HelperText="每行一个目标。识别为 Bot 的目标将执行启用/停用；其余目标按频道/群处理。" />
+
+            <MudCheckBox T="bool"
+                         @bind-Value="treatNoBotSuffixAsBot"
+                         Label="将不带 bot 后缀的用户名按 Bot 处理（用于纯用户名 Bot）"
+                         Disabled="@running" />
+
+            @if (treatNoBotSuffixAsBot)
+            {
+                <MudText Typo="Typo.caption" Color="Color.Secondary">
+                    已开启“无 bot 后缀按 Bot 处理”：如果同一列表中包含普通频道用户名，请关闭该选项避免误判。
+                </MudText>
+            }
 
             <MudNumericField @bind-Value="delayMs" Label="操作间隔（毫秒）" Variant="Variant.Outlined" Min="0" Max="10000"
                              HelperText="建议设置 1500-4000ms，避免触发风控（会额外加少量随机抖动）。" />
+
+            @if (!IsJoin)
+            {
+                <MudText Typo="Typo.caption" Color="Color.Secondary">
+                    说明：Bot 停用通过“拉黑 Bot”实现；如需恢复，可在 Telegram 内手动解除拉黑。
+                </MudText>
+            }
 
             @if (running)
             {
@@ -47,7 +66,7 @@
             @(running ? "停止" : "关闭")
         </MudButton>
         <MudButton Variant="Variant.Filled" Color="Color.Primary" OnClick="Submit" Disabled="@(running || accounts.Count == 0)">
-            @(IsJoin ? "开始加群/订阅" : "开始退群/退订")
+            @(IsJoin ? "开始加群/订阅/启用Bot" : "开始退群/退订/停用Bot")
         </MudButton>
     </DialogActions>
 </MudDialog>
@@ -60,7 +79,8 @@
     [Parameter] public string Operation { get; set; } = "join"; // join|leave
 
     private List<Account> accounts = new();
-    private string linksText = "";
+    private string targetsText = "";
+    private bool treatNoBotSuffixAsBot;
     private int delayMs = 2000;
     private bool running;
     private int total;
@@ -88,53 +108,73 @@
         if (running || accounts.Count == 0)
             return;
 
-        var links = ParseLines(linksText);
-        if (links.Count == 0)
+        var rawTargets = ParseLines(targetsText);
+        var parsedTargets = rawTargets.Select(x => ParseTarget(x, treatNoBotSuffixAsBot)).ToList();
+        var membershipTargets = parsedTargets.Where(x => !x.IsBot).ToList();
+        var botTargets = parsedTargets.Where(x => x.IsBot).ToList();
+        var targetAccounts = accounts.ToList();
+        var runMembershipOps = membershipTargets.Count > 0;
+        var runBotOps = botTargets.Count > 0;
+
+        if (rawTargets.Count == 0)
         {
-            Snackbar.Add("请至少输入一个频道/群链接", Severity.Warning);
+            Snackbar.Add("请至少输入一个目标", Severity.Warning);
             return;
         }
 
-        // 风控检查：加群/退群 都是敏感操作
-        var batchCheck = RiskService.CheckBatchAccounts(accounts);
-        if (batchCheck.HasRiskyAccounts)
+        // 风控检查：加群/退群是敏感操作（仅在执行账号加入/退出时检查）
+        if (runMembershipOps)
         {
-            var parameters = new DialogParameters
+            var batchCheck = RiskService.CheckBatchAccounts(targetAccounts);
+            if (batchCheck.HasRiskyAccounts)
             {
-                ["Message"] = $"检测到 {batchCheck.RiskyCount} 个风险账号",
-                ["DetailedMessage"] = batchCheck.GetRiskySummary(),
-                ["ShowRecommendations"] = true,
-                ["ShowExcludeOption"] = true,
-                ["RiskyAccounts"] = batchCheck.RiskyAccounts.ToList()
-            };
-            var options = new DialogOptions { CloseOnEscapeKey = true, MaxWidth = MaxWidth.Large };
-            var dialog = DialogService.Show<RiskWarningDialog>("批量操作风控警告", parameters, options);
-            var r = await dialog.Result;
-            if (r.Canceled)
-                return;
-
-            if (r.Data is TelegramPanel.Core.Services.RiskWarningAction action
-                && action == TelegramPanel.Core.Services.RiskWarningAction.ExcludeRisky)
-            {
-                accounts = batchCheck.SafeAccounts.ToList();
-                if (accounts.Count == 0)
+                var parameters = new DialogParameters
                 {
-                    Snackbar.Add("排除风险账号后无剩余账号", Severity.Info);
+                    ["Message"] = $"检测到 {batchCheck.RiskyCount} 个风险账号",
+                    ["DetailedMessage"] = batchCheck.GetRiskySummary(),
+                    ["ShowRecommendations"] = true,
+                    ["ShowExcludeOption"] = true,
+                    ["RiskyAccounts"] = batchCheck.RiskyAccounts.ToList()
+                };
+                var options = new DialogOptions { CloseOnEscapeKey = true, MaxWidth = MaxWidth.Large };
+                var dialog = DialogService.Show<RiskWarningDialog>("批量操作风控警告", parameters, options);
+                var r = await dialog.Result;
+                if (r is null || r.Canceled)
                     return;
+
+                if (r.Data is TelegramPanel.Core.Services.RiskWarningAction action
+                    && action == TelegramPanel.Core.Services.RiskWarningAction.ExcludeRisky)
+                {
+                    targetAccounts = batchCheck.SafeAccounts.ToList();
+                    if (targetAccounts.Count == 0)
+                    {
+                        Snackbar.Add("排除风险账号后无剩余账号", Severity.Info);
+                        return;
+                    }
                 }
             }
         }
 
+        var membershipTotal = runMembershipOps ? targetAccounts.Count * membershipTargets.Count : 0;
+        var botTotal = runBotOps ? targetAccounts.Count * botTargets.Count : 0;
+        var confirmLines = new List<string>();
+
+        if (membershipTotal > 0)
+            confirmLines.Add($"{(IsJoin ? "加群/订阅" : "退群/退订")}：{targetAccounts.Count} 个账号 × {membershipTargets.Count} 个目标（共 {membershipTotal} 次操作）");
+
+        if (botTotal > 0)
+            confirmLines.Add($"{(IsJoin ? "启用" : "停用")}外部 Bot：{targetAccounts.Count} 个账号 × {botTargets.Count} 个 Bot（共 {botTotal} 次操作）");
+
         bool? confirm = await DialogService.ShowMessageBox(
             "确认执行",
-            $"{(IsJoin ? "加群/订阅" : "退群/退订")}：{accounts.Count} 个账号 × {links.Count} 个目标（共 {accounts.Count * links.Count} 次操作）。是否继续？",
+            $"{string.Join(Environment.NewLine, confirmLines)}{Environment.NewLine}{Environment.NewLine}是否继续？",
             yesText: "继续", cancelText: "取消");
 
         if (confirm != true)
             return;
 
         running = true;
-        total = accounts.Count * links.Count;
+        total = membershipTotal + botTotal;
         done = 0;
         failed = 0;
         currentHint = null;
@@ -144,35 +184,82 @@
 
         try
         {
-            foreach (var a in accounts)
+            if (runMembershipOps)
             {
-                foreach (var link in links)
+                foreach (var a in targetAccounts)
                 {
-                    _cts.Token.ThrowIfCancellationRequested();
-
-                    currentHint = $"{a.DisplayPhone} => {link}";
-                    StateHasChanged();
-
-                    (bool Success, string? Error, string? Title) result;
-                    if (IsJoin)
-                        result = await AccountTelegramTools.JoinChatOrChannelAsync(a.Id, link, _cts.Token);
-                    else
-                        result = await AccountTelegramTools.LeaveChatOrChannelAsync(a.Id, link, _cts.Token);
-
-                    done++;
-                    if (!result.Success)
+                    foreach (var target in membershipTargets)
                     {
-                        failed++;
-                        failures.Add($"{a.DisplayPhone} => {link}：{result.Error}");
+                        _cts.Token.ThrowIfCancellationRequested();
+
+                        currentHint = $"{a.DisplayPhone} => {target.Raw}";
+                        StateHasChanged();
+
+                        (bool Success, string? Error, string? Title) result;
+                        if (IsJoin)
+                            result = await AccountTelegramTools.JoinChatOrChannelAsync(a.Id, target.Input, _cts.Token);
+                        else
+                            result = await AccountTelegramTools.LeaveChatOrChannelAsync(a.Id, target.Input, _cts.Token);
+
+                        done++;
+                        if (!result.Success)
+                        {
+                            failed++;
+                            failures.Add($"{a.DisplayPhone} => {target.Raw}：{result.Error}");
+                        }
+
+                        StateHasChanged();
+
+                        var wait = ClampDelayMs(delayMs);
+                        var jitter = _rand.Next(0, 350);
+                        await Task.Delay(TimeSpan.FromMilliseconds(wait + jitter), _cts.Token);
                     }
+                }
+            }
 
-                    StateHasChanged();
+            if (runBotOps)
+            {
+                foreach (var a in targetAccounts)
+                {
+                    foreach (var botTarget in botTargets)
+                    {
+                        _cts.Token.ThrowIfCancellationRequested();
 
-                    var wait = delayMs;
-                    if (wait < 0) wait = 0;
-                    if (wait > 10000) wait = 10000;
-                    var jitter = _rand.Next(0, 350);
-                    await Task.Delay(TimeSpan.FromMilliseconds(wait + jitter), _cts.Token);
+                        currentHint = $"{a.DisplayPhone} => {botTarget.Raw}";
+                        StateHasChanged();
+
+                        (bool Success, string? Error, string? BotUsername) result;
+                        if (IsJoin)
+                        {
+                            result = await AccountTelegramTools.StartExternalBotAsync(
+                                a.Id,
+                                botTarget.Input,
+                                startParameter: null,
+                                cancellationToken: _cts.Token,
+                                assumeBotUsername: botTarget.AssumeBotUsername);
+                        }
+                        else
+                        {
+                            result = await AccountTelegramTools.StopExternalBotAsync(
+                                a.Id,
+                                botTarget.Input,
+                                cancellationToken: _cts.Token,
+                                assumeBotUsername: botTarget.AssumeBotUsername);
+                        }
+
+                        done++;
+                        if (!result.Success)
+                        {
+                            failed++;
+                            failures.Add($"{a.DisplayPhone} => {botTarget.Raw}：{result.Error}");
+                        }
+
+                        StateHasChanged();
+
+                        var wait = ClampDelayMs(delayMs);
+                        var jitter = _rand.Next(0, 350);
+                        await Task.Delay(TimeSpan.FromMilliseconds(wait + jitter), _cts.Token);
+                    }
                 }
             }
 
@@ -216,6 +303,13 @@
         MudDialog.Close();
     }
 
+    private static int ClampDelayMs(int value)
+    {
+        if (value < 0) return 0;
+        if (value > 10000) return 10000;
+        return value;
+    }
+
     private static List<string> ParseLines(string? text)
     {
         if (string.IsNullOrWhiteSpace(text))
@@ -228,5 +322,145 @@
             .Distinct(StringComparer.OrdinalIgnoreCase)
             .ToList();
     }
-}
 
+    private static ParsedTarget ParseTarget(string input, bool treatNoBotSuffixAsBot)
+    {
+        var raw = (input ?? string.Empty).Trim();
+        var isBot = ShouldTreatAsBot(raw, treatNoBotSuffixAsBot);
+        var hasBotSuffix = HasBotSuffix(raw);
+        var assumeBotUsername = isBot && !hasBotSuffix && treatNoBotSuffixAsBot && !HasStartParameter(raw);
+
+        return new ParsedTarget(
+            Raw: raw,
+            Input: raw,
+            IsBot: isBot,
+            AssumeBotUsername: assumeBotUsername);
+    }
+
+    private static bool ShouldTreatAsBot(string raw, bool treatNoBotSuffixAsBot)
+    {
+        if (IsResolveBotLink(raw))
+            return true;
+
+        if (HasStartParameter(raw))
+            return true;
+
+        if (HasBotSuffix(raw))
+            return true;
+
+        if (treatNoBotSuffixAsBot && LooksLikeUsernameTarget(raw))
+            return true;
+
+        return false;
+    }
+
+    private static bool IsResolveBotLink(string raw)
+    {
+        var value = (raw ?? string.Empty).Trim();
+        return value.StartsWith("tg://resolve", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static bool HasStartParameter(string raw)
+    {
+        var value = (raw ?? string.Empty).Trim();
+        return value.IndexOf("?start=", StringComparison.OrdinalIgnoreCase) >= 0
+               || value.IndexOf("&start=", StringComparison.OrdinalIgnoreCase) >= 0;
+    }
+
+    private static bool HasBotSuffix(string raw)
+    {
+        var candidate = ExtractUsernameCandidate(raw);
+        return candidate.EndsWith("bot", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static bool LooksLikeUsernameTarget(string raw)
+    {
+        var value = (raw ?? string.Empty).Trim();
+        if (value.Length == 0)
+            return false;
+
+        // 邀请链接（群/频道）不按用户名处理
+        if (value.StartsWith("tg://join", StringComparison.OrdinalIgnoreCase))
+            return false;
+        if (value.Contains("joinchat/", StringComparison.OrdinalIgnoreCase))
+            return false;
+        if (value.Contains("/+", StringComparison.Ordinal))
+            return false;
+
+        var candidate = ExtractUsernameCandidate(value);
+        if (candidate.StartsWith("+", StringComparison.Ordinal))
+            return false;
+
+        return System.Text.RegularExpressions.Regex.IsMatch(candidate, "^[A-Za-z0-9_]{5,64}$");
+    }
+
+    private static string ExtractUsernameCandidate(string raw)
+    {
+        var value = (raw ?? string.Empty).Trim();
+        if (value.Length == 0)
+            return string.Empty;
+
+        if (value.StartsWith("tg://", StringComparison.OrdinalIgnoreCase)
+            && Uri.TryCreate(value, UriKind.Absolute, out var tgUri))
+        {
+            var query = ParseQueryString(tgUri.Query);
+            if (query.TryGetValue("domain", out var domain) && !string.IsNullOrWhiteSpace(domain))
+                value = domain.Trim();
+        }
+        else if (value.StartsWith("http://", StringComparison.OrdinalIgnoreCase)
+                 || value.StartsWith("https://", StringComparison.OrdinalIgnoreCase)
+                 || value.StartsWith("t.me/", StringComparison.OrdinalIgnoreCase)
+                 || value.StartsWith("telegram.me/", StringComparison.OrdinalIgnoreCase))
+        {
+            var url = value.Contains("://", StringComparison.Ordinal) ? value : "https://" + value;
+            if (Uri.TryCreate(url, UriKind.Absolute, out var uri))
+            {
+                var path = (uri.AbsolutePath ?? string.Empty).Trim('/');
+                value = path.Split('/', StringSplitOptions.RemoveEmptyEntries).FirstOrDefault() ?? string.Empty;
+            }
+        }
+        else
+        {
+            value = value.TrimStart('@');
+        }
+
+        var q = value.IndexOf('?');
+        if (q >= 0)
+            value = value[..q];
+
+        var slash = value.IndexOf('/');
+        if (slash >= 0)
+            value = value[..slash];
+
+        return value.Trim();
+    }
+
+    private static Dictionary<string, string> ParseQueryString(string query)
+    {
+        var map = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        if (string.IsNullOrWhiteSpace(query))
+            return map;
+
+        var raw = query.StartsWith("?", StringComparison.Ordinal) ? query[1..] : query;
+        foreach (var part in raw.Split('&', StringSplitOptions.RemoveEmptyEntries))
+        {
+            var idx = part.IndexOf('=');
+            if (idx < 0)
+            {
+                var keyOnly = Uri.UnescapeDataString(part).Trim();
+                if (!string.IsNullOrWhiteSpace(keyOnly))
+                    map[keyOnly] = string.Empty;
+                continue;
+            }
+
+            var key = Uri.UnescapeDataString(part[..idx]).Trim();
+            var val = Uri.UnescapeDataString(part[(idx + 1)..]).Trim();
+            if (!string.IsNullOrWhiteSpace(key))
+                map[key] = val;
+        }
+
+        return map;
+    }
+
+    private sealed record ParsedTarget(string Raw, string Input, bool IsBot, bool AssumeBotUsername);
+}
