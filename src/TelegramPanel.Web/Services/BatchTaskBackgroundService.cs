@@ -155,7 +155,7 @@ public sealed class BatchTaskBackgroundService : BackgroundService
                     failed = after.Failed;
                 }
 
-                // 如果任务被用户取消（当前实现：Cancel 会把状态写成 failed），则不覆盖它
+                // 如果任务被用户取消（状态变为 canceled），则不覆盖它
                 var latest = await taskManagement.GetTaskAsync(pending.Id);
                 if (latest != null && latest.Status != "running")
                     return;

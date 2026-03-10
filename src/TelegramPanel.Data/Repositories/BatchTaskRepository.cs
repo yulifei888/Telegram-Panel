@@ -55,7 +55,7 @@ public class BatchTaskRepository : Repository<BatchTask>, IBatchTaskRepository
             return 0;
 
         var staleTasks = await _dbSet
-            .Where(t => t.Status == "completed" || t.Status == "failed")
+            .Where(t => t.Status == "completed" || t.Status == "failed" || t.Status == "canceled")
             .OrderByDescending(t => t.CreatedAt)
             .ThenByDescending(t => t.Id)
             .Skip(keepCount)

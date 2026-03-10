@@ -146,6 +146,21 @@ public class BatchTaskManagementService
         await TrimHistoryTasksIfNeededAsync();
     }
 
+    public async Task CancelTaskAsync(int taskId)
+    {
+        var task = await _batchTaskRepository.GetFreshByIdAsync(taskId);
+        if (task == null)
+            return;
+
+        if (task.Status is "completed" or "failed" or "canceled")
+            return;
+
+        task.Status = "canceled";
+        task.CompletedAt = DateTime.UtcNow;
+        await _batchTaskRepository.UpdateFreshAsync(task);
+        await TrimHistoryTasksIfNeededAsync();
+    }
+
     public async Task DeleteTaskAsync(int id)
     {
         var task = await _batchTaskRepository.GetFreshByIdAsync(id);

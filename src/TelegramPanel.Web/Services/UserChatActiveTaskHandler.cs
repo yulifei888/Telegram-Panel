@@ -1,3 +1,5 @@
+using System.Collections.Concurrent;
+using System.Diagnostics;
 using System.Text.Json;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
@@ -30,6 +32,7 @@ public sealed class UserChatActiveTaskHandler : IModuleTaskHandler
         ValidateAndNormalizeConfig(config);
         config.Canceled = false;
         config.Error = null;
+        var configGate = new SemaphoreSlim(1, 1);
 
         if (config.EnableAiVerification)
         {
@@ -55,7 +58,7 @@ public sealed class UserChatActiveTaskHandler : IModuleTaskHandler
             if (!await host.IsStillRunningAsync(cancellationToken))
             {
                 config.Canceled = true;
-                await taskManagement.UpdateTaskConfigAsync(host.TaskId, SerializeIndented(config));
+                await PersistConfigAsync(taskManagement, host.TaskId, config, configGate, cancellationToken);
                 return;
             }
 
@@ -66,7 +69,7 @@ public sealed class UserChatActiveTaskHandler : IModuleTaskHandler
                 if (!await host.IsStillRunningAsync(cancellationToken))
                 {
                     config.Canceled = true;
-                    await taskManagement.UpdateTaskConfigAsync(host.TaskId, SerializeIndented(config));
+                    await PersistConfigAsync(taskManagement, host.TaskId, config, configGate, cancellationToken);
                     return;
                 }
 
@@ -87,14 +90,15 @@ public sealed class UserChatActiveTaskHandler : IModuleTaskHandler
         if (accountSlots.Count == 0)
         {
             config.Error = "没有可用的账号-目标组合（请确认账号已加入目标群组/频道）";
-            await taskManagement.UpdateTaskConfigAsync(host.TaskId, SerializeIndented(config));
+            await PersistConfigAsync(taskManagement, host.TaskId, config, configGate, cancellationToken);
             throw new InvalidOperationException(config.Error);
         }
 
-        await taskManagement.UpdateTaskConfigAsync(host.TaskId, SerializeIndented(config));
+        await PersistConfigAsync(taskManagement, host.TaskId, config, configGate, cancellationToken);
 
-        var completed = 0;
-        var failed = 0;
+        var progress = new TaskProgressCounter();
+        var verificationTasks = new ConcurrentDictionary<Guid, Task>();
+        using var verificationTokenSource = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         var accountQueueIndex = 0;
         var messageQueueIndex = 0;
         var targetQueueIndexByAccountId = new Dictionary<int, int>();
@@ -102,6 +106,18 @@ public sealed class UserChatActiveTaskHandler : IModuleTaskHandler
 
         try
         {
+            async Task<bool> DelayUntilNextSendAsync(Stopwatch timer, int intervalMs)
+            {
+                if (intervalMs <= 0)
+                    return true;
+
+                var remaining = intervalMs - (int)timer.ElapsedMilliseconds;
+                if (remaining <= 0)
+                    return true;
+
+                return await DelayWithPauseCheckAsync(host, remaining, cancellationToken);
+            }
+
             while (!cancellationToken.IsCancellationRequested)
             {
                 cancellationToken.ThrowIfCancellationRequested();
@@ -109,11 +125,15 @@ public sealed class UserChatActiveTaskHandler : IModuleTaskHandler
                 if (!await host.IsStillRunningAsync(cancellationToken))
                 {
                     config.Canceled = true;
+                    verificationTokenSource.Cancel();
                     break;
                 }
 
-                if (config.MaxMessages > 0 && completed >= config.MaxMessages)
+                if (config.MaxMessages > 0 && progress.Completed >= config.MaxMessages)
                     break;
+
+                var intervalMs = NextDelayMilliseconds(config.DelayMinMs, config.DelayMaxMs);
+                var loopTimer = Stopwatch.StartNew();
 
                 var accountIdx = SelectIndex(config.AccountMode, accountSlots.Count, ref accountQueueIndex);
                 var accountSlot = accountSlots[accountIdx];
@@ -132,6 +152,7 @@ public sealed class UserChatActiveTaskHandler : IModuleTaskHandler
                 if (!await host.IsStillRunningAsync(cancellationToken))
                 {
                     config.Canceled = true;
+                    verificationTokenSource.Cancel();
                     break;
                 }
 
@@ -142,25 +163,32 @@ public sealed class UserChatActiveTaskHandler : IModuleTaskHandler
                 }
                 catch (Exception ex)
                 {
-                    completed++;
-                    failed++;
+                    var completed = Interlocked.Increment(ref progress.Completed);
+                    Interlocked.Increment(ref progress.Failed);
                     var hadTemplateFailure = true;
-                    AddFailure(config, accountSlot.Account, targetSlot.RawTarget, $"词典模板解析失败：{ex.Message}");
-                    await taskManagement.UpdateTaskConfigAsync(host.TaskId, SerializeIndented(config));
+                    await AddFailureAndPersistAsync(
+                        taskManagement,
+                        host.TaskId,
+                        config,
+                        accountSlot.Account,
+                        targetSlot.RawTarget,
+                        $"词典模板解析失败：{ex.Message}",
+                        configGate,
+                        cancellationToken);
 
                     if (ShouldPersistProgress(completed, hadTemplateFailure, lastProgressPersistAt))
                     {
-                        await host.UpdateProgressAsync(completed, failed, cancellationToken);
+                        await host.UpdateProgressAsync(completed, progress.Failed, cancellationToken);
                         lastProgressPersistAt = DateTime.UtcNow;
                     }
 
                     if (config.MaxMessages > 0 && completed >= config.MaxMessages)
                         break;
 
-                    var templateFailDelayMs = NextDelayMilliseconds(config.DelayMinMs, config.DelayMaxMs);
-                    if (templateFailDelayMs > 0 && !await DelayWithPauseCheckAsync(host, templateFailDelayMs, cancellationToken))
+                    if (!await DelayUntilNextSendAsync(loopTimer, intervalMs))
                     {
                         config.Canceled = true;
+                        verificationTokenSource.Cancel();
                         break;
                     }
 
@@ -169,25 +197,32 @@ public sealed class UserChatActiveTaskHandler : IModuleTaskHandler
 
                 if (text.Length == 0)
                 {
-                    completed++;
-                    failed++;
+                    var completed = Interlocked.Increment(ref progress.Completed);
+                    Interlocked.Increment(ref progress.Failed);
                     var hadEmptyMessageFailure = true;
-                    AddFailure(config, accountSlot.Account, targetSlot.RawTarget, "词典模板解析结果为空，无法发送");
-                    await taskManagement.UpdateTaskConfigAsync(host.TaskId, SerializeIndented(config));
+                    await AddFailureAndPersistAsync(
+                        taskManagement,
+                        host.TaskId,
+                        config,
+                        accountSlot.Account,
+                        targetSlot.RawTarget,
+                        "词典模板解析结果为空，无法发送",
+                        configGate,
+                        cancellationToken);
 
                     if (ShouldPersistProgress(completed, hadEmptyMessageFailure, lastProgressPersistAt))
                     {
-                        await host.UpdateProgressAsync(completed, failed, cancellationToken);
+                        await host.UpdateProgressAsync(completed, progress.Failed, cancellationToken);
                         lastProgressPersistAt = DateTime.UtcNow;
                     }
 
                     if (config.MaxMessages > 0 && completed >= config.MaxMessages)
                         break;
 
-                    var emptyDelayMs = NextDelayMilliseconds(config.DelayMinMs, config.DelayMaxMs);
-                    if (emptyDelayMs > 0 && !await DelayWithPauseCheckAsync(host, emptyDelayMs, cancellationToken))
+                    if (!await DelayUntilNextSendAsync(loopTimer, intervalMs))
                     {
                         config.Canceled = true;
+                        verificationTokenSource.Cancel();
                         break;
                     }
 
@@ -200,14 +235,22 @@ public sealed class UserChatActiveTaskHandler : IModuleTaskHandler
                     text,
                     cancellationToken: cancellationToken);
 
-                completed++;
+                var sendCompleted = Interlocked.Increment(ref progress.Completed);
                 var hadFailureThisRound = false;
 
                 if (!send.Success)
                 {
-                    failed++;
+                    Interlocked.Increment(ref progress.Failed);
                     hadFailureThisRound = true;
-                    AddFailure(config, accountSlot.Account, targetSlot.RawTarget, NormalizeReason(send.Error));
+                    await AddFailureAndPersistAsync(
+                        taskManagement,
+                        host.TaskId,
+                        config,
+                        accountSlot.Account,
+                        targetSlot.RawTarget,
+                        NormalizeReason(send.Error),
+                        configGate,
+                        cancellationToken);
 
                     if (LooksLikePeerInvalid(send.Error))
                     {
@@ -219,80 +262,101 @@ public sealed class UserChatActiveTaskHandler : IModuleTaskHandler
                         if (refresh.Success && refresh.Target != null)
                             targetSlot.Resolved = refresh.Target;
                     }
-
-                    await taskManagement.UpdateTaskConfigAsync(host.TaskId, SerializeIndented(config));
                 }
                 else if (config.EnableAiVerification)
                 {
                     if (!send.MessageId.HasValue || send.MessageId.Value <= 0)
                     {
-                        failed++;
+                        Interlocked.Increment(ref progress.Failed);
                         hadFailureThisRound = true;
-                        AddFailure(config, accountSlot.Account, targetSlot.RawTarget, "消息已发送，但未获取到消息 ID，无法执行 AI 验证");
-                        await taskManagement.UpdateTaskConfigAsync(host.TaskId, SerializeIndented(config));
+                        await AddFailureAndPersistAsync(
+                            taskManagement,
+                            host.TaskId,
+                            config,
+                            accountSlot.Account,
+                            targetSlot.RawTarget,
+                            "消息已发送，但未获取到消息 ID，无法执行 AI 验证",
+                            configGate,
+                            cancellationToken);
                     }
                     else
                     {
-                        var verification = await aiVerification.TryHandleAsync(
+                        var verificationTaskId = Guid.NewGuid();
+                        var verificationTask = RunVerificationAsync(
+                            aiVerification,
                             accountSlot.Account,
                             targetSlot.Resolved,
+                            targetSlot.RawTarget,
                             send.MessageId.Value,
                             config,
-                            cancellationToken);
+                            taskManagement,
+                            host,
+                            progress,
+                            configGate,
+                            logger,
+                            verificationTokenSource.Token);
 
-                        if (!verification.Success)
-                        {
-                            failed++;
-                            hadFailureThisRound = true;
-                            AddFailure(config, accountSlot.Account, targetSlot.RawTarget, NormalizeReason(verification.Error));
-                            await taskManagement.UpdateTaskConfigAsync(host.TaskId, SerializeIndented(config));
-                        }
-                        else
-                        {
-                            logger.LogInformation(
-                                "UserChatActive AI verification completed: taskId={TaskId}, accountId={AccountId}, target={Target}, action={Action}",
-                                host.TaskId,
-                                accountSlot.Account.Id,
-                                targetSlot.RawTarget,
-                                verification.ActionSummary ?? "(none)");
-                        }
+                        verificationTasks[verificationTaskId] = verificationTask;
+                        _ = verificationTask.ContinueWith(
+                            _ => verificationTasks.TryRemove(verificationTaskId, out _),
+                            CancellationToken.None,
+                            TaskContinuationOptions.ExecuteSynchronously,
+                            TaskScheduler.Default);
                     }
                 }
 
-                if (ShouldPersistProgress(completed, hadFailureThisRound, lastProgressPersistAt))
+                if (ShouldPersistProgress(sendCompleted, hadFailureThisRound, lastProgressPersistAt))
                 {
-                    await host.UpdateProgressAsync(completed, failed, cancellationToken);
+                    await host.UpdateProgressAsync(sendCompleted, progress.Failed, cancellationToken);
                     lastProgressPersistAt = DateTime.UtcNow;
                 }
 
-                if (config.MaxMessages > 0 && completed >= config.MaxMessages)
+                if (config.MaxMessages > 0 && sendCompleted >= config.MaxMessages)
                     break;
 
-                var delayMs = NextDelayMilliseconds(config.DelayMinMs, config.DelayMaxMs);
-                if (delayMs > 0 && !await DelayWithPauseCheckAsync(host, delayMs, cancellationToken))
+                if (!await DelayUntilNextSendAsync(loopTimer, intervalMs))
                 {
                     config.Canceled = true;
+                    verificationTokenSource.Cancel();
                     break;
                 }
             }
+
+            var pendingVerifications = verificationTasks.Values.ToArray();
+            if (pendingVerifications.Length > 0)
+                await Task.WhenAll(pendingVerifications);
         }
         catch (Exception ex)
         {
+            verificationTokenSource.Cancel();
+            var pendingVerifications = verificationTasks.Values.ToArray();
+            if (pendingVerifications.Length > 0)
+            {
+                try
+                {
+                    await Task.WhenAll(pendingVerifications);
+                }
+                catch
+                {
+                    // 忽略验证任务的二次异常，避免覆盖主异常。
+                }
+            }
+
             logger.LogWarning(ex, "UserChatActive task failed (taskId={TaskId})", host.TaskId);
             config.Error = ex.Message;
-            await taskManagement.UpdateTaskConfigAsync(host.TaskId, SerializeIndented(config));
+            await PersistConfigAsync(taskManagement, host.TaskId, config, configGate, cancellationToken);
             throw;
         }
 
-        await host.UpdateProgressAsync(completed, failed, cancellationToken);
+        await host.UpdateProgressAsync(progress.Completed, progress.Failed, cancellationToken);
         if (config.Canceled)
         {
-            await taskManagement.UpdateTaskConfigAsync(host.TaskId, SerializeIndented(config));
+            await PersistConfigAsync(taskManagement, host.TaskId, config, configGate, cancellationToken);
             return;
         }
 
         config.Error = null;
-        await taskManagement.UpdateTaskConfigAsync(host.TaskId, SerializeIndented(config));
+        await PersistConfigAsync(taskManagement, host.TaskId, config, configGate, cancellationToken);
     }
 
     private static UserChatActiveTaskConfig DeserializeConfig(string? rawConfig)
@@ -497,6 +561,140 @@ public sealed class UserChatActiveTaskHandler : IModuleTaskHandler
     private static string SerializeIndented(UserChatActiveTaskConfig config)
     {
         return JsonSerializer.Serialize(config, new JsonSerializerOptions { WriteIndented = true });
+    }
+
+    private static async Task PersistConfigAsync(
+        BatchTaskManagementService taskManagement,
+        int taskId,
+        UserChatActiveTaskConfig config,
+        SemaphoreSlim gate,
+        CancellationToken cancellationToken)
+    {
+        await gate.WaitAsync(cancellationToken);
+        try
+        {
+            await taskManagement.UpdateTaskConfigAsync(taskId, SerializeIndented(config));
+        }
+        finally
+        {
+            gate.Release();
+        }
+    }
+
+    private static async Task AddFailureAndPersistAsync(
+        BatchTaskManagementService taskManagement,
+        int taskId,
+        UserChatActiveTaskConfig config,
+        Account account,
+        string rawTarget,
+        string reason,
+        SemaphoreSlim gate,
+        CancellationToken cancellationToken)
+    {
+        await gate.WaitAsync(cancellationToken);
+        try
+        {
+            AddFailure(config, account, rawTarget, reason);
+            await taskManagement.UpdateTaskConfigAsync(taskId, SerializeIndented(config));
+        }
+        finally
+        {
+            gate.Release();
+        }
+    }
+
+    private static async Task RunVerificationAsync(
+        UserChatActiveAiVerificationService aiVerification,
+        Account account,
+        AccountTelegramToolsService.ResolvedChatTarget target,
+        string rawTarget,
+        int sentMessageId,
+        UserChatActiveTaskConfig config,
+        BatchTaskManagementService taskManagement,
+        IModuleTaskExecutionHost host,
+        TaskProgressCounter progress,
+        SemaphoreSlim configGate,
+        ILogger logger,
+        CancellationToken cancellationToken)
+    {
+        if (cancellationToken.IsCancellationRequested)
+            return;
+
+        var timeoutSeconds = Math.Clamp(config.VerificationTimeoutSeconds, 3, 300);
+        using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        timeoutCts.CancelAfter(TimeSpan.FromSeconds(timeoutSeconds + 10));
+
+        try
+        {
+            var verification = await aiVerification.TryHandleAsync(
+                account,
+                target,
+                sentMessageId,
+                config,
+                timeoutCts.Token);
+
+            if (!verification.Success)
+            {
+                var failed = Interlocked.Increment(ref progress.Failed);
+                await AddFailureAndPersistAsync(
+                    taskManagement,
+                    host.TaskId,
+                    config,
+                    account,
+                    rawTarget,
+                    NormalizeReason(verification.Error),
+                    configGate,
+                    CancellationToken.None);
+                await host.UpdateProgressAsync(progress.Completed, failed, CancellationToken.None);
+            }
+            else
+            {
+                logger.LogInformation(
+                    "UserChatActive AI verification completed: taskId={TaskId}, accountId={AccountId}, target={Target}, action={Action}",
+                    host.TaskId,
+                    account.Id,
+                    rawTarget,
+                    verification.ActionSummary ?? "(none)");
+            }
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            // 任务被取消时忽略验证
+        }
+        catch (OperationCanceledException)
+        {
+            var failed = Interlocked.Increment(ref progress.Failed);
+            await AddFailureAndPersistAsync(
+                taskManagement,
+                host.TaskId,
+                config,
+                account,
+                rawTarget,
+                "验证处理超时",
+                configGate,
+                CancellationToken.None);
+            await host.UpdateProgressAsync(progress.Completed, failed, CancellationToken.None);
+        }
+        catch (Exception ex)
+        {
+            var failed = Interlocked.Increment(ref progress.Failed);
+            await AddFailureAndPersistAsync(
+                taskManagement,
+                host.TaskId,
+                config,
+                account,
+                rawTarget,
+                $"验证处理异常：{ex.Message}",
+                configGate,
+                CancellationToken.None);
+            await host.UpdateProgressAsync(progress.Completed, failed, CancellationToken.None);
+        }
+    }
+
+    private sealed class TaskProgressCounter
+    {
+        public int Completed;
+        public int Failed;
     }
 
     private sealed class AccountSlot

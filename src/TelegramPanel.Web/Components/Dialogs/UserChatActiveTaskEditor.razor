@@ -60,12 +60,14 @@
 
         <MudGrid>
             <MudItem xs="12" md="4">
-                <MudNumericField T="int" @bind-Value="delayMinMs" @bind-Value:after="OnInputsChanged"
-                                 Label="最小间隔(秒)" Variant="Variant.Outlined" Min="0" Max="600" />
+                <MudNumericField T="decimal" @bind-Value="delayMinSeconds" @bind-Value:after="OnInputsChanged"
+                                 Label="最小间隔(秒)" Variant="Variant.Outlined" Min="0" Max="600" Step="0.01m"
+                                 HelperText="支持小数秒，例如 0.01、0.1" />
             </MudItem>
             <MudItem xs="12" md="4">
-                <MudNumericField T="int" @bind-Value="delayMaxMs" @bind-Value:after="OnInputsChanged"
-                                 Label="最大间隔(秒)" Variant="Variant.Outlined" Min="0" Max="600" />
+                <MudNumericField T="decimal" @bind-Value="delayMaxSeconds" @bind-Value:after="OnInputsChanged"
+                                 Label="最大间隔(秒)" Variant="Variant.Outlined" Min="0" Max="600" Step="0.01m"
+                                 HelperText="支持小数秒，例如 0.01、0.1" />
             </MudItem>
             <MudItem xs="12" md="4">
                 <MudNumericField T="int" @bind-Value="maxMessages" @bind-Value:after="OnInputsChanged"
@@ -157,8 +159,8 @@
     private IEnumerable<int> selectedCategoryIds = Array.Empty<int>();
     private string targetsText = string.Empty;
     private string dictionaryText = string.Empty;
-    private int delayMinMs = 15;
-    private int delayMaxMs = 45;
+    private decimal delayMinSeconds = 15m;
+    private decimal delayMaxSeconds = 45m;
     private int maxMessages;
     private bool enableAiVerification;
     private int verificationTimeoutSeconds = 15;
@@ -222,8 +224,8 @@
             selectedCategoryIds = NormalizeCategoryIds(cfg.CategoryIds, cfg.CategoryId);
             targetsText = string.Join(Environment.NewLine, cfg.Targets ?? new List<string>());
             dictionaryText = string.Join(Environment.NewLine, cfg.Dictionary ?? new List<string>());
-            delayMinMs = ConvertMillisecondsToSeconds(cfg.DelayMinMs);
-            delayMaxMs = ConvertMillisecondsToSeconds(cfg.DelayMaxMs);
+            delayMinSeconds = ConvertMillisecondsToSeconds(cfg.DelayMinMs);
+            delayMaxSeconds = ConvertMillisecondsToSeconds(cfg.DelayMaxMs);
             maxMessages = cfg.MaxMessages;
             accountMode = NormalizeMode(cfg.AccountMode);
             targetMode = NormalizeMode(cfg.TargetMode);
@@ -343,13 +345,13 @@
             }
         }
 
-        if (delayMinMs < 0 || delayMaxMs < 0)
+        if (delayMinSeconds < 0 || delayMaxSeconds < 0)
         {
             await DraftChanged.InvokeAsync(new ModuleTaskDraft(0, null, false, "间隔不能为负数"));
             return;
         }
 
-        if (delayMaxMs < delayMinMs)
+        if (delayMaxSeconds < delayMinSeconds)
         {
             await DraftChanged.InvokeAsync(new ModuleTaskDraft(0, null, false, "最大间隔不能小于最小间隔"));
             return;
@@ -392,8 +394,8 @@
             CategoryNames = categoryNames,
             Targets = targets,
             Dictionary = dictionary,
-            DelayMinMs = delayMinMs * 1000,
-            DelayMaxMs = delayMaxMs * 1000,
+            DelayMinMs = ConvertSecondsToMilliseconds(delayMinSeconds),
+            DelayMaxMs = ConvertSecondsToMilliseconds(delayMaxSeconds),
             MaxMessages = maxMessages,
             AccountMode = accountMode,
             TargetMode = targetMode,
@@ -421,12 +423,20 @@
         return ids;
     }
 
-    private static int ConvertMillisecondsToSeconds(int value)
+    private static decimal ConvertMillisecondsToSeconds(int value)
+    {
+        if (value <= 0)
+            return 0m;
+
+        return Math.Round(value / 1000m, 3, MidpointRounding.AwayFromZero);
+    }
+
+    private static int ConvertSecondsToMilliseconds(decimal value)
     {
         if (value <= 0)
             return 0;
 
-        return Math.Max(1, (int)Math.Ceiling(value / 1000d));
+        return (int)Math.Round(value * 1000m, MidpointRounding.AwayFromZero);
     }
 
     private static bool IsValidMode(string? value)

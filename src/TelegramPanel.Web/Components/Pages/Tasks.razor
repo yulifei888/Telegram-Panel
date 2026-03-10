@@ -45,6 +45,7 @@
                 <MudSelectItem Value='@("all")'>全部</MudSelectItem>
                 <MudSelectItem Value='@("completed")'>已完成</MudSelectItem>
                 <MudSelectItem Value='@("failed")'>失败</MudSelectItem>
+                <MudSelectItem Value='@("canceled")'>已取消</MudSelectItem>
             </MudSelect>
         </MudStack>
     </MudCardContent>
@@ -450,6 +451,7 @@
         "paused" => "已暂停",
         "completed" => "已完成",
         "failed" => "失败",
+        "canceled" => "已取消",
         _ => status
     };
 
@@ -460,6 +462,7 @@
         "paused" => Color.Warning,
         "pending" => Color.Default,
         "failed" => Color.Error,
+        "canceled" => Color.Secondary,
         _ => Color.Default
     };
 
@@ -469,6 +472,7 @@
         "running" => Color.Primary,
         "paused" => Color.Warning,
         "failed" => Color.Error,
+        "canceled" => Color.Secondary,
         _ => Color.Default
     };
 
@@ -484,7 +488,7 @@
         status is "pending" or "running" or "paused";
 
     private static bool IsHistoryStatus(string status) =>
-        status is "completed" or "failed";
+        status is "completed" or "failed" or "canceled";
 
     private static string GetScheduledStatusName(string status) =>
         string.Equals((status ?? string.Empty).Trim(), ScheduledTaskStatuses.Paused, StringComparison.OrdinalIgnoreCase)
@@ -594,10 +598,10 @@
     private bool CanCancelTask(BatchTask task)
     {
         var status = GetDisplayStatus(task);
-        if (status is not ("pending" or "running"))
+        if (status is not ("pending" or "running" or "paused"))
             return false;
 
-        return !CanPauseTask(task);
+        return true;
     }
 
     private static List<string> ExtractBotAdminFailureLines(BatchTask task)
@@ -872,7 +876,7 @@
         {
             try
             {
-                await TaskManagement.CompleteTaskAsync(id, false);
+                await TaskManagement.CancelTaskAsync(id);
                 await LoadTasks();
                 Snackbar.Add("任务已取消", Severity.Warning);
             }
