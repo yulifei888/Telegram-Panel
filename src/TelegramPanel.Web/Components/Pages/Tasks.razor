@@ -10,6 +10,7 @@
 @using TelegramPanel.Data.Entities
 @using TelegramPanel.Core.BatchTasks
 @using System.Text.Json
+@using System.Text.Json.Nodes
 @using TelegramPanel.Modules
 @using TelegramPanel.Web.Modules
 @using TelegramPanel.Web.Services
@@ -551,7 +552,29 @@
     private static string? NormalizeNullableText(string? value)
     {
         var text = (value ?? string.Empty).Trim();
-        return text.Length == 0 ? null : text;
+        if (text.Length == 0)
+            return null;
+
+        return StripRuntimeFields(text);
+    }
+
+    private static string StripRuntimeFields(string config)
+    {
+        try
+        {
+            var node = JsonNode.Parse(config);
+            if (node is JsonObject obj)
+            {
+                obj.Remove("recent_failures");
+                return obj.ToJsonString(new JsonSerializerOptions { WriteIndented = true });
+            }
+        }
+        catch
+        {
+            // 配置非 JSON 或解析失败时直接回退到原内容
+        }
+
+        return config;
     }
 
     private static bool HasStatus(BatchTask task, string status)
