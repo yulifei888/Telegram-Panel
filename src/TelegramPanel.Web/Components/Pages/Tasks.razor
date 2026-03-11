@@ -685,7 +685,7 @@
         return lines;
     }
 
-    private static bool TryBuildUserChatActiveDetails(BatchTask task, out string details)
+    private bool TryBuildUserChatActiveDetails(BatchTask task, out string details)
     {
         details = string.Empty;
         if (!IsUserChatActiveTask(task.TaskType) || string.IsNullOrWhiteSpace(task.Config))
@@ -721,7 +721,8 @@
                     var account = item.TryGetProperty("account", out var accountEl) ? (accountEl.GetString() ?? "").Trim() : "";
                     var target = item.TryGetProperty("target", out var targetEl) ? (targetEl.GetString() ?? "").Trim() : "";
                     var reason = item.TryGetProperty("reason", out var reasonEl) ? (reasonEl.GetString() ?? "").Trim() : "";
-                    var time = item.TryGetProperty("time_utc", out var timeEl) ? (timeEl.GetString() ?? "").Trim() : "";
+                    var timeRaw = item.TryGetProperty("time_utc", out var timeEl) ? (timeEl.GetString() ?? "").Trim() : "";
+                    var time = FormatTaskFailureTime(timeRaw);
 
                     var line = $"{(account.Length == 0 ? "-" : account)} -> {(target.Length == 0 ? "-" : target)}：{(reason.Length == 0 ? "失败" : reason)}";
                     if (time.Length > 0)
@@ -761,6 +762,17 @@
 
         var seconds = milliseconds / 1000d;
         return seconds.ToString("0.###");
+    }
+
+    private string FormatTaskFailureTime(string? rawTime)
+    {
+        if (string.IsNullOrWhiteSpace(rawTime))
+            return string.Empty;
+
+        if (DateTimeOffset.TryParse(rawTime, out var parsed))
+            return TimeZone.Format(parsed.UtcDateTime, "yyyy-MM-dd HH:mm:ss");
+
+        return rawTime;
     }
 
     private static string BuildSelectedCategorySummary(JsonElement root)
