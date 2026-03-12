@@ -1151,6 +1151,7 @@ public class AccountTelegramToolsService
         Func<TelegramAccountMessageUpdate, bool>? messageFilter = null,
         IReadOnlyCollection<string>? allowedSenderUsernames = null,
         bool restrictToAllowedUsernames = false,
+        bool stopOnUnmatchedMention = false,
         CancellationToken cancellationToken = default)
     {
         if (timeoutSeconds < 3)
@@ -1164,13 +1165,29 @@ public class AccountTelegramToolsService
             var waitStartedAt = DateTimeOffset.UtcNow.AddSeconds(-2);
             var update = await _updateHub.WaitForAsync(
                 accountId,
-                x => IsCandidateVerificationMessage(x, target, currentUsername, sentMessageId, messageFilter, allowedSenderUsernames, restrictToAllowedUsernames),
+                x => IsCandidateVerificationMessage(
+                    x,
+                    target,
+                    currentUsername,
+                    sentMessageId,
+                    messageFilter,
+                    allowedSenderUsernames,
+                    restrictToAllowedUsernames,
+                    stopOnUnmatchedMention),
                 waitStartedAt,
                 TimeSpan.FromSeconds(timeoutSeconds),
                 cancellationToken);
 
             if (update == null)
                 return (false, $"等待验证消息超时（{timeoutSeconds} 秒）", null);
+
+            if (messageFilter != null
+                && stopOnUnmatchedMention
+                && !messageFilter(update)
+                && IsMentionOrReply(update, currentUsername, sentMessageId))
+            {
+                return (false, "验证消息未命中关键词/正则，已跳过", null);
+            }
 
             var candidate = await BuildVerificationCandidateAsync(
                 client,
@@ -1280,7 +1297,8 @@ public class AccountTelegramToolsService
         int sentMessageId,
         Func<TelegramAccountMessageUpdate, bool>? messageFilter,
         IReadOnlyCollection<string>? allowedSenderUsernames,
-        bool restrictToAllowedUsernames)
+        bool restrictToAllowedUsernames,
+        bool stopOnUnmatchedMention)
     {
         if (!IsSamePeer(target.Peer, update.Message.peer_id))
             return false;
@@ -1297,14 +1315,30 @@ public class AccountTelegramToolsService
         }
 
         if (messageFilter != null)
-            return messageFilter(update);
+        {
+            if (messageFilter(update))
+                return true;
 
-        var mentionsAccount = ContainsUsernameMention(update.Message.message, currentUsername);
-        var replyToSent = update.ReplyToMessageId == sentMessageId;
-        if (!mentionsAccount && !replyToSent)
+            if (stopOnUnmatchedMention && IsMentionOrReply(update, currentUsername, sentMessageId))
+                return true;
+
+            return false;
+        }
+
+        if (!IsMentionOrReply(update, currentUsername, sentMessageId))
             return false;
 
         return LooksLikeVerificationChallenge(update);
+    }
+
+    private static bool IsMentionOrReply(
+        TelegramAccountMessageUpdate update,
+        string? currentUsername,
+        int sentMessageId)
+    {
+        var mentionsAccount = ContainsUsernameMention(update.Message.message, currentUsername);
+        var replyToSent = update.ReplyToMessageId == sentMessageId;
+        return mentionsAccount || replyToSent;
     }
 
     private static bool IsSenderInAllowedUsernames(

@@ -72,10 +72,16 @@ public sealed class UserChatActiveAiVerificationService
             messageFilter,
             restrictToAllowedUsernames ? allowedUsernames : null,
             restrictToAllowedUsernames,
+            messageFilter != null,
             cancellationToken);
 
         if (!wait.Success || wait.Candidate == null)
+        {
+            if (IsVerificationSkipped(wait.Error))
+                return (true, null, "未命中关键词/正则，跳过验证");
+
             return (false, wait.Error, null);
+        }
 
         var candidate = wait.Candidate;
         var image = candidate.ImageJpegBytes is { Length: > 0 }
@@ -286,5 +292,15 @@ public sealed class UserChatActiveAiVerificationService
             .Replace(" ", string.Empty, StringComparison.Ordinal)
             .Replace("\r", string.Empty, StringComparison.Ordinal)
             .Replace("\n", string.Empty, StringComparison.Ordinal);
+    }
+
+    private static bool IsVerificationSkipped(string? error)
+    {
+        if (string.IsNullOrWhiteSpace(error))
+            return false;
+
+        return error.Contains("未命中关键词", StringComparison.OrdinalIgnoreCase)
+               || error.Contains("未命中正则", StringComparison.OrdinalIgnoreCase)
+               || error.Contains("跳过验证", StringComparison.OrdinalIgnoreCase);
     }
 }
