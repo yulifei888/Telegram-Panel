@@ -82,6 +82,12 @@ public sealed class UserChatActiveTaskConfig
     [JsonPropertyName("verification_regexes")]
     public List<string> VerificationRegexes { get; set; } = new();
 
+    [JsonPropertyName("verification_bot_username_filter")]
+    public bool VerificationBotUsernameFilterEnabled { get; set; }
+
+    [JsonPropertyName("verification_bot_usernames")]
+    public List<string> VerificationBotUsernames { get; set; } = new();
+
     [JsonPropertyName("canceled")]
     public bool Canceled { get; set; }
 

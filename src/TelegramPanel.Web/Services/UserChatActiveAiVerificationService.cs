@@ -32,6 +32,8 @@ public sealed class UserChatActiveAiVerificationService
         var matchMode = UserChatActiveAiVerificationMatchModes.Normalize(config.VerificationMatchMode);
         var keywordList = NormalizeKeywordList(config.VerificationKeywords);
         var regexList = NormalizeRegexList(config.VerificationRegexes);
+        var allowedUsernames = NormalizeBotUsernames(config.VerificationBotUsernames);
+        var restrictToAllowedUsernames = config.VerificationBotUsernameFilterEnabled && allowedUsernames.Count > 0;
         Func<TelegramAccountMessageUpdate, bool>? messageFilter = null;
 
         if (string.Equals(matchMode, UserChatActiveAiVerificationMatchModes.Keyword, StringComparison.Ordinal))
@@ -68,6 +70,8 @@ public sealed class UserChatActiveAiVerificationService
             account.Username,
             config.VerificationTimeoutSeconds,
             messageFilter,
+            restrictToAllowedUsernames ? allowedUsernames : null,
+            restrictToAllowedUsernames,
             cancellationToken);
 
         if (!wait.Success || wait.Candidate == null)
@@ -188,6 +192,15 @@ public sealed class UserChatActiveAiVerificationService
     {
         return (items ?? Array.Empty<string>())
             .Select(x => (x ?? string.Empty).Trim())
+            .Where(x => x.Length > 0)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+    }
+
+    private static List<string> NormalizeBotUsernames(IEnumerable<string>? items)
+    {
+        return (items ?? Array.Empty<string>())
+            .Select(x => (x ?? string.Empty).Trim().TrimStart('@'))
             .Where(x => x.Length > 0)
             .Distinct(StringComparer.OrdinalIgnoreCase)
             .ToList();

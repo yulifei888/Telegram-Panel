@@ -139,13 +139,26 @@
                 <MudItem xs="12" md="6">
                     <MudSelect T="string" @bind-Value="verificationMatchMode" @bind-Value:after="OnInputsChanged"
                                Label="验证消息匹配方式" Variant="Variant.Outlined" Dense="true"
-                               HelperText="仅匹配 bot 消息。关键词/正则会同时匹配消息正文与按钮文字。">
+                               HelperText="默认仅匹配 bot 消息；开启“指定用户名”后按名单匹配。关键词/正则会同时匹配消息正文与按钮文字。">
                         <MudSelectItem Value="@UserChatActiveAiVerificationMatchModes.MentionOrReply">仅 &#64;账号 / 回复消息</MudSelectItem>
                         <MudSelectItem Value="@UserChatActiveAiVerificationMatchModes.Keyword">关键词匹配</MudSelectItem>
                         <MudSelectItem Value="@UserChatActiveAiVerificationMatchModes.Regex">正则匹配</MudSelectItem>
                     </MudSelect>
                 </MudItem>
             </MudGrid>
+
+            <MudSwitch T="bool" @bind-Value="verificationBotUsernameFilterEnabled" @bind-Value:after="OnInputsChanged"
+                       Label="仅匹配指定的机器人用户名" Color="Color.Primary" />
+
+            @if (verificationBotUsernameFilterEnabled)
+            {
+                <MudTextField @bind-Value="verificationBotUsernamesText" @bind-Value:after="OnInputsChanged"
+                              Label="机器人用户名（每行一个）"
+                              Variant="Variant.Outlined"
+                              Lines="4"
+                              Immediate="true"
+                              HelperText="支持带 &#64; 前缀。开启后仅匹配这些用户名发送的验证消息（可绕过 bot 标识缺失）。" />
+            }
 
             @if (IsKeywordMatchMode)
             {
@@ -211,6 +224,8 @@
     private string verificationMatchMode = UserChatActiveAiVerificationMatchModes.MentionOrReply;
     private string verificationKeywordsText = string.Empty;
     private string verificationRegexText = string.Empty;
+    private bool verificationBotUsernameFilterEnabled;
+    private string verificationBotUsernamesText = string.Empty;
     private string? initialAiModel;
     private string selectedAiModelOption = UseGlobalDefaultModelOption;
     private string customAiModel = string.Empty;
@@ -285,6 +300,8 @@
             verificationMatchMode = UserChatActiveAiVerificationMatchModes.Normalize(cfg.VerificationMatchMode);
             verificationKeywordsText = string.Join(Environment.NewLine, cfg.VerificationKeywords ?? new List<string>());
             verificationRegexText = string.Join(Environment.NewLine, cfg.VerificationRegexes ?? new List<string>());
+            verificationBotUsernameFilterEnabled = cfg.VerificationBotUsernameFilterEnabled;
+            verificationBotUsernamesText = string.Join(Environment.NewLine, cfg.VerificationBotUsernames ?? new List<string>());
         }
         catch
         {
@@ -353,6 +370,7 @@
         var dictionary = ParseMessageLines(dictionaryText);
         var verificationKeywords = ParseVerificationLines(verificationKeywordsText);
         var verificationRegexes = ParseVerificationLines(verificationRegexText);
+        var verificationBotUsernames = ParseBotUsernames(verificationBotUsernamesText);
         var normalizedMatchMode = UserChatActiveAiVerificationMatchModes.Normalize(verificationMatchMode);
         var selectedIds = NormalizeCategoryIds(selectedCategoryIds, 0);
         var selectedCategories = categories.Where(x => selectedIds.Contains(x.Id)).ToList();
@@ -467,6 +485,12 @@
                     }
                 }
             }
+
+            if (verificationBotUsernameFilterEnabled && verificationBotUsernames.Count == 0)
+            {
+                await DraftChanged.InvokeAsync(new ModuleTaskDraft(0, null, false, "请至少填写一个机器人用户名"));
+                return;
+            }
         }
 
         var categoryNames = selectedCategories.Select(x => x.Name).ToList();
@@ -489,7 +513,9 @@
             VerificationTimeoutSeconds = enableAiVerification ? verificationTimeoutSeconds : 15,
             VerificationMatchMode = normalizedMatchMode,
             VerificationKeywords = verificationKeywords,
-            VerificationRegexes = verificationRegexes
+            VerificationRegexes = verificationRegexes,
+            VerificationBotUsernameFilterEnabled = verificationBotUsernameFilterEnabled,
+            VerificationBotUsernames = verificationBotUsernames
         };
 
         var total = maxMessages > 0 ? maxMessages : 0;
@@ -572,6 +598,19 @@
         return text
             .Split(new[] { "\r\n", "\n", "\r" }, StringSplitOptions.RemoveEmptyEntries)
             .Select(x => (x ?? string.Empty).Trim())
+            .Where(x => x.Length > 0)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+    }
+
+    private static List<string> ParseBotUsernames(string? text)
+    {
+        if (string.IsNullOrWhiteSpace(text))
+            return new List<string>();
+
+        return text
+            .Split(new[] { "\r\n", "\n", "\r" }, StringSplitOptions.RemoveEmptyEntries)
+            .Select(x => (x ?? string.Empty).Trim().TrimStart('@'))
             .Where(x => x.Length > 0)
             .Distinct(StringComparer.OrdinalIgnoreCase)
             .ToList();

@@ -84,6 +84,7 @@ public sealed class UserChatActiveTaskRerunBuilder : IModuleTaskRerunBuilder
         cfg.VerificationMatchMode = UserChatActiveAiVerificationMatchModes.Normalize(cfg.VerificationMatchMode);
         cfg.VerificationKeywords = NormalizeVerificationItems(cfg.VerificationKeywords);
         cfg.VerificationRegexes = NormalizeVerificationItems(cfg.VerificationRegexes);
+        cfg.VerificationBotUsernames = NormalizeBotUsernames(cfg.VerificationBotUsernames);
 
         if (cfg.EnableAiVerification)
         {
@@ -92,6 +93,9 @@ public sealed class UserChatActiveTaskRerunBuilder : IModuleTaskRerunBuilder
             {
                 throw new InvalidOperationException("AI 验证已启用，但未配置关键词匹配内容");
             }
+
+            if (cfg.VerificationBotUsernameFilterEnabled && cfg.VerificationBotUsernames.Count == 0)
+                throw new InvalidOperationException("AI 验证已启用，但未配置允许的机器人用户名");
 
             if (string.Equals(cfg.VerificationMatchMode, UserChatActiveAiVerificationMatchModes.Regex, StringComparison.Ordinal))
             {
@@ -163,4 +167,13 @@ public sealed class UserChatActiveTaskRerunBuilder : IModuleTaskRerunBuilder
             .ToList();
     }
 
+
+    private static List<string> NormalizeBotUsernames(IEnumerable<string>? items)
+    {
+        return (items ?? Array.Empty<string>())
+            .Select(x => (x ?? string.Empty).Trim().TrimStart('@'))
+            .Where(x => x.Length > 0)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+    }
 }

@@ -1149,6 +1149,8 @@ public class AccountTelegramToolsService
         string? currentUsername,
         int timeoutSeconds,
         Func<TelegramAccountMessageUpdate, bool>? messageFilter = null,
+        IReadOnlyCollection<string>? allowedSenderUsernames = null,
+        bool restrictToAllowedUsernames = false,
         CancellationToken cancellationToken = default)
     {
         if (timeoutSeconds < 3)
@@ -1162,7 +1164,7 @@ public class AccountTelegramToolsService
             var waitStartedAt = DateTimeOffset.UtcNow.AddSeconds(-2);
             var update = await _updateHub.WaitForAsync(
                 accountId,
-                x => IsCandidateVerificationMessage(x, target, currentUsername, sentMessageId, messageFilter),
+                x => IsCandidateVerificationMessage(x, target, currentUsername, sentMessageId, messageFilter, allowedSenderUsernames, restrictToAllowedUsernames),
                 waitStartedAt,
                 TimeSpan.FromSeconds(timeoutSeconds),
                 cancellationToken);
@@ -1276,13 +1278,23 @@ public class AccountTelegramToolsService
         ResolvedChatTarget target,
         string? currentUsername,
         int sentMessageId,
-        Func<TelegramAccountMessageUpdate, bool>? messageFilter)
+        Func<TelegramAccountMessageUpdate, bool>? messageFilter,
+        IReadOnlyCollection<string>? allowedSenderUsernames,
+        bool restrictToAllowedUsernames)
     {
-        if (!update.SenderIsBot)
-            return false;
-
         if (!IsSamePeer(target.Peer, update.Message.peer_id))
             return false;
+
+        if (restrictToAllowedUsernames)
+        {
+            if (!IsSenderInAllowedUsernames(update, allowedSenderUsernames))
+                return false;
+        }
+        else
+        {
+            if (!update.SenderIsBot)
+                return false;
+        }
 
         if (messageFilter != null)
             return messageFilter(update);
@@ -1293,6 +1305,26 @@ public class AccountTelegramToolsService
             return false;
 
         return LooksLikeVerificationChallenge(update);
+    }
+
+    private static bool IsSenderInAllowedUsernames(
+        TelegramAccountMessageUpdate update,
+        IReadOnlyCollection<string>? allowedUsernames)
+    {
+        if (allowedUsernames == null || allowedUsernames.Count == 0)
+            return false;
+
+        var username = (update.SenderUsername ?? string.Empty).Trim().TrimStart('@');
+        if (username.Length == 0)
+            return false;
+
+        foreach (var allowed in allowedUsernames)
+        {
+            if (string.Equals(allowed, username, StringComparison.OrdinalIgnoreCase))
+                return true;
+        }
+
+        return false;
     }
 
     private async Task<TelegramVerificationMessageCandidate?> BuildVerificationCandidateAsync(

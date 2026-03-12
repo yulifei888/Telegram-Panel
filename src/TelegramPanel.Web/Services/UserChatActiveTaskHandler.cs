@@ -468,6 +468,7 @@ public sealed class UserChatActiveTaskHandler : IModuleTaskHandler
         config.VerificationMatchMode = UserChatActiveAiVerificationMatchModes.Normalize(config.VerificationMatchMode);
         config.VerificationKeywords = NormalizeVerificationItems(config.VerificationKeywords);
         config.VerificationRegexes = NormalizeVerificationItems(config.VerificationRegexes);
+        config.VerificationBotUsernames = NormalizeBotUsernames(config.VerificationBotUsernames);
 
         if (config.EnableAiVerification)
         {
@@ -494,6 +495,9 @@ public sealed class UserChatActiveTaskHandler : IModuleTaskHandler
                     }
                 }
             }
+
+            if (config.VerificationBotUsernameFilterEnabled && config.VerificationBotUsernames.Count == 0)
+                throw new InvalidOperationException("AI 验证已启用，但未配置允许的机器人用户名");
         }
 
         config.RecentFailures ??= new List<UserChatActiveTaskRuntimeFailure>();
@@ -538,6 +542,15 @@ public sealed class UserChatActiveTaskHandler : IModuleTaskHandler
     {
         return (items ?? Array.Empty<string>())
             .Select(x => (x ?? string.Empty).Trim())
+            .Where(x => x.Length > 0)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+    }
+
+    private static List<string> NormalizeBotUsernames(IEnumerable<string>? items)
+    {
+        return (items ?? Array.Empty<string>())
+            .Select(x => (x ?? string.Empty).Trim().TrimStart('@'))
             .Where(x => x.Length > 0)
             .Distinct(StringComparer.OrdinalIgnoreCase)
             .ToList();
