@@ -1363,9 +1363,99 @@ public class AccountTelegramToolsService
 
             foreach (var allowed in allowedUsernames)
             {
-                if (string.Equals(allowed, normalized, StringComparison.OrdinalIgnoreCase))
+                if (string.IsNullOrWhiteSpace(allowed))
+                    continue;
+
+                var normalizedAllowed = allowed.Trim().TrimStart('@');
+                if (normalizedAllowed.Length == 0)
+                    continue;
+
+                if (string.Equals(normalizedAllowed, normalized, StringComparison.OrdinalIgnoreCase))
                     return true;
             }
+        }
+
+        foreach (var allowed in allowedUsernames)
+        {
+            if (!TryParseAllowedSenderId(allowed, out var id, out var kind))
+                continue;
+
+            if (kind == AllowedSenderIdKind.User)
+            {
+                if (update.SenderUserId.HasValue && update.SenderUserId.Value == id)
+                    return true;
+            }
+            else if (kind == AllowedSenderIdKind.Chat)
+            {
+                if (update.SenderChatId.HasValue && update.SenderChatId.Value == id)
+                    return true;
+            }
+            else
+            {
+                if ((update.SenderUserId.HasValue && update.SenderUserId.Value == id)
+                    || (update.SenderChatId.HasValue && update.SenderChatId.Value == id))
+                {
+                    return true;
+                }
+            }
+        }
+
+        return false;
+    }
+
+    private enum AllowedSenderIdKind
+    {
+        Any = 0,
+        User = 1,
+        Chat = 2
+    }
+
+    private static bool TryParseAllowedSenderId(
+        string? raw,
+        out long id,
+        out AllowedSenderIdKind kind)
+    {
+        id = 0;
+        kind = AllowedSenderIdKind.Any;
+
+        var value = (raw ?? string.Empty).Trim();
+        if (value.Length == 0)
+            return false;
+
+        if (value.StartsWith("user:", StringComparison.OrdinalIgnoreCase))
+        {
+            kind = AllowedSenderIdKind.User;
+            value = value[5..].Trim();
+        }
+        else if (value.StartsWith("chat:", StringComparison.OrdinalIgnoreCase)
+                 || value.StartsWith("channel:", StringComparison.OrdinalIgnoreCase))
+        {
+            kind = AllowedSenderIdKind.Chat;
+            value = value.Contains(':')
+                ? value[(value.IndexOf(':') + 1)..].Trim()
+                : string.Empty;
+        }
+        else if (value.StartsWith("id:", StringComparison.OrdinalIgnoreCase))
+        {
+            kind = AllowedSenderIdKind.Any;
+            value = value[3..].Trim();
+        }
+
+        if (value.StartsWith("-100", StringComparison.Ordinal) && value.Length > 4)
+        {
+            if (long.TryParse(value[4..], out var parsedChatId))
+            {
+                id = parsedChatId;
+                if (kind == AllowedSenderIdKind.Any)
+                    kind = AllowedSenderIdKind.Chat;
+                return true;
+            }
+        }
+
+        if (long.TryParse(value, out var parsed))
+        {
+            id = parsed;
+            return true;
         }
 
         return false;

@@ -151,16 +151,16 @@
             </MudGrid>
 
             <MudSwitch T="bool" @bind-Value="verificationBotUsernameFilterEnabled" @bind-Value:after="OnInputsChanged"
-                       Label="仅匹配指定的机器人用户名" Color="Color.Primary" />
+                       Label="仅匹配指定的机器人用户名/ID" Color="Color.Primary" />
 
             @if (verificationBotUsernameFilterEnabled)
             {
                 <MudTextField @bind-Value="verificationBotUsernamesText" @bind-Value:after="OnInputsChanged"
-                              Label="机器人用户名（每行一个）"
+                              Label="机器人用户名/ID（每行一个）"
                               Variant="Variant.Outlined"
                               Lines="4"
                               Immediate="true"
-                              HelperText="支持带 &#64; 前缀。开启后仅匹配这些用户名发送的验证消息（可绕过 bot 标识缺失）。" />
+                              HelperText="支持 &#64;用户名、纯数字 ID、-100 开头频道/群 ID、user:/chat: 前缀。机器人以频道/匿名身份发言时，请填写对应频道用户名或 ID。" />
             }
 
             @if (IsKeywordMatchMode)
@@ -493,7 +493,7 @@
 
             if (verificationBotUsernameFilterEnabled && verificationBotUsernames.Count == 0)
             {
-                await DraftChanged.InvokeAsync(new ModuleTaskDraft(0, null, false, "请至少填写一个机器人用户名"));
+                await DraftChanged.InvokeAsync(new ModuleTaskDraft(0, null, false, "请至少填写一个机器人用户名或 ID"));
                 return;
             }
         }
