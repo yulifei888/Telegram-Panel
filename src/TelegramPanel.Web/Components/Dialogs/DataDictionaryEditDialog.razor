@@ -6,6 +6,7 @@
 @using Microsoft.AspNetCore.Components.Forms
 @using TelegramPanel.Data.Entities
 @using TelegramPanel.Web.Services
+@implements IAsyncDisposable
 
 <MudDialog>
     <DialogContent>
@@ -73,13 +74,14 @@
                 else
                 {
                     <MudAlert Severity="Severity.Info" Variant="Variant.Outlined" Dense="true">
-                        图片字典支持一次上传多张图；删除字典或删除字典项时会同步清理图片文件。
+                        图片字典支持一次或分批选择多张图；删除字典或删除字典项时会同步清理图片文件，点击保存字典后才正式生效。
                     </MudAlert>
 
                     <MudFileUpload T="IReadOnlyList<IBrowserFile>"
                                    FilesChanged="OnFilesChanged"
                                    Accept="image/*"
-                                   MaximumFileCount="20">
+                                   MaximumFileCount="100"
+                                   Disabled="@saving">
                         <ActivatorContent>
                             <MudButton Variant="Variant.Outlined" Color="Color.Primary" StartIcon="@Icons.Material.Filled.Image">
                                 选择图片
@@ -106,9 +108,9 @@
                         </MudTable>
                     }
 
-                    @if (newImageFiles.Count > 0)
+                    @if (pendingImages.Count > 0)
                     {
-                        <MudText Typo="Typo.subtitle2">待上传图片</MudText>
+                        <MudText Typo="Typo.subtitle2">待保存图片</MudText>
                         <MudTable Items="@GetPendingImageRows()" Hover="true" Dense="true">
                             <HeaderContent>
                                 <MudTh>文件名</MudTh>
@@ -119,7 +121,7 @@
                                 <MudTd DataLabel="文件名">@context.FileName</MudTd>
                                 <MudTd DataLabel="大小">@FormatBytes(context.Size)</MudTd>
                                 <MudTd DataLabel="操作">
-                                    <MudIconButton Icon="@Icons.Material.Filled.Close" Size="Size.Small" Color="Color.Default" OnClick="@(() => RemovePendingImage(context.Index))" />
+                                    <MudIconButton Icon="@Icons.Material.Filled.Close" Size="Size.Small" Color="Color.Default" OnClick="@(() => RemovePendingImageAsync(context.Index))" />
                                 </MudTd>
                             </RowTemplate>
                         </MudTable>
@@ -146,6 +148,7 @@
 
 @code {
     private sealed record ExistingImageRow(int Id, string AssetPath, string FileName);
+    private sealed record PendingImageUpload(string AssetPath, string FileName, long Size);
     private sealed record PendingImageRow(int Index, string FileName, long Size);
 
     [CascadingParameter] private MudDialogInstance MudDialog { get; set; } = default!;
@@ -163,8 +166,10 @@
     private bool isEnabled = true;
     private string textLines = string.Empty;
     private List<ExistingImageRow> existingImages = new();
-    private List<IBrowserFile> newImageFiles = new();
+    private List<PendingImageUpload> pendingImages = new();
     private readonly string uploadScope = $"dictionaries/draft-{Guid.NewGuid():N}";
+    private bool pendingAssetsCommitted;
+    private bool cleanupStarted;
 
     private bool IsEdit => DictionaryId.HasValue && DictionaryId.Value > 0;
     private bool IsTextDictionary => string.Equals(type, DataDictionaryTypes.Text, StringComparison.OrdinalIgnoreCase);
@@ -223,11 +228,36 @@
         }
     }
 
-    private Task OnFilesChanged(IReadOnlyList<IBrowserFile> files)
+    private async Task OnFilesChanged(IReadOnlyList<IBrowserFile> files)
     {
-        if (files != null)
-            newImageFiles.AddRange(files.Where(x => x != null));
-        return Task.CompletedTask;
+        if (files == null || files.Count == 0)
+            return;
+
+        var errors = new List<string>();
+        foreach (var file in files)
+        {
+            if (file == null)
+                continue;
+
+            try
+            {
+                var stored = await AssetStorage.SaveBrowserFileAsync(file, uploadScope, ImageAssetKind.General);
+                pendingImages.Add(new PendingImageUpload(stored.AssetPath, stored.FileName, file.Size));
+            }
+            catch (Exception ex)
+            {
+                errors.Add($"{file.Name}：{ex.Message}");
+            }
+        }
+
+        if (errors.Count == 1)
+        {
+            Snackbar.Add($"暂存图片失败：{errors[0]}", Severity.Error);
+        }
+        else if (errors.Count > 1)
+        {
+            Snackbar.Add($"有 {errors.Count} 张图片暂存失败。首个错误：{errors[0]}", Severity.Error);
+        }
     }
 
     private void RemoveExistingImage(int itemId)
@@ -235,18 +265,30 @@
         existingImages.RemoveAll(x => x.Id == itemId);
     }
 
-    private void RemovePendingImage(int index)
+    private async Task RemovePendingImageAsync(int index)
     {
-        if (index >= 0 && index < newImageFiles.Count)
-            newImageFiles.RemoveAt(index);
+        if (index < 0 || index >= pendingImages.Count)
+            return;
+
+        var image = pendingImages[index];
+        pendingImages.RemoveAt(index);
+
+        try
+        {
+            await AssetStorage.DeleteAssetAsync(image.AssetPath);
+        }
+        catch (Exception ex)
+        {
+            Snackbar.Add($"删除暂存图片失败：{image.FileName}，{ex.Message}", Severity.Warning);
+        }
     }
 
     private IEnumerable<PendingImageRow> GetPendingImageRows()
     {
-        for (var index = 0; index < newImageFiles.Count; index++)
+        for (var index = 0; index < pendingImages.Count; index++)
         {
-            var file = newImageFiles[index];
-            yield return new PendingImageRow(index, file.Name, file.Size);
+            var file = pendingImages[index];
+            yield return new PendingImageRow(index, file.FileName, file.Size);
         }
     }
 
@@ -256,7 +298,6 @@
             return;
 
         saving = true;
-        var savedAssets = new List<string>();
         try
         {
             if (string.IsNullOrWhiteSpace(name))
@@ -278,25 +319,17 @@
                 return;
             }
 
-            var scope = IsEdit ? $"dictionaries/{DictionaryId!.Value}" : uploadScope;
-            var imageInputs = new List<DataDictionaryImageItemInput>();
-            foreach (var file in newImageFiles)
-            {
-                var asset = await AssetStorage.SaveBrowserFileAsync(file, scope, ImageAssetKind.General);
-                savedAssets.Add(asset.AssetPath);
-                imageInputs.Add(new DataDictionaryImageItemInput(asset.AssetPath, asset.FileName));
-            }
-
+            var imageInputs = pendingImages
+                .Select(x => new DataDictionaryImageItemInput(x.AssetPath, x.FileName))
+                .ToList();
             var keepItemIds = existingImages.Select(x => x.Id).ToList();
             var savedDictionary = await DictionaryService.SaveImageDictionaryAsync(DictionaryId, name, displayName, description, readMode, isEnabled, keepItemIds, imageInputs);
+            pendingAssetsCommitted = true;
             Snackbar.Add($"字典 {savedDictionary.DisplayName} 已保存", Severity.Success);
             MudDialog.Close(DialogResult.Ok(savedDictionary.Id));
         }
         catch (Exception ex)
         {
-            foreach (var assetPath in savedAssets)
-                await AssetStorage.DeleteAssetAsync(assetPath);
-
             Snackbar.Add($"保存失败：{ex.Message}", Severity.Error);
         }
         finally
@@ -319,5 +352,32 @@
         return "/" + (assetPath ?? string.Empty).TrimStart('/').Replace('\\', '/');
     }
 
-    private void Cancel() => MudDialog.Close();
+    private async Task Cancel()
+    {
+        await CleanupPendingAssetsAsync();
+        MudDialog.Close();
+    }
+
+    public async ValueTask DisposeAsync()
+    {
+        await CleanupPendingAssetsAsync();
+    }
+
+    private async Task CleanupPendingAssetsAsync()
+    {
+        if (pendingAssetsCommitted || cleanupStarted)
+            return;
+
+        cleanupStarted = true;
+        pendingImages.Clear();
+
+        try
+        {
+            await AssetStorage.DeleteScopeAsync(uploadScope);
+        }
+        catch
+        {
+            // 关闭对话框时忽略临时目录清理失败，避免影响主流程。
+        }
+    }
 }
