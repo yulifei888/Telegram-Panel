@@ -1,6 +1,8 @@
 # Telegram Panel
 
-基于 **WTelegramClient** 的 Telegram 多账户管理面板（.NET 8 / Blazor Server）。
+[English](README.md) | [中文](README.zh-CN.md)
+
+A multi-account Telegram management panel built on **WTelegramClient**, powered by **.NET 8** and **Blazor Server**.
 
 <p align="center">
   <img src="https://img.shields.io/badge/.NET-8.0-512BD4?style=for-the-badge&logo=dotnet&logoColor=white" alt=".NET 8.0">
@@ -10,61 +12,149 @@
 </p>
 
 <p align="center">
-  📦 <b><a href="docs/installation.md">安装部署</a></b> |
-  🏪 <b><a href="https://faka.boxmoe.eu.org/">API 账号购买</a></b> |
-  🧯 <b><a href="docs/anti-freeze.md">防冻结指南</a></b> |
-  🖼️ <b><a href="screenshot/">截图</a></b> |
-  💬 <b><a href="https://t.me/zhanzhangck">TG 频道</a></b> |
-  👥 <b><a href="https://t.me/vpsbbq">站长交流群</a></b>
+  📚 <b><a href="https://moeacgx.github.io/Telegram-Panel/">Documentation</a></b> |
+  🏪 <b><a href="https://faka.boxmoe.eu.org/">API Account Marketplace</a></b> |
+  🖼️ <b><a href="screenshot/">Screenshots</a></b> |
+  💬 <b><a href="https://t.me/zhanzhangck">Telegram Channel</a></b> |
+  👥 <b><a href="https://t.me/vpsbbq">Community Group</a></b>
 </p>
 
-## 功能概览
+## Overview
 
-- 📥 多账号批量导入/登录：压缩包导入；手机号验证码登录；2FA 密码
-- 👥 批量运营能力：批量加群/订阅/退群、批量邀请成员/机器人、批量设置管理员、导出链接等
-- 📱 一键踢出其他设备：保留面板当前会话，清理其它在线设备
-- 🧹 废号检测与一键清理：封禁/受限/冻结/未登录/Session 失效等状态批量处理
-- 🔐 2FA 管理：单个/批量修改二级密码；绑定/换绑找回邮箱（支持对接 Cloud Mail 自动收码确认）
-- 🧩 模块化扩展：任务 / API / UI 可安装扩展（见 `docs/modules.md`）
+Telegram Panel is designed for operating and managing multiple Telegram accounts from a single web interface. It focuses on account lifecycle management, batch operations, channel/group administration, automation workflows, and extensibility.
 
-## 快速开始
+## Feature Highlights
 
-### Docker 一键部署（推荐）
+- 📥 **Multi-account import and login**: import/export Telethon and TData archives, sign in with SMS verification codes, and handle 2FA passwords
+- 👥 **Batch operations for account fleets**: bulk join / subscribe / leave / start bots, auto-send messages in private groups for account warming, bulk invite members or bots, batch assign administrators, export links, and more
+- 📱 **Kick other devices with one click**: keep the current panel session while removing other active sessions
+- 🧹 **Invalid account detection and cleanup**: batch-handle banned, limited, frozen, logged-out, or expired-session accounts
+- 🔐 **2FA management**: change secondary passwords individually or in bulk, and bind / replace recovery email addresses (including support for Cloud Mail verification flows)
+- 👤 **Better account visibility**: quickly inspect joined channels and groups from the account list, and display estimated registration time based on the 777000 system notification history
+- 🧩 **Modular architecture**: install extensions for tasks, APIs, and UI modules (see `docs/developer/modules.md`)
 
-🐳 面向小白：`git clone` → `docker compose up` → 浏览器打开 → 登录改密码 → 配置 ApiId/ApiHash。
+## Recent Additions
 
-### 环境要求
+- 🧠 **AI verification support**: long-running activity tasks can detect verification prompts and automatically click buttons or answer with text
+- ⚙️ **Expanded AI configuration**: OpenAI-compatible endpoints, API key management, default / preset models, and one-click connectivity testing
+- 🔁 **Improved AI reliability**: configurable retry counts with shared logic for AI decisions, answers, and connectivity tests
+- 📚 **Data dictionary support**: text dictionaries, image dictionaries, and template variables
+- 🕒 **Scheduled task capability**: timed channel and group tasks such as creation and publishing
+- 🧠 **Task center upgrades**: pause, edit, and rerun continuous tasks; separate running tasks from history; support auto-cleanup
+- 💬 **Continuous activity improvements**: account categories, randomized copywriting, second-level send intervals, and persistent run configuration
+- 🔄 **Sync experience optimization**: manual “sync now” runs in the background and can be tracked in the task center
+- 👤 **Account list enhancement**: estimated registration time display and joined channel/group inspection
+- 📺 **Channel management upgrade**: channel lists now focus on joined channels, with multi-condition filters and linked-account visibility
+- 👥 **Group management completion**: group creation, categorization, batch operations, and listing support
+- 🔗 **Multi-account relationship visibility**: channels and groups can bind multiple system accounts, with linkage visible in list and detail views
+- 🚪 **Real exit / dissolve actions**: channels and groups support single and batch leave / dissolve operations
+- 🧹 **Data accuracy fixes**: improved channel-group separation and better presentation after relationship sync
+- ♻️ **Post-sync cleanup**: automatically remove invalid relations and orphaned records after synchronization
+- ⚡ **Data-layer optimization**: extra query and relation indexes for better filtering performance with large account / channel / group datasets
 
-Docker（Windows 推荐 Docker Desktop + WSL2；Linux 直接装 Docker Engine）
+## Roadmap
 
-### 启动
+- [x] One-click leave / unsubscribe / subscribe for channels and groups
+- [x] Batch auto check-in
+- [ ] One-click clear contacts
+- [ ] Batch re-login with SMS verification codes (for refreshing sessions)
+- [ ] Phone registration flow for unregistered numbers (name / optional email / email code, etc.)
+- [ ] Generic SMS receiving API abstraction: the core app depends only on the abstraction, while providers integrate through adapter modules without changing the main codebase
+- [ ] Support phone number replacement
+- [ ] Multiple proxies: bind proxies by account category
+- [ ] Multiple APIs: bind ApiId / ApiHash by account category
+- [ ] Scheduled channel creation and scheduled public publishing
+- [ ] Scheduled fan growth: integrate third-party fan-growth APIs through a generic adapter structure and provider modules
+- [x] Scheduled speaking / warming for group chats
+
+## Quick Start
+
+### One-click Docker deployment (recommended)
+
+Requirements: Docker. On Windows, Docker Desktop + WSL2 is recommended. On Linux, install Docker Engine directly.
+
+#### 1. Prepare the project
 
 ```bash
 git clone https://github.com/moeacgx/Telegram-Panel
 cd Telegram-Panel
-docker compose up -d --build
+cp .env.example .env
 ```
 
-启动后访问：`http://localhost:5000`
+#### 2. Choose an image tag
 
-### 默认后台账号（首次登录）
+By default, the stable image is used and no change is required:
 
-用户名：`admin`  
-密码：`admin123`
+```bash
+TP_IMAGE=ghcr.io/moeacgx/telegram-panel:latest
+```
 
-登录后到「修改密码」页面改掉即可。
+If you want the development image, update `.env` to:
 
-> 更完整的安装、更新、导入与生产部署建议：见 `docs/installation.md`。
+```bash
+TP_IMAGE=ghcr.io/moeacgx/telegram-panel:dev-latest
+```
 
-## 截图
+#### 3. Start the service
 
-更多截图见：`screenshot/`
+```bash
+docker compose pull
+docker compose up -d
+```
+
+Open: `http://localhost:5000`
+
+#### Default admin account (first login)
+
+Username: `admin`  
+Password: `admin123`
+
+After signing in, change it on the password update page.
+
+#### Common commands
+
+```bash
+# View logs
+docker compose logs -f
+
+# Update to the image tag specified in the current .env
+docker compose pull
+docker compose up -d
+
+# Restart / stop
+docker compose restart
+docker compose down
+```
+
+### Run locally for development (optional)
+
+> Suitable for development or local debugging. Requires the .NET 8 SDK.
+
+```bash
+dotnet run --project src/TelegramPanel.Web
+```
+
+Open: `http://localhost:5000`
+
+## In-app Docker Update
+
+The panel supports one-click self-update when deployed with Docker (top-left version number → version information dialog):
+
+1. Click **Check for updates** to read the latest GitHub Release.
+2. Click **Update and restart** to automatically download the matching Linux package to `/data/app-current`.
+3. After restart is triggered, the container will prioritize launching from `/data/app-current`, so manual `docker compose pull` is not required.
+
+Notes:
+- This feature currently works only when running inside a Docker container.
+- The updater depends on assets generated by the `release.yml` workflow. If a Release does not include `linux-x64` / `linux-arm64` zip assets, one-click update will be unavailable.
+
+## Screenshots
+
+More screenshots: `screenshot/`
 
 | | | |
 |---|---|---|
 | <img src="screenshot/Dashboard.png" width="300" /> | <img src="screenshot/account.png" width="300" /> | <img src="screenshot/Import account.png" width="300" /> |
-
----
 
 ## ⭐ Star History
 

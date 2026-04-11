@@ -1,28 +1,33 @@
 @page "/channels/groups"
 @inject ChannelGroupManagementService GroupManagement
 @inject ChannelManagementService ChannelManagement
+@inject AccountManagementService AccountManagement
 @inject ISnackbar Snackbar
 @inject IDialogService DialogService
 @using TelegramPanel.Data.Entities
 
-<PageTitle>频道分组 - Telegram Panel</PageTitle>
+<PageTitle>频道分类 - Telegram Panel</PageTitle>
 
-<MudText Typo="Typo.h4" Class="mb-4">频道分组管理</MudText>
+<MudText Typo="Typo.h4" Class="mb-4">频道分类管理</MudText>
 
 <MudGrid>
     <MudItem xs="12" md="4">
         <MudCard>
             <MudCardHeader>
-                <MudText Typo="Typo.h6">添加分组</MudText>
+                <MudText Typo="Typo.h6">@(editingGroupId > 0 ? "编辑分类" : "添加分类")</MudText>
             </MudCardHeader>
             <MudCardContent>
-                <MudTextField @bind-Value="newGroupName" Label="分组名称" Variant="Variant.Outlined" />
+                <MudTextField @bind-Value="newGroupName" Label="分类名称" Variant="Variant.Outlined" />
                 <MudTextField @bind-Value="newGroupDesc" Label="描述" Variant="Variant.Outlined" Lines="3" Class="mt-3" />
             </MudCardContent>
             <MudCardActions>
-                <MudButton Variant="Variant.Filled" Color="Color.Primary" FullWidth="true"
-                           Disabled="@string.IsNullOrEmpty(newGroupName)" OnClick="AddGroup">
-                    添加分组
+                @if (editingGroupId > 0)
+                {
+                    <MudButton Variant="Variant.Text" Color="Color.Default" OnClick="CancelEdit">取消</MudButton>
+                }
+                <MudButton Variant="Variant.Filled" Color="Color.Primary" FullWidth="@(editingGroupId <= 0)"
+                           Disabled="@string.IsNullOrWhiteSpace(newGroupName)" OnClick="SaveGroup">
+                    @(editingGroupId > 0 ? "保存修改" : "添加分类")
                 </MudButton>
             </MudCardActions>
         </MudCard>
@@ -31,27 +36,31 @@
     <MudItem xs="12" md="8">
         <MudCard>
             <MudCardHeader>
-                <MudText Typo="Typo.h6">分组列表</MudText>
+                <MudText Typo="Typo.h6">分类列表</MudText>
             </MudCardHeader>
             <MudCardContent>
                 <MudTable Items="@groups" Hover="true" Loading="@loading">
                     <HeaderContent>
-                        <MudTh>分组名称</MudTh>
+                        <MudTh>分类名称</MudTh>
                         <MudTh>描述</MudTh>
                         <MudTh>频道数量</MudTh>
                         <MudTh>操作</MudTh>
                     </HeaderContent>
                     <RowTemplate>
-                        <MudTd DataLabel="分组名称">@context.Name</MudTd>
+                        <MudTd DataLabel="分类名称">@context.Name</MudTd>
                         <MudTd DataLabel="描述">@(context.Description ?? "-")</MudTd>
                         <MudTd DataLabel="频道数量">@context.Channels.Count</MudTd>
                         <MudTd DataLabel="操作">
-                            <MudIconButton Icon="@Icons.Material.Filled.Delete" Size="Size.Small" Color="Color.Error"
-                                           OnClick="@(() => DeleteGroup(context))" />
+                            <MudStack Row="true" Spacing="1">
+                                <MudIconButton Icon="@Icons.Material.Filled.Edit" Size="Size.Small" Color="Color.Primary"
+                                               OnClick="@(() => BeginEdit(context))" />
+                                <MudIconButton Icon="@Icons.Material.Filled.Delete" Size="Size.Small" Color="Color.Error"
+                                               OnClick="@(() => DeleteGroup(context))" />
+                            </MudStack>
                         </MudTd>
                     </RowTemplate>
                     <NoRecordsContent>
-                        <MudText>暂无分组，请添加分组</MudText>
+                        <MudText>暂无分类，请添加分类</MudText>
                     </NoRecordsContent>
                 </MudTable>
             </MudCardContent>
@@ -59,32 +68,43 @@
 
         <MudCard Class="mt-4">
             <MudCardHeader>
-                <MudText Typo="Typo.h6">分组绑定频道</MudText>
+                <MudText Typo="Typo.h6">分类绑定频道</MudText>
             </MudCardHeader>
             <MudCardContent>
-                <MudSelect @bind-Value="assignGroupId" Label="选择分组" Variant="Variant.Outlined" Dense="true"
-                           @bind-Value:after="OnAssignGroupChanged">
-                    <MudSelectItem Value="0">-- 请选择分组 --</MudSelectItem>
-                    @foreach (var g in groups)
-                    {
-                        <MudSelectItem Value="@g.Id">@g.Name</MudSelectItem>
-                    }
-                </MudSelect>
+                <MudStack Row="true" Spacing="2" Style="flex-wrap: wrap;">
+                    <MudSelect @bind-Value="assignGroupId" Label="选择分类" Variant="Variant.Outlined" Dense="true"
+                               Class="tp-input-full-xs" Style="min-width: 220px;" @bind-Value:after="OnAssignGroupChanged">
+                        <MudSelectItem Value="0">-- 请选择分类 --</MudSelectItem>
+                        @foreach (var g in groups)
+                        {
+                            <MudSelectItem Value="@g.Id">@g.Name</MudSelectItem>
+                        }
+                    </MudSelect>
 
-                <MudTable Items="@channels" Hover="true" Dense="true" Class="mt-3"
+                    <MudSelect @bind-Value="filterAccountId" Label="筛选账号" Variant="Variant.Outlined" Dense="true"
+                               Class="tp-input-full-xs" Style="min-width: 220px;" @bind-Value:after="OnAssignGroupChanged">
+                        <MudSelectItem Value="0">全部账号</MudSelectItem>
+                        @foreach (var account in accounts)
+                        {
+                            <MudSelectItem Value="@account.Id">@FormatAccountLabel(account)</MudSelectItem>
+                        }
+                    </MudSelect>
+                </MudStack>
+
+                <MudTable Items="@VisibleChannels" Hover="true" Dense="true" Class="mt-3"
                           MultiSelection="true" @bind-SelectedItems="selectedChannels"
                           Loading="@channelsLoading">
                     <HeaderContent>
                         <MudTh>频道名称</MudTh>
                         <MudTh>用户名</MudTh>
                         <MudTh>创建账号</MudTh>
-                        <MudTh>当前分组</MudTh>
+                        <MudTh>当前分类</MudTh>
                     </HeaderContent>
                     <RowTemplate>
                         <MudTd DataLabel="频道名称">@context.Title</MudTd>
                         <MudTd DataLabel="用户名">@(string.IsNullOrWhiteSpace(context.Username) ? "-" : context.Username)</MudTd>
                         <MudTd DataLabel="创建账号">@(context.CreatorAccount?.Phone ?? (context.CreatorAccountId?.ToString() ?? "（非系统创建）"))</MudTd>
-                        <MudTd DataLabel="当前分组">@(context.Group?.Name ?? "未分组")</MudTd>
+                        <MudTd DataLabel="当前分类">@(context.Group?.Name ?? "未分类")</MudTd>
                     </RowTemplate>
                     <NoRecordsContent>
                         <MudText>暂无频道数据</MudText>
@@ -95,7 +115,7 @@
                 <MudButton Variant="Variant.Filled" Color="Color.Primary"
                            Disabled="@(assignGroupId == 0 || channelsLoading)"
                            OnClick="@(async (MouseEventArgs _) => await SaveGroupAssignments())">
-                    保存勾选到分组
+                    保存勾选到分类
                 </MudButton>
             </MudCardActions>
         </MudCard>
@@ -105,18 +125,39 @@
 @code {
     private string newGroupName = "";
     private string newGroupDesc = "";
+    private int editingGroupId = 0;
     private List<ChannelGroup> groups = new();
     private bool loading = true;
 
     private List<Channel> channels = new();
+    private List<Account> accounts = new();
     private bool channelsLoading = true;
     private int assignGroupId = 0;
+    private int filterAccountId = 0;
     private HashSet<Channel> selectedChannels = new();
+
+    private IEnumerable<Channel> VisibleChannels => channels.Where(MatchAccountFilter);
 
     protected override async Task OnInitializedAsync()
     {
+        await LoadAccounts();
         await LoadGroups();
         await LoadChannels();
+    }
+
+    private async Task LoadAccounts()
+    {
+        try
+        {
+            var accountList = await AccountManagement.GetAllAccountsAsync();
+            accounts = accountList
+                .Where(a => a.Category?.ExcludeFromOperations != true)
+                .ToList();
+        }
+        catch (Exception ex)
+        {
+            Snackbar.Add($"加载账号失败：{ex.Message}", Severity.Error);
+        }
     }
 
     private async Task LoadGroups()
@@ -144,6 +185,7 @@
         {
             var list = await ChannelManagement.GetAllChannelsAsync();
             channels = list.ToList();
+            await OnAssignGroupChanged();
         }
         catch (Exception ex)
         {
@@ -155,11 +197,19 @@
         }
     }
 
+    private bool MatchAccountFilter(Channel channel)
+    {
+        if (filterAccountId <= 0)
+            return true;
+
+        return channel.AccountChannels.Any(x => x.AccountId == filterAccountId);
+    }
+
     private Task OnAssignGroupChanged()
     {
         selectedChannels = assignGroupId <= 0
             ? new HashSet<Channel>()
-            : channels.Where(c => c.GroupId == assignGroupId).ToHashSet();
+            : VisibleChannels.Where(c => c.GroupId == assignGroupId).ToHashSet();
         return Task.CompletedTask;
     }
 
@@ -167,30 +217,30 @@
     {
         if (assignGroupId <= 0)
         {
-            Snackbar.Add("请选择分组", Severity.Error);
+            Snackbar.Add("请选择分类", Severity.Error);
             return;
         }
 
         try
         {
-            var currentlyInGroup = channels.Where(c => c.GroupId == assignGroupId).ToList();
+            var scope = VisibleChannels.ToList();
+            var currentlyInGroup = scope.Where(c => c.GroupId == assignGroupId).ToList();
             var selected = selectedChannels.ToHashSet();
 
-            // 取消勾选的 -> 移出分组
             foreach (var channel in currentlyInGroup.Where(c => !selected.Contains(c)))
             {
                 await ChannelManagement.UpdateChannelGroupAsync(channel.Id, null);
             }
 
-            // 新勾选的 -> 加入分组
             foreach (var channel in selected.Where(c => c.GroupId != assignGroupId))
             {
                 await ChannelManagement.UpdateChannelGroupAsync(channel.Id, assignGroupId);
             }
 
+            await LoadGroups();
             await LoadChannels();
-            selectedChannels = channels.Where(c => c.GroupId == assignGroupId).ToHashSet();
-            Snackbar.Add("分组绑定已保存", Severity.Success);
+            selectedChannels = VisibleChannels.Where(c => c.GroupId == assignGroupId).ToHashSet();
+            Snackbar.Add("分类绑定已保存", Severity.Success);
         }
         catch (Exception ex)
         {
@@ -198,35 +248,66 @@
         }
     }
 
-    private async Task AddGroup()
+    private async Task SaveGroup()
     {
         try
         {
-            var group = new ChannelGroup
+            if (editingGroupId > 0)
             {
-                Name = newGroupName,
-                Description = newGroupDesc,
-                CreatedAt = DateTime.UtcNow
-            };
+                var existing = await GroupManagement.GetGroupAsync(editingGroupId);
+                if (existing == null)
+                {
+                    Snackbar.Add("分类不存在", Severity.Error);
+                    return;
+                }
 
-            await GroupManagement.CreateGroupAsync(group);
+                existing.Name = newGroupName.Trim();
+                existing.Description = string.IsNullOrWhiteSpace(newGroupDesc) ? null : newGroupDesc.Trim();
+                await GroupManagement.UpdateGroupAsync(existing);
+                Snackbar.Add($"分类 \"{newGroupName}\" 修改成功", Severity.Success);
+            }
+            else
+            {
+                var group = new ChannelGroup
+                {
+                    Name = newGroupName.Trim(),
+                    Description = string.IsNullOrWhiteSpace(newGroupDesc) ? null : newGroupDesc.Trim(),
+                    CreatedAt = DateTime.UtcNow
+                };
+
+                await GroupManagement.CreateGroupAsync(group);
+                Snackbar.Add($"分类 \"{newGroupName}\" 添加成功", Severity.Success);
+            }
+
+            CancelEdit();
             await LoadGroups();
-            Snackbar.Add($"分组 \"{newGroupName}\" 添加成功", Severity.Success);
-
-            newGroupName = "";
-            newGroupDesc = "";
+            await LoadChannels();
         }
         catch (Exception ex)
         {
-            Snackbar.Add($"添加失败：{ex.Message}", Severity.Error);
+            Snackbar.Add($"保存失败：{ex.Message}", Severity.Error);
         }
+    }
+
+    private void BeginEdit(ChannelGroup group)
+    {
+        editingGroupId = group.Id;
+        newGroupName = group.Name;
+        newGroupDesc = group.Description ?? string.Empty;
+    }
+
+    private void CancelEdit()
+    {
+        editingGroupId = 0;
+        newGroupName = string.Empty;
+        newGroupDesc = string.Empty;
     }
 
     private async Task DeleteGroup(ChannelGroup group)
     {
         bool? result = await DialogService.ShowMessageBox(
             "确认删除",
-            $"确定要删除分组 {group.Name} 吗？关联的频道将变为未分组。",
+            $"确定要删除分类 {group.Name} 吗？关联的频道将变为未分类。",
             yesText: "删除", cancelText: "取消");
 
         if (result == true)
@@ -234,7 +315,10 @@
             try
             {
                 await GroupManagement.DeleteGroupAsync(group.Id);
-                groups.Remove(group);
+                if (editingGroupId == group.Id)
+                    CancelEdit();
+                await LoadGroups();
+                await LoadChannels();
                 Snackbar.Add("删除成功", Severity.Success);
             }
             catch (Exception ex)
@@ -242,5 +326,16 @@
                 Snackbar.Add($"删除失败：{ex.Message}", Severity.Error);
             }
         }
+    }
+
+    private static string FormatAccountLabel(Account account)
+    {
+        var nickname = string.IsNullOrWhiteSpace(account.Nickname) ? null : account.Nickname.Trim();
+        var username = string.IsNullOrWhiteSpace(account.Username) ? null : account.Username.Trim();
+
+        var namePart = nickname ?? account.Phone;
+        if (!string.IsNullOrWhiteSpace(username))
+            return $"{namePart} (@{username})";
+        return namePart;
     }
 }

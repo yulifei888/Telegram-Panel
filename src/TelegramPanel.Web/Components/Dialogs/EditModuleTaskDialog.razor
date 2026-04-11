@@ -1,0 +1,200 @@
+﻿@namespace TelegramPanel.Web.Components.Dialogs
+@inject BatchTaskManagementService TaskManagement
+@inject TelegramPanel.Web.Modules.ModuleContributionRegistry Contributions
+@inject ISnackbar Snackbar
+@inject IDialogService DialogService
+@using Microsoft.AspNetCore.Components
+@using TelegramPanel.Data.Entities
+@using TelegramPanel.Modules
+@using TelegramPanel.Web.Modules
+@using TelegramPanel.Web.Services
+@using System.Reflection
+
+<MudDialog>
+    <DialogContent>
+        @if (loading)
+        {
+            <MudStack Spacing="2">
+                <MudProgressCircular Indeterminate="true" Size="Size.Small" Color="Color.Primary" />
+                <MudText Typo="Typo.caption">正在加载任务配置...</MudText>
+            </MudStack>
+        }
+        else if (!string.IsNullOrWhiteSpace(loadError))
+        {
+            <MudAlert Severity="Severity.Error" Variant="Variant.Outlined" Dense="true">
+                @loadError
+            </MudAlert>
+        }
+        else if (editorComponentType == null)
+        {
+            <MudAlert Severity="Severity.Warning" Variant="Variant.Outlined" Dense="true">
+                该任务未提供可编辑组件。
+            </MudAlert>
+        }
+        else
+        {
+            <MudAlert Severity="Severity.Info" Variant="Variant.Outlined" Dense="true">
+                编辑后会更新当前任务配置。若该任务已完成或失败，可继续使用“重新运行”创建新任务执行。
+            </MudAlert>
+
+            <DynamicComponent Type="editorComponentType" Parameters="editorParameters" />
+
+            @if (!string.IsNullOrWhiteSpace(draft.ValidationError))
+            {
+                <MudText Typo="Typo.caption" Color="Color.Error">@draft.ValidationError</MudText>
+            }
+        }
+    </DialogContent>
+    <DialogActions>
+        <MudButton Variant="Variant.Text" Color="Color.Default" OnClick="Cancel" Disabled="@saving">关闭</MudButton>
+        <MudButton Variant="Variant.Filled" Color="Color.Primary" OnClick="Save" Disabled="@(saving || !CanSave)">
+            @if (saving)
+            {
+                <MudProgressCircular Size="Size.Small" Indeterminate="true" Class="mr-2" />
+                <span>保存中...</span>
+            }
+            else
+            {
+                <span>保存配置</span>
+            }
+        </MudButton>
+    </DialogActions>
+</MudDialog>
+
+@code {
+    [CascadingParameter] private MudDialogInstance MudDialog { get; set; } = default!;
+    [Parameter] public int TaskId { get; set; }
+
+    private BatchTask? task;
+    private RegisteredTaskDefinition? taskDefinition;
+    private Type? editorComponentType;
+    private Dictionary<string, object?> editorParameters = new();
+    private ModuleTaskDraft draft = new(0, null, false, null);
+    private bool loading = true;
+    private bool saving;
+    private string? loadError;
+
+    private bool CanSave =>
+        task != null
+        && taskDefinition != null
+        && taskDefinition.Definition.TaskCenter.CanEdit
+        && editorComponentType != null
+        && !string.Equals(GetDisplayStatus(task), "running", StringComparison.OrdinalIgnoreCase)
+        && draft.CanSubmit
+        && !string.IsNullOrWhiteSpace(draft.Config);
+
+    protected override async Task OnInitializedAsync()
+    {
+        try
+        {
+            if (TaskId <= 0)
+            {
+                loadError = "任务不存在或参数无效。";
+                return;
+            }
+
+            task = await TaskManagement.GetTaskAsync(TaskId);
+            if (task == null)
+            {
+                loadError = "任务不存在或已被删除。";
+                return;
+            }
+
+            if (!Contributions.TaskTypeToDefinition.TryGetValue((task.TaskType ?? string.Empty).Trim(), out var reg))
+            {
+                loadError = "未找到该任务类型的定义，无法编辑。";
+                return;
+            }
+
+            taskDefinition = reg;
+            if (!reg.Definition.TaskCenter.CanEdit)
+            {
+                loadError = "该任务当前不支持编辑。";
+                return;
+            }
+
+            if (string.Equals(GetDisplayStatus(task), "running", StringComparison.OrdinalIgnoreCase))
+            {
+                loadError = "该任务正在执行中，请先暂停后再编辑。";
+                return;
+            }
+
+            editorComponentType = ModuleTaskEditorComponentResolver.ResolveEditEditor(reg);
+            if (editorComponentType == null)
+                return;
+
+            editorParameters = BuildEditorParameters(editorComponentType, task);
+        }
+        finally
+        {
+            loading = false;
+        }
+    }
+
+    private Dictionary<string, object?> BuildEditorParameters(Type componentType, BatchTask currentTask)
+    {
+        var parameters = new Dictionary<string, object?>
+        {
+            ["Draft"] = draft,
+            ["DraftChanged"] = EventCallback.Factory.Create<ModuleTaskDraft>(this, OnDraftChanged)
+        };
+
+        AddOptionalParameter(parameters, componentType, "InitialConfigJson", currentTask.Config);
+        AddOptionalParameter(parameters, componentType, "TaskId", currentTask.Id);
+        return parameters;
+    }
+
+    private static void AddOptionalParameter(Dictionary<string, object?> parameters, Type componentType, string parameterName, object? value)
+    {
+        var property = componentType.GetProperty(parameterName, BindingFlags.Public | BindingFlags.Instance);
+        if (property == null)
+            return;
+
+        parameters[parameterName] = value;
+    }
+
+    private static string GetDisplayStatus(BatchTask task)
+    {
+        return task.CompletedAt.HasValue
+            ? "completed"
+            : (task.Status ?? string.Empty).Trim().ToLowerInvariant();
+    }
+
+    private void OnDraftChanged(ModuleTaskDraft value)
+    {
+        draft = value;
+    }
+
+    private async Task Save()
+    {
+        if (!CanSave || task == null || saving)
+            return;
+
+        bool? confirm = await DialogService.ShowMessageBox(
+            "确认保存",
+            $"将更新任务 #{task.Id} 的配置，是否继续？",
+            yesText: "保存", cancelText: "取消");
+
+        if (confirm != true)
+            return;
+
+        saving = true;
+        try
+        {
+            var config = draft.Config?.Trim();
+            await TaskManagement.UpdateTaskDraftAsync(task.Id, draft.Total < 0 ? 0 : draft.Total, config);
+            Snackbar.Add($"任务 #{task.Id} 配置已更新", Severity.Success);
+            MudDialog.Close(DialogResult.Ok(task.Id));
+        }
+        catch (Exception ex)
+        {
+            Snackbar.Add($"保存失败：{ex.Message}", Severity.Error);
+        }
+        finally
+        {
+            saving = false;
+        }
+    }
+
+    private void Cancel() => MudDialog.Close();
+}

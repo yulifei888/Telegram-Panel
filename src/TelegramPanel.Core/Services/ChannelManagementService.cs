@@ -1,4 +1,4 @@
-using TelegramPanel.Data.Entities;
+﻿using TelegramPanel.Data.Entities;
 using TelegramPanel.Data.Repositories;
 
 namespace TelegramPanel.Core.Services;
@@ -33,25 +33,19 @@ public class ChannelManagementService
     }
 
     /// <summary>
-    /// 用于列表展示：可选按账号筛选（仅展示“本系统创建/创建者为该账号”的频道）
+    /// 用于列表展示：支持按账号查看该账号可见的全部频道，并按角色筛选。
     /// </summary>
-    public async Task<IEnumerable<Channel>> GetChannelsForViewAsync(int accountId, bool includeNonCreator)
-    {
-        if (accountId <= 0)
-            return await _channelRepository.GetCreatedAsync();
-
-        return await _channelRepository.GetByCreatorAccountAsync(accountId);
-    }
-
     public async Task<(IReadOnlyList<Channel> Items, int TotalCount)> QueryChannelsForViewPagedAsync(
-        int creatorAccountId,
+        int accountId,
+        int? groupId,
         string? filterType,
+        string? membershipRole,
         string? search,
         int pageIndex,
         int pageSize,
         CancellationToken cancellationToken = default)
     {
-        return await _channelRepository.QueryForViewPagedAsync(creatorAccountId, filterType, search, pageIndex, pageSize, cancellationToken);
+        return await _channelRepository.QueryForViewPagedAsync(accountId, groupId, filterType, membershipRole, search, pageIndex, pageSize, cancellationToken);
     }
 
     public async Task<IEnumerable<Channel>> GetChannelsByCreatorAsync(int accountId)
@@ -90,6 +84,8 @@ public class ChannelManagementService
                 existing.CreatorAccountId = channel.CreatorAccountId;
             if (channel.CreatedAt.HasValue)
                 existing.CreatedAt = channel.CreatedAt;
+            if (existing.SystemCreatedAtUtc == null && channel.SystemCreatedAtUtc != null)
+                existing.SystemCreatedAtUtc = channel.SystemCreatedAtUtc;
             existing.SyncedAt = DateTime.UtcNow;
 
             await _channelRepository.UpdateAsync(existing);
@@ -129,6 +125,8 @@ public class ChannelManagementService
                     legacy.GroupId = channel.GroupId;
                 if (channel.CreatedAt.HasValue)
                     legacy.CreatedAt = channel.CreatedAt;
+                if (legacy.SystemCreatedAtUtc == null && channel.SystemCreatedAtUtc != null)
+                    legacy.SystemCreatedAtUtc = channel.SystemCreatedAtUtc;
                 legacy.SyncedAt = DateTime.UtcNow;
 
                 await _channelRepository.UpdateAsync(legacy);
@@ -190,7 +188,85 @@ public class ChannelManagementService
 
     public async Task DeleteStaleAccountChannelsAsync(int accountId, IReadOnlyCollection<int> keepChannelIds)
     {
-        await _accountChannelRepository.DeleteForAccountExceptAsync(accountId, keepChannelIds);
+        var keepSet = keepChannelIds.Count == 0
+            ? new HashSet<int>()
+            : keepChannelIds.ToHashSet();
+
+        var staleChannelIds = (await _accountChannelRepository.GetByAccountAsync(accountId))
+            .Where(x => !keepSet.Contains(x.ChannelId))
+            .Select(x => x.ChannelId)
+            .Distinct()
+            .ToList();
+
+        foreach (var channelId in staleChannelIds)
+            await RemoveAccountChannelAsync(channelId, accountId);
+
+        var staleChannelIdSet = staleChannelIds.ToHashSet();
+        var creatorOnlyChannelIds = (await _channelRepository.FindAsync(x => x.CreatorAccountId == accountId))
+            .Select(x => x.Id)
+            .Where(id => !keepSet.Contains(id) && !staleChannelIdSet.Contains(id))
+            .Distinct()
+            .ToList();
+
+        foreach (var channelId in creatorOnlyChannelIds)
+            await DetachCreatorFromChannelAsync(channelId, accountId);
+
+        await _channelRepository.DeleteOrphanedAsync();
+    }
+
+    public async Task<IReadOnlyList<AccountChannel>> GetAccountChannelMembershipsAsync(int accountId, CancellationToken cancellationToken = default)
+    {
+        return await _accountChannelRepository.GetByAccountAsync(accountId, cancellationToken);
+    }
+
+    public async Task<IReadOnlyList<AccountChannel>> GetChannelAccountMembershipsAsync(int channelId, CancellationToken cancellationToken = default)
+    {
+        return await _accountChannelRepository.GetByChannelAsync(channelId, cancellationToken);
+    }
+
+    public async Task RemoveAccountChannelAsync(int channelId, int accountId)
+    {
+        var channel = await _channelRepository.GetByIdAsync(channelId);
+        if (channel == null)
+            return;
+
+        var hasRemainingRelations = channel.AccountChannels.Any(x => x.AccountId != accountId);
+        var creatorRemoved = channel.CreatorAccountId == accountId;
+
+        await _accountChannelRepository.DeleteAsync(accountId, channelId);
+
+        if (creatorRemoved)
+            channel.CreatorAccountId = null;
+
+        if (!hasRemainingRelations && channel.CreatorAccountId == null)
+        {
+            await _channelRepository.DeleteAsync(channel);
+            return;
+        }
+
+        if (!creatorRemoved)
+            return;
+
+        channel.SyncedAt = DateTime.UtcNow;
+        await _channelRepository.UpdateAsync(channel);
+    }
+
+    private async Task DetachCreatorFromChannelAsync(int channelId, int accountId)
+    {
+        var channel = await _channelRepository.GetByIdAsync(channelId);
+        if (channel == null || channel.CreatorAccountId != accountId)
+            return;
+
+        channel.CreatorAccountId = null;
+
+        if (channel.AccountChannels.Count == 0)
+        {
+            await _channelRepository.DeleteAsync(channel);
+            return;
+        }
+
+        channel.SyncedAt = DateTime.UtcNow;
+        await _channelRepository.UpdateAsync(channel);
     }
 
     /// <summary>
@@ -208,3 +284,5 @@ public class ChannelManagementService
         return await _accountChannelRepository.GetPreferredAdminAccountIdAsync(channel.Id);
     }
 }
+
+

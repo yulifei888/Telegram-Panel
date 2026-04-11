@@ -1,4 +1,7 @@
 using System.Text;
+using System.Text.Json;
+using System.Text.Json.Nodes;
+using System.Text.Json.Serialization.Metadata;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.Extensions.Configuration;
 
@@ -6,6 +9,20 @@ namespace TelegramPanel.Web.Services;
 
 public static class LocalConfigFile
 {
+    public static JsonSerializerOptions CreateIndentedJsonSerializerOptions()
+    {
+        return new JsonSerializerOptions(JsonSerializerDefaults.Web)
+        {
+            WriteIndented = true,
+            TypeInfoResolver = new DefaultJsonTypeInfoResolver()
+        };
+    }
+
+    public static string ToIndentedJson(JsonNode? node)
+    {
+        return (node ?? new JsonObject()).ToJsonString(CreateIndentedJsonSerializerOptions());
+    }
+
     public static string ResolvePath(IConfiguration configuration, IWebHostEnvironment environment)
     {
         var configured = (configuration["LocalConfig:Path"] ?? "").Trim();

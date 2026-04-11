@@ -1,5 +1,6 @@
 using System.Net;
 using System.Text.Json;
+using System.Text.Json.Serialization;
 using Microsoft.Extensions.Caching.Memory;
 using Microsoft.Extensions.Options;
 
@@ -199,9 +200,16 @@ public sealed class UpdateCheckService
 
     private sealed class GitHubReleaseDto
     {
+        [JsonPropertyName("tag_name")]
         public string? TagName { get; set; }
+
+        [JsonPropertyName("html_url")]
         public string? HtmlUrl { get; set; }
+
+        [JsonPropertyName("published_at")]
         public DateTimeOffset? PublishedAt { get; set; }
+
+        [JsonPropertyName("body")]
         public string? Body { get; set; }
     }
 

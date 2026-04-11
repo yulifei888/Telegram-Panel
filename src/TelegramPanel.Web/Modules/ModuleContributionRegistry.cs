@@ -150,6 +150,9 @@ public sealed class ModuleContributionRegistry
         if (string.IsNullOrWhiteSpace(t.CreateRoute)) t.CreateRoute = null;
         t.EditorComponentType = (t.EditorComponentType ?? "").Trim();
         if (string.IsNullOrWhiteSpace(t.EditorComponentType)) t.EditorComponentType = null;
+        t.TaskCenter ??= new ModuleTaskCenterCapabilities();
+        t.TaskCenter.EditComponentType = (t.TaskCenter.EditComponentType ?? "").Trim();
+        if (string.IsNullOrWhiteSpace(t.TaskCenter.EditComponentType)) t.TaskCenter.EditComponentType = null;
         return t;
     }
 

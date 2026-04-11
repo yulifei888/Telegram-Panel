@@ -5,11 +5,11 @@
     <DialogContent>
         <MudStack Spacing="3">
             <MudAlert Severity="Severity.Info">
-                将为 <strong>@SelectedCount</strong> 个频道设置分组
+                将为 <strong>@SelectedCount</strong> 个频道设置分类
             </MudAlert>
 
-            <MudSelect @bind-Value="selectedGroupId" Label="选择目标分组" Variant="Variant.Outlined" Required="true">
-                <MudSelectItem Value="0">未分组</MudSelectItem>
+            <MudSelect @bind-Value="selectedGroupId" Label="选择目标分类" Variant="Variant.Outlined" Required="true">
+                <MudSelectItem Value="0">未分类</MudSelectItem>
                 @foreach (var g in Groups)
                 {
                     <MudSelectItem Value="@g.Id">@g.Name</MudSelectItem>

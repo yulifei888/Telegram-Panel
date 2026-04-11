@@ -1,0 +1,133 @@
+@namespace TelegramPanel.Web.Components.Dialogs
+@inject BatchTaskManagementService TaskManagement
+@inject ISnackbar Snackbar
+@inject IDialogService DialogService
+@using TelegramPanel.Core.BatchTasks
+@using TelegramPanel.Data.Entities
+@using TelegramPanel.Modules
+@using Microsoft.AspNetCore.Components
+
+<MudDialog>
+    <DialogContent>
+        @if (loading)
+        {
+            <MudStack Spacing="2">
+                <MudProgressCircular Indeterminate="true" Size="Size.Small" Color="Color.Primary" />
+                <MudText Typo="Typo.caption">正在加载任务配置...</MudText>
+            </MudStack>
+        }
+        else if (task == null)
+        {
+            <MudAlert Severity="Severity.Error" Variant="Variant.Outlined" Dense="true">
+                任务不存在或已被删除。
+            </MudAlert>
+        }
+        else if (!string.Equals(task.TaskType, BatchTaskTypes.UserChatActive, StringComparison.OrdinalIgnoreCase))
+        {
+            <MudAlert Severity="Severity.Warning" Variant="Variant.Outlined" Dense="true">
+                仅支持编辑“账号持续活跃”任务。
+            </MudAlert>
+        }
+        else if (string.Equals(task.Status, "running", StringComparison.OrdinalIgnoreCase))
+        {
+            <MudAlert Severity="Severity.Warning" Variant="Variant.Outlined" Dense="true">
+                该任务正在执行中，请先取消后再编辑。
+            </MudAlert>
+        }
+        else
+        {
+            <MudAlert Severity="Severity.Info" Variant="Variant.Outlined" Dense="true">
+                编辑后会更新当前任务配置。建议编辑完成后使用“重新运行”创建新任务执行。
+            </MudAlert>
+
+            <UserChatActiveTaskEditor Draft="draft" DraftChanged="OnDraftChanged" InitialConfigJson="@task.Config" />
+
+            @if (!string.IsNullOrWhiteSpace(draft.ValidationError))
+            {
+                <MudText Typo="Typo.caption" Color="Color.Error">@draft.ValidationError</MudText>
+            }
+        }
+    </DialogContent>
+    <DialogActions>
+        <MudButton Variant="Variant.Text" Color="Color.Default" OnClick="Cancel" Disabled="@saving">关闭</MudButton>
+        <MudButton Variant="Variant.Filled" Color="Color.Primary" OnClick="Save" Disabled="@(saving || !CanSave)">
+            @if (saving)
+            {
+                <MudProgressCircular Size="Size.Small" Indeterminate="true" Class="mr-2" />
+                <span>保存中...</span>
+            }
+            else
+            {
+                <span>保存配置</span>
+            }
+        </MudButton>
+    </DialogActions>
+</MudDialog>
+
+@code {
+    [CascadingParameter] private MudDialogInstance MudDialog { get; set; } = default!;
+    [Parameter] public int TaskId { get; set; }
+
+    private BatchTask? task;
+    private bool loading = true;
+    private bool saving;
+    private ModuleTaskDraft draft = new(0, null, false, null);
+
+    private bool CanSave =>
+        task != null
+        && string.Equals(task.TaskType, BatchTaskTypes.UserChatActive, StringComparison.OrdinalIgnoreCase)
+        && !string.Equals(task.Status, "running", StringComparison.OrdinalIgnoreCase)
+        && draft.CanSubmit
+        && !string.IsNullOrWhiteSpace(draft.Config);
+
+    protected override async Task OnInitializedAsync()
+    {
+        try
+        {
+            if (TaskId > 0)
+                task = await TaskManagement.GetTaskAsync(TaskId);
+        }
+        finally
+        {
+            loading = false;
+        }
+    }
+
+    private void OnDraftChanged(ModuleTaskDraft value)
+    {
+        draft = value;
+    }
+
+    private async Task Save()
+    {
+        if (!CanSave || task == null || saving)
+            return;
+
+        bool? confirm = await DialogService.ShowMessageBox(
+            "确认保存",
+            $"将更新任务 #{task.Id} 的配置，是否继续？",
+            yesText: "保存", cancelText: "取消");
+
+        if (confirm != true)
+            return;
+
+        saving = true;
+        try
+        {
+            var config = draft.Config?.Trim();
+            await TaskManagement.UpdateTaskDraftAsync(task.Id, draft.Total < 0 ? 0 : draft.Total, config);
+            Snackbar.Add($"任务 #{task.Id} 配置已更新", Severity.Success);
+            MudDialog.Close(DialogResult.Ok(task.Id));
+        }
+        catch (Exception ex)
+        {
+            Snackbar.Add($"保存失败：{ex.Message}", Severity.Error);
+        }
+        finally
+        {
+            saving = false;
+        }
+    }
+
+    private void Cancel() => MudDialog.Close();
+}

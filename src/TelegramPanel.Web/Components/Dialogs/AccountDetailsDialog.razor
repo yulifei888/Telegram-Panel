@@ -17,8 +17,30 @@
         else
         {
             <MudStack Spacing="3">
-                <MudTextField Value="@FormatCreatedAt()" Label="创建时间" ReadOnly="true" Variant="Variant.Outlined" />
+                <MudTextField Value="@FormatEstimatedRegistrationAt()" Label="注册时间（估算，非百分百正确）" ReadOnly="true" Variant="Variant.Outlined" />
+                <MudTextField Value="@FormatCreatedAt()" Label="导入时间" ReadOnly="true" Variant="Variant.Outlined" />
                 <MudTextField Value="@account.SessionPath" Label="Session 路径" ReadOnly="true" Variant="Variant.Outlined" />
+
+                <MudDivider Class="my-2" />
+
+                <MudText Typo="Typo.subtitle1" Class="mb-1">备注</MudText>
+                <MudTextField @bind-Value="remarkText"
+                              Label="账号备注"
+                              Placeholder="给这个账号补充备注信息"
+                              Variant="Variant.Outlined"
+                              Lines="3"
+                              AutoGrow="true"
+                              MaxLength="500"
+                              Counter="500" />
+                <MudStack Row="true" Spacing="2" Justify="Justify.FlexEnd">
+                    <MudButton Variant="Variant.Filled" Color="Color.Primary" OnClick="SaveRemark" Disabled="@savingRemark">
+                        @if (savingRemark)
+                        {
+                            <MudProgressCircular Size="Size.Small" Indeterminate="true" Class="mr-2" />
+                        }
+                        保存备注
+                    </MudButton>
+                </MudStack>
 
                 <MudDivider Class="my-2" />
 
@@ -73,17 +95,26 @@
     private TelegramPanel.Data.Entities.Account? account;
     private bool isEditingPassword;
     private string newPassword = "";
+    private string remarkText = "";
     private bool showPassword;
     private bool saving;
+    private bool savingRemark;
+    private bool hasChanges;
 
     protected override async Task OnInitializedAsync()
     {
         account = await AccountManagement.GetAccountAsync(AccountId);
+        remarkText = account?.Remark ?? "";
     }
 
     private string FormatCreatedAt()
     {
         return account == null ? "-" : TimeZone.Format(account.CreatedAt, "yyyy-MM-dd HH:mm");
+    }
+
+    private string FormatEstimatedRegistrationAt()
+    {
+        return account == null ? "-" : TimeZone.Format(account.EstimatedRegistrationAt, "yyyy-MM-dd HH:mm", "-");
     }
 
     private string DisplayPassword()
@@ -116,6 +147,7 @@
             account.TwoFactorPassword = string.IsNullOrWhiteSpace(newPassword) ? null : newPassword.Trim();
             await AccountManagement.UpdateAccountAsync(account);
             isEditingPassword = false;
+            hasChanges = true;
             Snackbar.Add("二级密码已保存", Severity.Success);
         }
         catch (Exception ex)
@@ -128,5 +160,38 @@
         }
     }
 
-    private void Close() => MudDialog.Close();
+    private async Task SaveRemark()
+    {
+        if (account == null)
+            return;
+
+        savingRemark = true;
+        try
+        {
+            account.Remark = NormalizeRemark(remarkText);
+            await AccountManagement.UpdateAccountAsync(account);
+            remarkText = account.Remark ?? "";
+            hasChanges = true;
+            Snackbar.Add("备注已保存", Severity.Success);
+        }
+        catch (Exception ex)
+        {
+            Snackbar.Add($"保存失败：{ex.Message}", Severity.Error);
+        }
+        finally
+        {
+            savingRemark = false;
+        }
+    }
+
+    private static string? NormalizeRemark(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+            return null;
+
+        var trimmed = value.Trim();
+        return trimmed.Length <= 500 ? trimmed : trimmed[..500];
+    }
+
+    private void Close() => MudDialog.Close(DialogResult.Ok(hasChanges));
 }

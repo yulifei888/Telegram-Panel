@@ -1,0 +1,52 @@
+<MudDialog>
+    <DialogContent>
+        <MudText Typo="Typo.body1">
+            将导出 @AccountCount 个账号（@ScopeLabel）。
+        </MudText>
+        <MudText Typo="Typo.body2" Class="mt-2">
+            请选择导出格式：
+        </MudText>
+        <MudAlert Severity="Severity.Info" Dense="true" Variant="Variant.Outlined" Class="mt-3">
+            导出时会自动为每个账号生成一份独立新 session，避免和面板当前在线 session 冲突。
+        </MudAlert>
+
+        <MudPaper Class="pa-3 mt-3" Outlined="true">
+            <MudText Typo="Typo.subtitle2">Telethon（默认）</MudText>
+            <MudText Typo="Typo.caption">每个账号导出独立 `.json + .session (+2fa.txt)`，适合现有批量导入流程。</MudText>
+            <MudButton Variant="Variant.Filled" Color="Color.Primary" Class="mt-2" OnClick="ExportTelethon">
+                导出 Telethon
+            </MudButton>
+        </MudPaper>
+
+        <MudPaper Class="pa-3 mt-3" Outlined="true">
+            <MudText Typo="Typo.subtitle2">Tdata</MudText>
+            <MudText Typo="Typo.caption">每个账号额外导出独立 `tdata/`，并同时保留 `.json + .session (+2fa.txt)`。</MudText>
+            <MudButton Variant="Variant.Filled" Color="Color.Secondary" Class="mt-2" OnClick="ExportTdata">
+                导出 Tdata
+            </MudButton>
+        </MudPaper>
+    </DialogContent>
+    <DialogActions>
+        <MudButton Variant="Variant.Text" Color="Color.Default" OnClick="Cancel">取消</MudButton>
+    </DialogActions>
+</MudDialog>
+
+@code {
+    [CascadingParameter] private MudDialogInstance MudDialog { get; set; } = default!;
+
+    [Parameter] public int AccountCount { get; set; }
+    [Parameter] public string ScopeLabel { get; set; } = "账号";
+
+    private void ExportTelethon() => Submit("telethon");
+    private void ExportTdata() => Submit("tdata");
+
+    private void Submit(string format)
+    {
+        MudDialog.Close(DialogResult.Ok(format));
+    }
+
+    private void Cancel()
+    {
+        MudDialog.Cancel();
+    }
+}

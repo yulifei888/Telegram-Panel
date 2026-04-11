@@ -13,6 +13,7 @@ public interface IBotChannelRepository : IRepository<BotChannel>
         int? categoryId,
         bool broadcastOnly,
         string? search,
+        int statusFilter,
         int pageIndex,
         int pageSize,
         CancellationToken cancellationToken = default);

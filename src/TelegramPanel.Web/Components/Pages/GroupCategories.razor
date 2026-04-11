@@ -1,0 +1,341 @@
+@page "/groups/categories"
+@inject GroupCategoryManagementService CategoryManagement
+@inject GroupManagementService GroupManagement
+@inject AccountManagementService AccountManagement
+@inject ISnackbar Snackbar
+@inject IDialogService DialogService
+@using TelegramPanel.Data.Entities
+
+<PageTitle>群组分类 - Telegram Panel</PageTitle>
+
+<MudText Typo="Typo.h4" Class="mb-4">群组分类管理</MudText>
+
+<MudGrid>
+    <MudItem xs="12" md="4">
+        <MudCard>
+            <MudCardHeader>
+                <MudText Typo="Typo.h6">@(editingCategoryId > 0 ? "编辑分类" : "添加分类")</MudText>
+            </MudCardHeader>
+            <MudCardContent>
+                <MudTextField @bind-Value="newCategoryName" Label="分类名称" Variant="Variant.Outlined" />
+                <MudTextField @bind-Value="newCategoryDesc" Label="描述" Variant="Variant.Outlined" Lines="3" Class="mt-3" />
+            </MudCardContent>
+            <MudCardActions>
+                @if (editingCategoryId > 0)
+                {
+                    <MudButton Variant="Variant.Text" Color="Color.Default" OnClick="CancelEdit">取消</MudButton>
+                }
+                <MudButton Variant="Variant.Filled" Color="Color.Primary" FullWidth="@(editingCategoryId <= 0)"
+                           Disabled="@string.IsNullOrWhiteSpace(newCategoryName)" OnClick="SaveCategory">
+                    @(editingCategoryId > 0 ? "保存修改" : "添加分类")
+                </MudButton>
+            </MudCardActions>
+        </MudCard>
+    </MudItem>
+
+    <MudItem xs="12" md="8">
+        <MudCard>
+            <MudCardHeader>
+                <MudText Typo="Typo.h6">分类列表</MudText>
+            </MudCardHeader>
+            <MudCardContent>
+                <MudTable Items="@categories" Hover="true" Loading="@categoriesLoading">
+                    <HeaderContent>
+                        <MudTh>分类名称</MudTh>
+                        <MudTh>描述</MudTh>
+                        <MudTh>群组数量</MudTh>
+                        <MudTh>操作</MudTh>
+                    </HeaderContent>
+                    <RowTemplate>
+                        <MudTd DataLabel="分类名称">@context.Name</MudTd>
+                        <MudTd DataLabel="描述">@(context.Description ?? "-")</MudTd>
+                        <MudTd DataLabel="群组数量">@context.Groups.Count</MudTd>
+                        <MudTd DataLabel="操作">
+                            <MudStack Row="true" Spacing="1">
+                                <MudIconButton Icon="@Icons.Material.Filled.Edit" Size="Size.Small" Color="Color.Primary"
+                                               OnClick="@(() => BeginEdit(context))" />
+                                <MudIconButton Icon="@Icons.Material.Filled.Delete" Size="Size.Small" Color="Color.Error"
+                                               OnClick="@(() => DeleteCategory(context))" />
+                            </MudStack>
+                        </MudTd>
+                    </RowTemplate>
+                    <NoRecordsContent>
+                        <MudText>暂无分类，请添加分类</MudText>
+                    </NoRecordsContent>
+                </MudTable>
+            </MudCardContent>
+        </MudCard>
+
+        <MudCard Class="mt-4">
+            <MudCardHeader>
+                <MudText Typo="Typo.h6">分类绑定群组</MudText>
+            </MudCardHeader>
+            <MudCardContent>
+                <MudStack Row="true" Spacing="2" Style="flex-wrap: wrap;">
+                    <MudSelect @bind-Value="assignCategoryId" Label="选择分类" Variant="Variant.Outlined" Dense="true"
+                               Class="tp-input-full-xs" Style="min-width: 220px;" @bind-Value:after="OnAssignCategoryChanged">
+                        <MudSelectItem Value="0">-- 请选择分类 --</MudSelectItem>
+                        @foreach (var category in categories)
+                        {
+                            <MudSelectItem Value="@category.Id">@category.Name</MudSelectItem>
+                        }
+                    </MudSelect>
+
+                    <MudSelect @bind-Value="filterAccountId" Label="筛选账号" Variant="Variant.Outlined" Dense="true"
+                               Class="tp-input-full-xs" Style="min-width: 220px;" @bind-Value:after="OnAssignCategoryChanged">
+                        <MudSelectItem Value="0">全部账号</MudSelectItem>
+                        @foreach (var account in accounts)
+                        {
+                            <MudSelectItem Value="@account.Id">@FormatAccountLabel(account)</MudSelectItem>
+                        }
+                    </MudSelect>
+                </MudStack>
+
+                <MudTable Items="@VisibleGroups" Hover="true" Dense="true" Class="mt-3"
+                          MultiSelection="true" @bind-SelectedItems="selectedGroups"
+                          Loading="@groupsLoading">
+                    <HeaderContent>
+                        <MudTh>群组名称</MudTh>
+                        <MudTh>用户名</MudTh>
+                        <MudTh>创建账号</MudTh>
+                        <MudTh>当前分类</MudTh>
+                    </HeaderContent>
+                    <RowTemplate>
+                        <MudTd DataLabel="群组名称">@context.Title</MudTd>
+                        <MudTd DataLabel="用户名">@(string.IsNullOrWhiteSpace(context.Username) ? "-" : context.Username)</MudTd>
+                        <MudTd DataLabel="创建账号">@(context.CreatorAccount?.Phone ?? (context.CreatorAccountId?.ToString() ?? "（非系统创建）"))</MudTd>
+                        <MudTd DataLabel="当前分类">@(context.Category?.Name ?? "未分类")</MudTd>
+                    </RowTemplate>
+                    <NoRecordsContent>
+                        <MudText>暂无群组数据</MudText>
+                    </NoRecordsContent>
+                </MudTable>
+            </MudCardContent>
+            <MudCardActions>
+                <MudButton Variant="Variant.Filled" Color="Color.Primary"
+                           Disabled="@(assignCategoryId == 0 || groupsLoading)"
+                           OnClick="@(async (MouseEventArgs _) => await SaveCategoryAssignments())">
+                    保存勾选到分类
+                </MudButton>
+            </MudCardActions>
+        </MudCard>
+    </MudItem>
+</MudGrid>
+
+@code {
+    private string newCategoryName = string.Empty;
+    private string newCategoryDesc = string.Empty;
+    private int editingCategoryId;
+    private List<GroupCategory> categories = new();
+    private bool categoriesLoading = true;
+
+    private List<Group> groups = new();
+    private List<Account> accounts = new();
+    private bool groupsLoading = true;
+    private int assignCategoryId;
+    private int filterAccountId;
+    private HashSet<Group> selectedGroups = new();
+
+    private IEnumerable<Group> VisibleGroups => groups.Where(MatchAccountFilter);
+
+    protected override async Task OnInitializedAsync()
+    {
+        await LoadAccounts();
+        await LoadCategories();
+        await LoadGroups();
+    }
+
+    private async Task LoadAccounts()
+    {
+        try
+        {
+            var accountList = await AccountManagement.GetAllAccountsAsync();
+            accounts = accountList
+                .Where(a => a.Category?.ExcludeFromOperations != true)
+                .ToList();
+        }
+        catch (Exception ex)
+        {
+            Snackbar.Add($"加载账号失败：{ex.Message}", Severity.Error);
+        }
+    }
+
+    private async Task LoadCategories()
+    {
+        categoriesLoading = true;
+        try
+        {
+            var result = await CategoryManagement.GetAllCategoriesAsync();
+            categories = result.ToList();
+        }
+        catch (Exception ex)
+        {
+            Snackbar.Add($"加载分类失败：{ex.Message}", Severity.Error);
+        }
+        finally
+        {
+            categoriesLoading = false;
+        }
+    }
+
+    private async Task LoadGroups()
+    {
+        groupsLoading = true;
+        try
+        {
+            var list = await GroupManagement.GetAllGroupsAsync();
+            groups = list.ToList();
+            await OnAssignCategoryChanged();
+        }
+        catch (Exception ex)
+        {
+            Snackbar.Add($"加载群组失败：{ex.Message}", Severity.Error);
+        }
+        finally
+        {
+            groupsLoading = false;
+        }
+    }
+
+    private bool MatchAccountFilter(Group group)
+    {
+        if (filterAccountId <= 0)
+            return true;
+
+        return group.AccountGroups.Any(x => x.AccountId == filterAccountId);
+    }
+
+    private Task OnAssignCategoryChanged()
+    {
+        selectedGroups = assignCategoryId <= 0
+            ? new HashSet<Group>()
+            : VisibleGroups.Where(g => g.CategoryId == assignCategoryId).ToHashSet();
+        return Task.CompletedTask;
+    }
+
+    private async Task SaveCategoryAssignments()
+    {
+        if (assignCategoryId <= 0)
+        {
+            Snackbar.Add("请选择分类", Severity.Error);
+            return;
+        }
+
+        try
+        {
+            var scope = VisibleGroups.ToList();
+            var currentlyInCategory = scope.Where(g => g.CategoryId == assignCategoryId).ToList();
+            var selected = selectedGroups.ToHashSet();
+
+            foreach (var group in currentlyInCategory.Where(g => !selected.Contains(g)))
+            {
+                await GroupManagement.UpdateGroupCategoryAsync(group.Id, null);
+            }
+
+            foreach (var group in selected.Where(g => g.CategoryId != assignCategoryId))
+            {
+                await GroupManagement.UpdateGroupCategoryAsync(group.Id, assignCategoryId);
+            }
+
+            await LoadCategories();
+            await LoadGroups();
+            selectedGroups = VisibleGroups.Where(g => g.CategoryId == assignCategoryId).ToHashSet();
+            Snackbar.Add("分类绑定已保存", Severity.Success);
+        }
+        catch (Exception ex)
+        {
+            Snackbar.Add($"保存失败：{ex.Message}", Severity.Error);
+        }
+    }
+
+    private async Task SaveCategory()
+    {
+        try
+        {
+            if (editingCategoryId > 0)
+            {
+                var existing = await CategoryManagement.GetCategoryAsync(editingCategoryId);
+                if (existing == null)
+                {
+                    Snackbar.Add("分类不存在", Severity.Error);
+                    return;
+                }
+
+                existing.Name = newCategoryName.Trim();
+                existing.Description = string.IsNullOrWhiteSpace(newCategoryDesc) ? null : newCategoryDesc.Trim();
+                await CategoryManagement.UpdateCategoryAsync(existing);
+                Snackbar.Add($"分类 \"{newCategoryName}\" 修改成功", Severity.Success);
+            }
+            else
+            {
+                var category = new GroupCategory
+                {
+                    Name = newCategoryName.Trim(),
+                    Description = string.IsNullOrWhiteSpace(newCategoryDesc) ? null : newCategoryDesc.Trim(),
+                    CreatedAt = DateTime.UtcNow
+                };
+
+                await CategoryManagement.CreateCategoryAsync(category);
+                Snackbar.Add($"分类 \"{newCategoryName}\" 添加成功", Severity.Success);
+            }
+
+            CancelEdit();
+            await LoadCategories();
+            await LoadGroups();
+        }
+        catch (Exception ex)
+        {
+            Snackbar.Add($"保存失败：{ex.Message}", Severity.Error);
+        }
+    }
+
+    private void BeginEdit(GroupCategory category)
+    {
+        editingCategoryId = category.Id;
+        newCategoryName = category.Name;
+        newCategoryDesc = category.Description ?? string.Empty;
+    }
+
+    private void CancelEdit()
+    {
+        editingCategoryId = 0;
+        newCategoryName = string.Empty;
+        newCategoryDesc = string.Empty;
+    }
+
+    private async Task DeleteCategory(GroupCategory category)
+    {
+        bool? result = await DialogService.ShowMessageBox(
+            "确认删除",
+            $"确定要删除分类 {category.Name} 吗？关联的群组将变为未分类。",
+            yesText: "删除", cancelText: "取消");
+
+        if (result == true)
+        {
+            try
+            {
+                await CategoryManagement.DeleteCategoryAsync(category.Id);
+                if (editingCategoryId == category.Id)
+                    CancelEdit();
+                await LoadCategories();
+                await LoadGroups();
+                Snackbar.Add("删除成功", Severity.Success);
+            }
+            catch (Exception ex)
+            {
+                Snackbar.Add($"删除失败：{ex.Message}", Severity.Error);
+            }
+        }
+    }
+
+    private static string FormatAccountLabel(Account account)
+    {
+        var nickname = string.IsNullOrWhiteSpace(account.Nickname) ? null : account.Nickname.Trim();
+        var username = string.IsNullOrWhiteSpace(account.Username) ? null : account.Username.Trim();
+
+        var namePart = nickname ?? account.Phone;
+        if (!string.IsNullOrWhiteSpace(username))
+            return $"{namePart} (@{username})";
+        return namePart;
+    }
+}

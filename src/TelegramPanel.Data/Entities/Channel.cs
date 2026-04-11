@@ -16,6 +16,7 @@ public class Channel
     public int? CreatorAccountId { get; set; }
     public int? GroupId { get; set; }
     public DateTime? CreatedAt { get; set; }
+    public DateTime? SystemCreatedAtUtc { get; set; }
     public DateTime SyncedAt { get; set; } = DateTime.UtcNow;
 
     // 导航属性

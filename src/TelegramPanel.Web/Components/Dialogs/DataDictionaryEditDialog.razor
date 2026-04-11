@@ -1,0 +1,383 @@
+﻿@namespace TelegramPanel.Web.Components.Dialogs
+@inject DataDictionaryService DictionaryService
+@inject ImageAssetStorageService AssetStorage
+@inject ISnackbar Snackbar
+@using Microsoft.AspNetCore.Components
+@using Microsoft.AspNetCore.Components.Forms
+@using TelegramPanel.Data.Entities
+@using TelegramPanel.Web.Services
+@implements IAsyncDisposable
+
+<MudDialog>
+    <DialogContent>
+        @if (loading)
+        {
+            <MudStack Spacing="2">
+                <MudProgressCircular Indeterminate="true" Size="Size.Small" Color="Color.Primary" />
+                <MudText Typo="Typo.caption">正在加载字典配置...</MudText>
+            </MudStack>
+        }
+        else if (!string.IsNullOrWhiteSpace(loadError))
+        {
+            <MudAlert Severity="Severity.Error" Variant="Variant.Outlined" Dense="true">
+                @loadError
+            </MudAlert>
+        }
+        else
+        {
+            <MudStack Spacing="2">
+                <MudGrid>
+                    <MudItem xs="12" md="6">
+                        <MudTextField @bind-Value="name"
+                                      Label="字典名称"
+                                      Variant="Variant.Outlined"
+                                      HelperText="变量名使用 {name} 引用；建议使用字母、数字、下划线。" />
+                    </MudItem>
+                    <MudItem xs="12" md="6">
+                        <MudTextField @bind-Value="displayName"
+                                      Label="显示名称"
+                                      Variant="Variant.Outlined" />
+                    </MudItem>
+                </MudGrid>
+
+                <MudTextField @bind-Value="description"
+                              Label="描述"
+                              Variant="Variant.Outlined"
+                              Lines="2" />
+
+                <MudGrid>
+                    <MudItem xs="12" md="4">
+                        <MudSelect T="string" @bind-Value="type" Label="字典类型" Variant="Variant.Outlined" Disabled="@IsEdit">
+                            <MudSelectItem Value="@DataDictionaryTypes.Text">文本字典</MudSelectItem>
+                            <MudSelectItem Value="@DataDictionaryTypes.Image">图片字典</MudSelectItem>
+                        </MudSelect>
+                    </MudItem>
+                    <MudItem xs="12" md="4">
+                        <MudSelect T="string" @bind-Value="readMode" Label="读取模式" Variant="Variant.Outlined">
+                            <MudSelectItem Value="@DataDictionaryReadModes.Random">随机</MudSelectItem>
+                            <MudSelectItem Value="@DataDictionaryReadModes.Queue">队列轮询</MudSelectItem>
+                        </MudSelect>
+                    </MudItem>
+                    <MudItem xs="12" md="4">
+                        <MudSwitch @bind-Value="isEnabled" Color="Color.Primary">启用字典</MudSwitch>
+                    </MudItem>
+                </MudGrid>
+
+                @if (IsTextDictionary)
+                {
+                    <MudTextField @bind-Value="textLines"
+                                  Label="文本内容"
+                                  Variant="Variant.Outlined"
+                                  Lines="10"
+                                  HelperText="一行一条内容，保存时会自动忽略空行。" />
+                }
+                else
+                {
+                    <MudAlert Severity="Severity.Info" Variant="Variant.Outlined" Dense="true">
+                        图片字典支持一次或分批选择多张图；删除字典或删除字典项时会同步清理图片文件，点击保存字典后才正式生效。
+                    </MudAlert>
+
+                    <MudFileUpload T="IReadOnlyList<IBrowserFile>"
+                                   FilesChanged="OnFilesChanged"
+                                   Accept="image/*"
+                                   MaximumFileCount="100"
+                                   Disabled="@saving">
+                        <ActivatorContent>
+                            <MudButton Variant="Variant.Outlined" Color="Color.Primary" StartIcon="@Icons.Material.Filled.Image">
+                                选择图片
+                            </MudButton>
+                        </ActivatorContent>
+                    </MudFileUpload>
+
+                    @if (existingImages.Count > 0)
+                    {
+                        <MudText Typo="Typo.subtitle2">现有图片</MudText>
+                        <MudTable Items="@existingImages" Hover="true" Dense="true">
+                            <HeaderContent>
+                                <MudTh>文件名</MudTh>
+                                <MudTh>预览</MudTh>
+                                <MudTh>操作</MudTh>
+                            </HeaderContent>
+                            <RowTemplate>
+                                <MudTd DataLabel="文件名">@context.FileName</MudTd>
+                                <MudTd DataLabel="预览"><a href="@GetImageUrl(context.AssetPath)" target="_blank">查看</a></MudTd>
+                                <MudTd DataLabel="操作">
+                                    <MudIconButton Icon="@Icons.Material.Filled.Delete" Size="Size.Small" Color="Color.Error" OnClick="@(() => RemoveExistingImage(context.Id))" />
+                                </MudTd>
+                            </RowTemplate>
+                        </MudTable>
+                    }
+
+                    @if (pendingImages.Count > 0)
+                    {
+                        <MudText Typo="Typo.subtitle2">待保存图片</MudText>
+                        <MudTable Items="@GetPendingImageRows()" Hover="true" Dense="true">
+                            <HeaderContent>
+                                <MudTh>文件名</MudTh>
+                                <MudTh>大小</MudTh>
+                                <MudTh>操作</MudTh>
+                            </HeaderContent>
+                            <RowTemplate>
+                                <MudTd DataLabel="文件名">@context.FileName</MudTd>
+                                <MudTd DataLabel="大小">@FormatBytes(context.Size)</MudTd>
+                                <MudTd DataLabel="操作">
+                                    <MudIconButton Icon="@Icons.Material.Filled.Close" Size="Size.Small" Color="Color.Default" OnClick="@(() => RemovePendingImageAsync(context.Index))" />
+                                </MudTd>
+                            </RowTemplate>
+                        </MudTable>
+                    }
+                }
+            </MudStack>
+        }
+    </DialogContent>
+    <DialogActions>
+        <MudButton Variant="Variant.Text" Color="Color.Default" OnClick="Cancel" Disabled="@saving">关闭</MudButton>
+        <MudButton Variant="Variant.Filled" Color="Color.Primary" OnClick="Save" Disabled="@saving">
+            @if (saving)
+            {
+                <MudProgressCircular Size="Size.Small" Indeterminate="true" Class="mr-2" />
+                <span>保存中...</span>
+            }
+            else
+            {
+                <span>保存字典</span>
+            }
+        </MudButton>
+    </DialogActions>
+</MudDialog>
+
+@code {
+    private sealed record ExistingImageRow(int Id, string AssetPath, string FileName);
+    private sealed record PendingImageUpload(string AssetPath, string FileName, long Size);
+    private sealed record PendingImageRow(int Index, string FileName, long Size);
+
+    [CascadingParameter] private MudDialogInstance MudDialog { get; set; } = default!;
+    [Parameter] public int? DictionaryId { get; set; }
+    [Parameter] public string? InitialType { get; set; }
+
+    private bool loading = true;
+    private bool saving;
+    private string? loadError;
+    private string name = string.Empty;
+    private string displayName = string.Empty;
+    private string? description;
+    private string type = DataDictionaryTypes.Text;
+    private string readMode = DataDictionaryReadModes.Random;
+    private bool isEnabled = true;
+    private string textLines = string.Empty;
+    private List<ExistingImageRow> existingImages = new();
+    private List<PendingImageUpload> pendingImages = new();
+    private readonly string uploadScope = $"dictionaries/draft-{Guid.NewGuid():N}";
+    private bool pendingAssetsCommitted;
+    private bool cleanupStarted;
+
+    private bool IsEdit => DictionaryId.HasValue && DictionaryId.Value > 0;
+    private bool IsTextDictionary => string.Equals(type, DataDictionaryTypes.Text, StringComparison.OrdinalIgnoreCase);
+
+    protected override async Task OnInitializedAsync()
+    {
+        try
+        {
+            type = string.Equals((InitialType ?? string.Empty).Trim(), DataDictionaryTypes.Image, StringComparison.OrdinalIgnoreCase)
+                ? DataDictionaryTypes.Image
+                : DataDictionaryTypes.Text;
+
+            if (!IsEdit)
+                return;
+
+            var dictionary = await DictionaryService.GetAsync(DictionaryId!.Value);
+            if (dictionary == null)
+            {
+                loadError = "字典不存在或已被删除。";
+                return;
+            }
+
+            name = dictionary.Name;
+            displayName = dictionary.DisplayName;
+            description = dictionary.Description;
+            type = dictionary.Type;
+            readMode = dictionary.ReadMode;
+            isEnabled = dictionary.IsEnabled;
+
+            if (string.Equals(dictionary.Type, DataDictionaryTypes.Text, StringComparison.OrdinalIgnoreCase))
+            {
+                textLines = string.Join(Environment.NewLine,
+                    dictionary.Items
+                        .Where(x => x.IsEnabled && !string.IsNullOrWhiteSpace(x.TextValue))
+                        .OrderBy(x => x.SortOrder)
+                        .ThenBy(x => x.Id)
+                        .Select(x => x.TextValue));
+            }
+            else
+            {
+                existingImages = dictionary.Items
+                    .Where(x => x.IsEnabled && !string.IsNullOrWhiteSpace(x.AssetPath))
+                    .OrderBy(x => x.SortOrder)
+                    .ThenBy(x => x.Id)
+                    .Select(x => new ExistingImageRow(x.Id, x.AssetPath!, x.FileName ?? $"image-{x.Id}.jpg"))
+                    .ToList();
+            }
+        }
+        catch (Exception ex)
+        {
+            loadError = ex.Message;
+        }
+        finally
+        {
+            loading = false;
+        }
+    }
+
+    private async Task OnFilesChanged(IReadOnlyList<IBrowserFile> files)
+    {
+        if (files == null || files.Count == 0)
+            return;
+
+        var errors = new List<string>();
+        foreach (var file in files)
+        {
+            if (file == null)
+                continue;
+
+            try
+            {
+                var stored = await AssetStorage.SaveBrowserFileAsync(file, uploadScope, ImageAssetKind.General);
+                pendingImages.Add(new PendingImageUpload(stored.AssetPath, stored.FileName, file.Size));
+            }
+            catch (Exception ex)
+            {
+                errors.Add($"{file.Name}：{ex.Message}");
+            }
+        }
+
+        if (errors.Count == 1)
+        {
+            Snackbar.Add($"暂存图片失败：{errors[0]}", Severity.Error);
+        }
+        else if (errors.Count > 1)
+        {
+            Snackbar.Add($"有 {errors.Count} 张图片暂存失败。首个错误：{errors[0]}", Severity.Error);
+        }
+    }
+
+    private void RemoveExistingImage(int itemId)
+    {
+        existingImages.RemoveAll(x => x.Id == itemId);
+    }
+
+    private async Task RemovePendingImageAsync(int index)
+    {
+        if (index < 0 || index >= pendingImages.Count)
+            return;
+
+        var image = pendingImages[index];
+        pendingImages.RemoveAt(index);
+
+        try
+        {
+            await AssetStorage.DeleteAssetAsync(image.AssetPath);
+        }
+        catch (Exception ex)
+        {
+            Snackbar.Add($"删除暂存图片失败：{image.FileName}，{ex.Message}", Severity.Warning);
+        }
+    }
+
+    private IEnumerable<PendingImageRow> GetPendingImageRows()
+    {
+        for (var index = 0; index < pendingImages.Count; index++)
+        {
+            var file = pendingImages[index];
+            yield return new PendingImageRow(index, file.FileName, file.Size);
+        }
+    }
+
+    private async Task Save()
+    {
+        if (saving)
+            return;
+
+        saving = true;
+        try
+        {
+            if (string.IsNullOrWhiteSpace(name))
+                throw new InvalidOperationException("字典名称不能为空");
+            if (string.IsNullOrWhiteSpace(displayName))
+                throw new InvalidOperationException("显示名称不能为空");
+
+            if (IsTextDictionary)
+            {
+                var items = textLines
+                    .Replace("\r\n", "\n", StringComparison.Ordinal)
+                    .Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+                    .Select(x => new DataDictionaryTextItemInput(x))
+                    .ToList();
+
+                var saved = await DictionaryService.SaveTextDictionaryAsync(DictionaryId, name, displayName, description, readMode, isEnabled, items);
+                Snackbar.Add($"字典 {saved.DisplayName} 已保存", Severity.Success);
+                MudDialog.Close(DialogResult.Ok(saved.Id));
+                return;
+            }
+
+            var imageInputs = pendingImages
+                .Select(x => new DataDictionaryImageItemInput(x.AssetPath, x.FileName))
+                .ToList();
+            var keepItemIds = existingImages.Select(x => x.Id).ToList();
+            var savedDictionary = await DictionaryService.SaveImageDictionaryAsync(DictionaryId, name, displayName, description, readMode, isEnabled, keepItemIds, imageInputs);
+            pendingAssetsCommitted = true;
+            Snackbar.Add($"字典 {savedDictionary.DisplayName} 已保存", Severity.Success);
+            MudDialog.Close(DialogResult.Ok(savedDictionary.Id));
+        }
+        catch (Exception ex)
+        {
+            Snackbar.Add($"保存失败：{ex.Message}", Severity.Error);
+        }
+        finally
+        {
+            saving = false;
+        }
+    }
+
+    private static string FormatBytes(long bytes)
+    {
+        if (bytes < 1024)
+            return $"{bytes} B";
+        if (bytes < 1024 * 1024)
+            return $"{bytes / 1024d:0.##} KB";
+        return $"{bytes / 1024d / 1024d:0.##} MB";
+    }
+
+    private static string GetImageUrl(string assetPath)
+    {
+        return "/" + (assetPath ?? string.Empty).TrimStart('/').Replace('\\', '/');
+    }
+
+    private async Task Cancel()
+    {
+        await CleanupPendingAssetsAsync();
+        MudDialog.Close();
+    }
+
+    public async ValueTask DisposeAsync()
+    {
+        await CleanupPendingAssetsAsync();
+    }
+
+    private async Task CleanupPendingAssetsAsync()
+    {
+        if (pendingAssetsCommitted || cleanupStarted)
+            return;
+
+        cleanupStarted = true;
+        pendingImages.Clear();
+
+        try
+        {
+            await AssetStorage.DeleteScopeAsync(uploadScope);
+        }
+        catch
+        {
+            // 关闭对话框时忽略临时目录清理失败，避免影响主流程。
+        }
+    }
+}

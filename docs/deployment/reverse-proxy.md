@@ -45,3 +45,5 @@ example.com {
 
 - 反代目标：`http://127.0.0.1:5000`
 - 需要透传：`Host` + `X-Forwarded-Host` + `X-Forwarded-Proto`（否则可能跳到 `localhost`）
+
+如果你要启用 Bot Webhook，还需要确保 Webhook 路径可外网访问：见 [Bot Webhook](bot-webhook.md)。

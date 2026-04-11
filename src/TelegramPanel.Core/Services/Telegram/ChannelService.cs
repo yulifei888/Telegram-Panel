@@ -39,7 +39,7 @@ public class ChannelService : IChannelService
 
         foreach (var (_, chat) in dialogs.chats)
         {
-            if (chat is not Channel channel || !channel.IsActive)
+            if (chat is not Channel channel || !channel.IsActive || !channel.IsChannel)
                 continue;
 
             try
@@ -98,7 +98,7 @@ public class ChannelService : IChannelService
 
         foreach (var (_, chat) in dialogs.chats)
         {
-            if (chat is not Channel channel || !channel.IsActive)
+            if (chat is not Channel channel || !channel.IsActive || !channel.IsChannel)
                 continue;
 
             try
@@ -149,6 +149,79 @@ public class ChannelService : IChannelService
         }
 
         _logger.LogInformation("Found {Count} admined channels for account {AccountId}", channels.Count, accountId);
+        return channels;
+    }
+
+    public async Task<List<ChannelInfo>> GetVisibleChannelsAsync(int accountId, CancellationToken cancellationToken = default)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+
+        var client = await GetOrCreateConnectedClientAsync(accountId, cancellationToken);
+
+        var channels = new List<ChannelInfo>();
+        var dialogs = await ExecuteTelegramRequestAsync(
+            accountId,
+            "拉取频道/群组对话列表",
+            () => client.Messages_GetAllDialogs(),
+            cancellationToken,
+            resetClientOnTimeout: true);
+
+        foreach (var (_, chat) in dialogs.chats)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            if (chat is not Channel channel || !channel.IsActive || !channel.IsChannel)
+                continue;
+
+            try
+            {
+                var isCreator =
+                    ReadBool(channel, "creator", "Creator", "is_creator", "IsCreator")
+                    || ReadFlagsHas(channel, flagName: "creator", memberNames: new[] { "flags", "Flags" });
+                var adminRights = ReadObject(channel, "admin_rights", "AdminRights", "adminRights");
+                var isAdmin = isCreator || adminRights != null;
+
+                var memberCount = ReadInt(channel, 0, "participants_count", "ParticipantsCount", "participantsCount", "memberCount", "MemberCount");
+                string? about = null;
+                try
+                {
+                    var fullChannel = await ExecuteTelegramRequestAsync(
+                        accountId,
+                        $"拉取频道详情({channel.id})",
+                        () => client.Channels_GetFullChannel(channel),
+                        cancellationToken,
+                        resetClientOnTimeout: false);
+                    memberCount = fullChannel.full_chat.ParticipantsCount;
+                    about = (fullChannel.full_chat as ChannelFull)?.about;
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogDebug(ex, "Failed to get full visible channel info for {ChannelId}", channel.id);
+                }
+
+                channels.Add(new ChannelInfo
+                {
+                    TelegramId = channel.id,
+                    AccessHash = channel.access_hash,
+                    Title = channel.title,
+                    Username = channel.MainUsername,
+                    IsBroadcast = channel.IsChannel,
+                    MemberCount = memberCount,
+                    About = about,
+                    CreatorAccountId = isCreator ? accountId : null,
+                    IsCreator = isCreator,
+                    IsAdmin = isAdmin,
+                    CreatedAt = channel.date,
+                    SyncedAt = DateTime.UtcNow
+                });
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "Failed to get visible channel info for {ChannelId}", channel.id);
+            }
+        }
+
+        _logger.LogInformation("Found {Count} visible channels for account {AccountId}", channels.Count, accountId);
         return channels;
     }
 
@@ -443,6 +516,15 @@ public class ChannelService : IChannelService
             }
         }
 
+        static bool IsAdminsLimitError(string? message)
+        {
+            if (string.IsNullOrWhiteSpace(message))
+                return false;
+
+            return message.Contains("ADMINS_TOO_MUCH", StringComparison.OrdinalIgnoreCase)
+                || message.Contains("USERS_TOO_MUCH", StringComparison.OrdinalIgnoreCase);
+        }
+
         async Task<bool> TryPromoteWithFallbackAsync(Interfaces.AdminRights toGrant)
         {
             try
@@ -472,9 +554,39 @@ public class ChannelService : IChannelService
             }
         }
 
+        async Task TryPromoteOrReuseExistingAdminAsync(Interfaces.AdminRights toGrant)
+        {
+            try
+            {
+                await TryPromoteWithFallbackAsync(toGrant);
+            }
+            catch (RpcException ex) when (IsAdminsLimitError(ex.Message))
+            {
+                var granted = await TryGetGrantedAdminRightsAsync(client, channel, resolved.User.id);
+                if (!granted.HasValue)
+                    throw;
+
+                if (granted.Value == toGrant)
+                {
+                    effectiveRights = toGrant;
+                    _logger.LogInformation(
+                        "EditAdmin hit admins-limit error but target already has requested rights, treat as success: channel={ChannelId} user={UserId} error={Error}",
+                        channelId, resolved.User.id, ex.Message);
+                    return;
+                }
+
+                var missing = toGrant & ~granted.Value;
+                var extra = granted.Value & ~toGrant;
+                var missingText = missing == Interfaces.AdminRights.None ? "无" : FormatAdminRights(missing);
+                var extraText = extra == Interfaces.AdminRights.None ? "无" : FormatAdminRights(extra);
+                throw new InvalidOperationException(
+                    $"目标已是管理员，但权限未对齐（缺少：{missingText}；多余：{extraText}）。Telegram 返回：{ex.Message}", ex);
+            }
+        }
+
         try
         {
-            await TryPromoteWithFallbackAsync(requestedRights);
+            await TryPromoteOrReuseExistingAdminAsync(requestedRights);
         }
         catch (RpcException ex) when (ex.Message.Contains("USER_NOT_PARTICIPANT", StringComparison.OrdinalIgnoreCase))
         {
@@ -500,7 +612,7 @@ public class ChannelService : IChannelService
 
             try
             {
-                await TryPromoteWithFallbackAsync(requestedRights);
+                await TryPromoteOrReuseExistingAdminAsync(requestedRights);
             }
             catch (RpcException ex2) when (ex2.Message.Contains("RIGHT_FORBIDDEN", StringComparison.OrdinalIgnoreCase))
             {
@@ -627,6 +739,46 @@ public class ChannelService : IChannelService
         return true;
     }
 
+    public async Task<bool> LeaveChannelAsync(int accountId, long channelId)
+    {
+        try
+        {
+            var client = await GetOrCreateConnectedClientAsync(accountId);
+            var channel = await GetChannelByIdAsync(client, channelId)
+                ?? throw new InvalidOperationException($"频道 {channelId} not found");
+
+            await ExecuteTelegramRequestAsync(
+                accountId,
+                $"退出频道({channel.id})",
+                () => client.LeaveChat(channel.ToInputPeer()),
+                CancellationToken.None,
+                resetClientOnTimeout: false);
+
+            return true;
+        }
+        catch (RpcException ex) when (ex.Code == 400 && string.Equals(ex.Message, "USER_NOT_PARTICIPANT", StringComparison.OrdinalIgnoreCase))
+        {
+            return true;
+        }
+    }
+
+    public async Task<bool> DisbandChannelAsync(int accountId, long channelId)
+    {
+        var client = await GetOrCreateConnectedClientAsync(accountId);
+        var channel = await GetChannelByIdAsync(client, channelId)
+            ?? throw new InvalidOperationException($"频道 {channelId} not found");
+
+        var input = new InputChannel(channel.id, channel.access_hash);
+        await ExecuteTelegramRequestAsync(
+            accountId,
+            $"解散频道({channel.id})",
+            () => client.Channels_DeleteChannel(input),
+            CancellationToken.None,
+            resetClientOnTimeout: false);
+
+        return true;
+    }
+
     public async Task<string> ExportJoinLinkAsync(int accountId, long channelId)
     {
         var client = await GetOrCreateConnectedClientAsync(accountId);
@@ -716,6 +868,45 @@ public class ChannelService : IChannelService
         return true;
     }
 
+    public async Task<bool> SetChannelPhotoAsync(
+        int accountId,
+        long channelId,
+        Stream fileStream,
+        string fileName,
+        CancellationToken cancellationToken = default)
+    {
+        var client = await GetOrCreateConnectedClientAsync(accountId, cancellationToken);
+        var channel = await GetChannelByIdAsync(client, channelId)
+            ?? throw new InvalidOperationException($"Channel {channelId} not found");
+
+        if (fileStream == null)
+            throw new ArgumentException("头像文件为空", nameof(fileStream));
+
+        fileName = (fileName ?? "channel_photo.jpg").Trim();
+        if (string.IsNullOrWhiteSpace(fileName))
+            fileName = "channel_photo.jpg";
+
+        try
+        {
+            await using var encoded = await TelegramImageProcessor.PrepareAvatarJpegAsync(fileStream, cancellationToken);
+            var uploaded = await client.UploadFileAsync(encoded, fileName);
+            if (uploaded == null)
+                throw new InvalidOperationException("频道头像上传失败：上传结果为空");
+
+            await client.Channels_EditPhoto(channel, new InputChatUploadedPhoto
+            {
+                flags = InputChatUploadedPhoto.Flags.has_file,
+                file = uploaded
+            });
+
+            return true;
+        }
+        catch (SixLabors.ImageSharp.UnknownImageFormatException)
+        {
+            throw new InvalidOperationException("不支持的图片格式（建议使用 JPG/PNG）");
+        }
+    }
+
     public async Task<bool> KickUserAsync(int accountId, long channelId, string username, bool permanentBan = false)
     {
         var client = await GetOrCreateConnectedClientAsync(accountId);
@@ -732,17 +923,35 @@ public class ChannelService : IChannelService
             throw new InvalidOperationException("无法获取用户 access_hash，无法执行踢人");
 
         var peer = new InputPeerUser(user.id, user.access_hash);
-
-        // 非永久：用短时间 ban 达到“踢出但可再加入”的效果
-        var until = permanentBan ? DateTime.UtcNow.AddYears(100) : DateTime.UtcNow.AddSeconds(60);
-        var rights = new ChatBannedRights
-        {
-            flags = ChatBannedRights.Flags.view_messages,
-            until_date = until
-        };
+        var rights = BuildKickRights(permanentBan);
 
         await client.Channels_EditBanned(channel, peer, rights);
         return true;
+    }
+
+    public async Task<bool> KickUserByUserIdAsync(int accountId, long channelId, long userId, bool permanentBan = false)
+    {
+        var client = await GetOrCreateConnectedClientAsync(accountId);
+        var channel = await GetChannelByIdAsync(client, channelId)
+            ?? throw new InvalidOperationException($"Channel {channelId} not found");
+
+        if (userId <= 0)
+            throw new ArgumentException("请输入要踢出的用户 ID", nameof(userId));
+
+        var peer = new InputPeerUser(userId, 0);
+        var rights = BuildKickRights(permanentBan);
+
+        try
+        {
+            await client.Channels_EditBanned(channel, peer, rights);
+            return true;
+        }
+        catch (RpcException ex) when (
+            ex.Message.Contains("USER_ID_INVALID", StringComparison.OrdinalIgnoreCase) ||
+            ex.Message.Contains("PEER_ID_INVALID", StringComparison.OrdinalIgnoreCase))
+        {
+            throw new InvalidOperationException("该用户 ID 无法直接解析，请改用 @username 执行账号踢人。", ex);
+        }
     }
 
     #region Private Methods
@@ -775,8 +984,10 @@ public class ChannelService : IChannelService
             .FirstOrDefault(c => candidateSet?.Contains(c.id) ?? c.id == channelId);
     }
 
-    private async Task<Client> GetOrCreateConnectedClientAsync(int accountId)
+    private async Task<Client> GetOrCreateConnectedClientAsync(int accountId, CancellationToken cancellationToken = default)
     {
+        cancellationToken.ThrowIfCancellationRequested();
+
         var existing = _clientPool.GetClient(accountId);
         if (existing?.User != null)
             return existing;
@@ -816,9 +1027,22 @@ public class ChannelService : IChannelService
 
         try
         {
-            await client.ConnectAsync();
+            await ExecuteTelegramRequestAsync(
+                accountId,
+                "连接 Telegram",
+                () => client.ConnectAsync(),
+                cancellationToken,
+                resetClientOnTimeout: true);
+
             if (client.User == null && (client.UserId != 0 || account.UserId != 0))
-                await client.LoginUserIfNeeded(reloginOnFailedResume: false);
+            {
+                await ExecuteTelegramRequestAsync(
+                    accountId,
+                    "恢复 Telegram 登录状态",
+                    () => client.LoginUserIfNeeded(reloginOnFailedResume: false),
+                    cancellationToken,
+                    resetClientOnTimeout: true);
+            }
         }
         catch (Exception ex)
         {
@@ -837,6 +1061,70 @@ public class ChannelService : IChannelService
             throw new InvalidOperationException("账号未登录或 session 已失效，请重新登录生成新的 session");
 
         return client;
+    }
+
+    private TimeSpan GetTelegramRequestTimeout()
+    {
+        var seconds = int.TryParse(_configuration["Telegram:RequestTimeoutSeconds"], out var parsedSeconds)
+            ? parsedSeconds
+            : 90;
+        return TimeSpan.FromSeconds(Math.Clamp(seconds, 15, 600));
+    }
+
+    private async Task ExecuteTelegramRequestAsync(
+        int accountId,
+        string operation,
+        Func<Task> action,
+        CancellationToken cancellationToken,
+        bool resetClientOnTimeout)
+    {
+        var timeout = GetTelegramRequestTimeout();
+
+        try
+        {
+            await action().WaitAsync(timeout, cancellationToken);
+        }
+        catch (TimeoutException)
+        {
+            _logger.LogWarning(
+                "Telegram request timed out after {TimeoutSeconds}s for account {AccountId}: {Operation}",
+                timeout.TotalSeconds,
+                accountId,
+                operation);
+
+            if (resetClientOnTimeout)
+                await _clientPool.RemoveClientAsync(accountId);
+
+            throw new TimeoutException($"Telegram 请求超时：{operation} 超过 {timeout.TotalSeconds:0} 秒，可能是 Session 失效、账号受限、网络异常或代理异常");
+        }
+    }
+
+    private async Task<T> ExecuteTelegramRequestAsync<T>(
+        int accountId,
+        string operation,
+        Func<Task<T>> action,
+        CancellationToken cancellationToken,
+        bool resetClientOnTimeout)
+    {
+        var timeout = GetTelegramRequestTimeout();
+
+        try
+        {
+            return await action().WaitAsync(timeout, cancellationToken);
+        }
+        catch (TimeoutException)
+        {
+            _logger.LogWarning(
+                "Telegram request timed out after {TimeoutSeconds}s for account {AccountId}: {Operation}",
+                timeout.TotalSeconds,
+                accountId,
+                operation);
+
+            if (resetClientOnTimeout)
+                await _clientPool.RemoveClientAsync(accountId);
+
+            throw new TimeoutException($"Telegram 请求超时：{operation} 超过 {timeout.TotalSeconds:0} 秒，可能是 Session 失效、账号受限、网络异常或代理异常");
+        }
     }
 
     private int ResolveApiId(TelegramPanel.Data.Entities.Account account)
@@ -876,6 +1164,17 @@ public class ChannelService : IChannelService
     private static bool LooksLikeSqliteSession(string filePath)
     {
         return SessionDataConverter.LooksLikeSqliteSession(filePath);
+    }
+
+    private static ChatBannedRights BuildKickRights(bool permanentBan)
+    {
+        // 非永久：用短时间 ban 达到“踢出但可再加入”的效果
+        var until = permanentBan ? DateTime.UtcNow.AddYears(100) : DateTime.UtcNow.AddSeconds(60);
+        return new ChatBannedRights
+        {
+            flags = ChatBannedRights.Flags.view_messages,
+            until_date = until
+        };
     }
 
     private static ChatAdminRights ConvertAdminRights(Interfaces.AdminRights rights)

@@ -44,9 +44,29 @@ public class BotChannelMemberRepository : Repository<BotChannelMember>, IBotChan
         await _context.SaveChangesAsync();
     }
 
+    public async Task<int> DeleteByChannelAndBotsAsync(int botChannelId, IReadOnlyCollection<int> botIds)
+    {
+        if (botChannelId <= 0 || botIds.Count == 0)
+            return 0;
+
+        var targets = botIds.Where(x => x > 0).Distinct().ToList();
+        if (targets.Count == 0)
+            return 0;
+
+        var rows = await _dbSet
+            .Where(x => x.BotChannelId == botChannelId && targets.Contains(x.BotId))
+            .ToListAsync();
+
+        if (rows.Count == 0)
+            return 0;
+
+        _dbSet.RemoveRange(rows);
+        await _context.SaveChangesAsync();
+        return rows.Count;
+    }
+
     public async Task<int> CountForChannelAsync(int botChannelId)
     {
         return await _dbSet.CountAsync(x => x.BotChannelId == botChannelId);
     }
 }
-

@@ -12,6 +12,8 @@ public static class ServiceCollectionExtensions
 {
     public static IServiceCollection AddTelegramPanelCore(this IServiceCollection services)
     {
+        services.AddSingleton<TelegramAccountUpdateHub>();
+
         // 注册 Telegram 客户端池（单例）
         services.AddSingleton<ITelegramClientPool, TelegramClientPool>();
 
@@ -35,6 +37,7 @@ public static class ServiceCollectionExtensions
         services.AddScoped<ChannelManagementService>();
         services.AddScoped<ChannelGroupManagementService>();
         services.AddScoped<GroupManagementService>();
+        services.AddScoped<GroupCategoryManagementService>();
         services.AddScoped<BatchTaskManagementService>();
         services.AddScoped<BotManagementService>();
 

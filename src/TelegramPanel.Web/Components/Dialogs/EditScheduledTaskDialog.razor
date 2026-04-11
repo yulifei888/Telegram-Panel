@@ -1,0 +1,259 @@
+﻿@namespace TelegramPanel.Web.Components.Dialogs
+@inject ScheduledTaskService ScheduledTaskManagement
+@inject TelegramPanel.Web.Modules.ModuleContributionRegistry Contributions
+@inject ISnackbar Snackbar
+@inject IDialogService DialogService
+@using System.Reflection
+@using System.Text.Json
+@using Microsoft.AspNetCore.Components
+@using TelegramPanel.Data.Entities
+@using TelegramPanel.Modules
+@using TelegramPanel.Web.Modules
+@using TelegramPanel.Web.Services
+
+<MudDialog>
+    <DialogContent>
+        @if (loading)
+        {
+            <MudStack Spacing="2">
+                <MudProgressCircular Indeterminate="true" Size="Size.Small" Color="Color.Primary" />
+                <MudText Typo="Typo.caption">正在加载计划任务配置...</MudText>
+            </MudStack>
+        }
+        else if (!string.IsNullOrWhiteSpace(loadError))
+        {
+            <MudAlert Severity="Severity.Error" Variant="Variant.Outlined" Dense="true">
+                @loadError
+            </MudAlert>
+        }
+        else
+        {
+            <MudStack Spacing="2">
+                <MudAlert Severity="Severity.Info" Variant="Variant.Outlined" Dense="true">
+                    Cron 按服务器本地时区解析：<b>@TimeZoneInfo.Local.Id</b>。
+                </MudAlert>
+
+                <MudTextField @bind-Value="cronExpression"
+                              Label="Cron 表达式"
+                              Variant="Variant.Outlined"
+                              Immediate="true"
+                              HelperText="5 段格式：分 时 日 月 周，例如：*/30 * * * *" />
+
+                <MudStack Row="true" Spacing="1" Wrap="Wrap.Wrap">
+                    @foreach (var preset in CronPresets)
+                    {
+                        <MudButton Variant="Variant.Outlined" Size="Size.Small" OnClick="@(() => ApplyCronPreset(preset.Expression))">
+                            @preset.Label
+                        </MudButton>
+                    }
+                </MudStack>
+
+                @if (editorComponentType != null)
+                {
+                    <DynamicComponent Type="editorComponentType" Parameters="editorParameters" />
+
+                    @if (!string.IsNullOrWhiteSpace(draft.ValidationError))
+                    {
+                        <MudText Typo="Typo.caption" Color="Color.Error">@draft.ValidationError</MudText>
+                    }
+                }
+                else if (!hasDedicatedCreateRoute)
+                {
+                    <MudTextField @bind-Value="genericConfigJson"
+                                  Label="任务配置（JSON）"
+                                  Variant="Variant.Outlined"
+                                  Lines="8"
+                                  HelperText="无专用编辑器时，可直接编辑 JSON 配置。" />
+
+                    <MudNumericField T="int"
+                                     @bind-Value="genericTotal"
+                                     Label="总数（Total）"
+                                     Variant="Variant.Outlined"
+                                     Min="0"
+                                     Max="1000000" />
+                }
+                else
+                {
+                    <MudAlert Severity="Severity.Warning" Variant="Variant.Outlined" Dense="true">
+                        该任务使用独立页面创建，当前不支持在此窗口编辑配置。
+                    </MudAlert>
+                }
+            </MudStack>
+        }
+    </DialogContent>
+    <DialogActions>
+        <MudButton Variant="Variant.Text" Color="Color.Default" OnClick="Cancel" Disabled="@saving">关闭</MudButton>
+        <MudButton Variant="Variant.Filled" Color="Color.Primary" OnClick="Save" Disabled="@(saving || !CanSave)">
+            @if (saving)
+            {
+                <MudProgressCircular Size="Size.Small" Indeterminate="true" Class="mr-2" />
+                <span>保存中...</span>
+            }
+            else
+            {
+                <span>保存计划任务</span>
+            }
+        </MudButton>
+    </DialogActions>
+</MudDialog>
+
+@code {
+    private sealed record CronPresetItem(string Label, string Expression);
+
+    private static readonly IReadOnlyList<CronPresetItem> CronPresets = new[]
+    {
+        new CronPresetItem("每30分钟", "*/30 * * * *"),
+        new CronPresetItem("每小时", "0 * * * *"),
+        new CronPresetItem("每天9点", "0 9 * * *"),
+        new CronPresetItem("每天12点", "0 12 * * *"),
+        new CronPresetItem("每天21点", "0 21 * * *")
+    };
+
+    [CascadingParameter] private MudDialogInstance MudDialog { get; set; } = default!;
+    [Parameter] public int TaskId { get; set; }
+
+    private ScheduledTask? scheduledTask;
+    private RegisteredTaskDefinition? taskDefinition;
+    private Type? editorComponentType;
+    private Dictionary<string, object?> editorParameters = new();
+    private ModuleTaskDraft draft = new(0, null, false, null);
+    private bool loading = true;
+    private bool saving;
+    private string? loadError;
+    private string cronExpression = string.Empty;
+    private string genericConfigJson = string.Empty;
+    private int genericTotal;
+
+    private bool hasDedicatedCreateRoute => !string.IsNullOrWhiteSpace(taskDefinition?.Definition.CreateRoute);
+
+    private bool CanSave =>
+        scheduledTask != null
+        && !string.IsNullOrWhiteSpace(cronExpression)
+        && !hasDedicatedCreateRoute
+        && (editorComponentType == null || draft.CanSubmit);
+
+    protected override async Task OnInitializedAsync()
+    {
+        try
+        {
+            if (TaskId <= 0)
+            {
+                loadError = "计划任务参数无效。";
+                return;
+            }
+
+            scheduledTask = await ScheduledTaskManagement.GetAsync(TaskId);
+            if (scheduledTask == null)
+            {
+                loadError = "计划任务不存在或已被删除。";
+                return;
+            }
+
+            cronExpression = scheduledTask.CronExpression;
+            genericConfigJson = scheduledTask.ConfigJson ?? string.Empty;
+            genericTotal = Math.Max(0, scheduledTask.Total);
+
+            if (Contributions.TaskTypeToDefinition.TryGetValue((scheduledTask.TaskType ?? string.Empty).Trim(), out var reg))
+            {
+                taskDefinition = reg;
+                editorComponentType = ModuleTaskEditorComponentResolver.ResolveEditEditor(reg);
+                if (editorComponentType != null)
+                    editorParameters = BuildEditorParameters(editorComponentType, scheduledTask);
+            }
+        }
+        catch (Exception ex)
+        {
+            loadError = ex.Message;
+        }
+        finally
+        {
+            loading = false;
+        }
+    }
+
+    private Dictionary<string, object?> BuildEditorParameters(Type componentType, ScheduledTask task)
+    {
+        var parameters = new Dictionary<string, object?>
+        {
+            ["Draft"] = draft,
+            ["DraftChanged"] = EventCallback.Factory.Create<ModuleTaskDraft>(this, OnDraftChanged)
+        };
+
+        AddOptionalParameter(parameters, componentType, "InitialConfigJson", task.ConfigJson);
+        AddOptionalParameter(parameters, componentType, "TaskId", task.Id);
+        return parameters;
+    }
+
+    private static void AddOptionalParameter(Dictionary<string, object?> parameters, Type componentType, string parameterName, object? value)
+    {
+        var property = componentType.GetProperty(parameterName, BindingFlags.Public | BindingFlags.Instance);
+        if (property == null)
+            return;
+
+        parameters[parameterName] = value;
+    }
+
+    private void OnDraftChanged(ModuleTaskDraft value)
+    {
+        draft = value;
+    }
+
+    private void ApplyCronPreset(string expression)
+    {
+        cronExpression = expression;
+    }
+
+    private async Task Save()
+    {
+        if (!CanSave || scheduledTask == null || saving)
+            return;
+
+        bool? confirm = await DialogService.ShowMessageBox(
+            "确认保存",
+            $"将更新计划任务 #{scheduledTask.Id} 的配置，是否继续？",
+            yesText: "保存", cancelText: "取消");
+
+        if (confirm != true)
+            return;
+
+        saving = true;
+        try
+        {
+            var config = genericConfigJson?.Trim();
+            var total = Math.Max(0, genericTotal);
+
+            if (editorComponentType != null)
+            {
+                if (!draft.CanSubmit)
+                    throw new InvalidOperationException(string.IsNullOrWhiteSpace(draft.ValidationError) ? "请先完善任务配置" : draft.ValidationError);
+
+                config = draft.Config?.Trim();
+                total = Math.Max(0, draft.Total);
+            }
+            else if (!string.IsNullOrWhiteSpace(config))
+            {
+                JsonDocument.Parse(config);
+            }
+
+            scheduledTask.CronExpression = cronExpression.Trim();
+            scheduledTask.ConfigJson = string.IsNullOrWhiteSpace(config) ? null : config;
+            scheduledTask.Total = total;
+            scheduledTask.OwnedAssetScopeId = TaskAssetScopeHelper.GetAssetScopeId(scheduledTask.ConfigJson);
+
+            await ScheduledTaskManagement.UpdateAsync(scheduledTask);
+            Snackbar.Add($"计划任务 #{scheduledTask.Id} 已更新", Severity.Success);
+            MudDialog.Close(DialogResult.Ok(scheduledTask.Id));
+        }
+        catch (Exception ex)
+        {
+            Snackbar.Add($"保存失败：{ex.Message}", Severity.Error);
+        }
+        finally
+        {
+            saving = false;
+        }
+    }
+
+    private void Cancel() => MudDialog.Close();
+}
+

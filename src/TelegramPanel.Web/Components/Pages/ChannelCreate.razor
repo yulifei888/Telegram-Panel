@@ -1,4 +1,4 @@
-@page "/channels/create"
+﻿@page "/channels/create"
 @inject IChannelService ChannelService
 @inject AccountManagementService AccountManagement
 @inject TelegramPanel.Core.Services.AccountRiskService RiskService
@@ -185,6 +185,7 @@
             }
 
             // 保存到数据库
+            var now = DateTime.UtcNow;
             var channel = new Channel
             {
                 TelegramId = channelInfo.TelegramId,
@@ -196,8 +197,9 @@
                 About = channelAbout,
                 CreatorAccountId = selectedAccountId,
                 GroupId = selectedGroupId > 0 ? selectedGroupId : null,
-                CreatedAt = DateTime.UtcNow,
-                SyncedAt = DateTime.UtcNow
+                CreatedAt = now,
+                SyncedAt = now,
+                SystemCreatedAtUtc = now
             };
 
             await ChannelManagement.CreateOrUpdateChannelAsync(channel);
@@ -232,3 +234,5 @@
         return namePart;
     }
 }
+
+

@@ -47,7 +47,7 @@ Bot 频道管理功能支持两种更新接收模式：
   - `Telegram__WebhookSecretToken: "your-secret"`
   - `Telegram__BotAutoSyncEnabled: "true"`
 
-详细配置说明见 [advanced.md](./advanced.md#bot-webhook-模式生产环境推荐)。
+详细配置说明见 [Bot Webhook](../deployment/bot-webhook.md)。
 
 ## 同步失败时的状态更新
 

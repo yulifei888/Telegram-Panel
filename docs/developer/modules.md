@@ -1,4 +1,4 @@
-# 模块系统（可安装/可卸载）
+﻿# 模块系统（可安装/可卸载）
 
 本项目提供一个“模块系统”框架，用于把**任务能力**与**外部 API 能力**以模块形式分发、安装、启用与回滚，避免因为扩展功能不兼容导致主站不可用。
 
@@ -37,6 +37,7 @@
 
 - `IModuleTaskProvider`：声明模块提供的任务类型（让任务中心可动态展示/创建）
 - `IModuleTaskHandler`：实现任务中心后台执行器（让后台真正能跑该任务）
+- `IModuleTaskRerunBuilder`：为“重新运行”提供专用的配置重建逻辑（适合需要清洗旧配置的任务）
 - `IModuleApiProvider`：声明模块提供的外部 API 类型（让 API 管理页面可动态创建配置项）
 - `IModuleUiProvider`：声明模块扩展 UI 导航与页面（让面板可挂载模块自定义页面）
 
@@ -257,6 +258,161 @@ public sealed class MyHandler : IModuleTaskHandler
 }
 ```
 
+### 调用宿主 AI 服务（推荐给模块复用）
+
+宿主提供 `ITelegramPanelAiService`，模块可以直接复用主程序里已配置好的 OpenAI 兼容 AI 能力，不需要在模块里重复保存端点、Key 或自己再接一套 SDK。
+
+前置条件：
+
+- 在面板「系统设置 -> AI 设置」中已配置 `AI:OpenAI:Endpoint`
+- 已配置 `AI:OpenAI:ApiKey`
+- 已配置全局默认模型，或者模块调用时显式传入 `Model`
+- 若系统设置里配置了 `AI:OpenAI:RetryCount`，模块调用也会自动享受同一套重试策略
+
+当前宿主暴露两类能力：
+
+- `ChooseActionAsync(...)`：根据消息文本、按钮列表、可选图片，返回动作决策
+- `ReplyTextAsync(...)`：根据题目、上下文、可选图片，返回最终文本答案
+
+相关契约位于：`src/TelegramPanel.Modules.Abstractions/AiServices.cs`
+
+`ChooseActionAsync(...)` 的返回约定：
+
+- `Success=true` 且 `Mode=click_button`：使用 `ButtonIndex`（0 基）点击按钮
+- `Success=true` 且 `Mode=reply_text`：使用 `ReplyText` 发送文本
+- `Success=false`：查看 `Error`
+- `Reason` 仅用于日志或调试，不建议模块把它当成业务字段
+
+示例（模块任务里调用宿主 AI 识别按钮）：
+
+```csharp
+using TelegramPanel.Modules;
+
+public sealed class MyAiTaskHandler : IModuleTaskHandler
+{
+    public string TaskType => "example.ai-check";
+    private readonly ITelegramPanelAiService _ai;
+
+    public MyAiTaskHandler(ITelegramPanelAiService ai)
+    {
+        _ai = ai;
+    }
+
+    public async Task ExecuteAsync(IModuleTaskExecutionHost host, CancellationToken ct)
+    {
+        var result = await _ai.ChooseActionAsync(
+            new TelegramPanelAiChooseActionRequest(
+                Model: null, // null 表示回退到系统设置里的默认模型
+                MessageText: "请选择正确验证码",
+                Buttons: new[]
+                {
+                    new TelegramPanelAiButtonOption(0, "12"),
+                    new TelegramPanelAiButtonOption(1, "18"),
+                    new TelegramPanelAiButtonOption(2, "21")
+                },
+                Image: null,
+                Context: "这是 Telegram 群验证消息，请只返回最可靠动作。"),
+            ct);
+
+        if (!result.Success)
+            throw new InvalidOperationException(result.Error ?? "AI 决策失败");
+
+        if (string.Equals(result.Mode, "click_button", StringComparison.OrdinalIgnoreCase))
+        {
+            var buttonIndex = result.ButtonIndex ?? -1;
+            // 这里结合你自己的 Telegram 调用链执行点击
+        }
+    }
+}
+```
+
+示例（模块任务里调用宿主 AI 生成文本答案）：
+
+```csharp
+using TelegramPanel.Modules;
+
+public sealed class MyAiReplyHandler : IModuleTaskHandler
+{
+    public string TaskType => "example.ai-reply";
+    private readonly ITelegramPanelAiService _ai;
+
+    public MyAiReplyHandler(ITelegramPanelAiService ai)
+    {
+        _ai = ai;
+    }
+
+    public async Task ExecuteAsync(IModuleTaskExecutionHost host, CancellationToken ct)
+    {
+        var result = await _ai.ReplyTextAsync(
+            new TelegramPanelAiReplyTextRequest(
+                Model: "gpt-4o-mini",
+                Prompt: "你是 Telegram 验证助手，请只返回最终答案。",
+                Query: "请计算：12 + 19 = ?",
+                Image: null,
+                Context: "不要解释，不要带多余符号。"),
+            ct);
+
+        if (!result.Success)
+            throw new InvalidOperationException(result.Error ?? "AI 作答失败");
+
+        var replyText = result.ReplyText ?? string.Empty;
+        // 这里结合你自己的 Telegram 调用链发送 replyText
+    }
+}
+```
+
+建议：
+
+- 优先把模型名做成模块配置项；未配置时传 `null`，回退全局默认模型
+- 模块只关心 `Success / Error / Mode / ButtonIndex / ReplyText`，不要依赖具体提示词实现细节
+- 若需要图像识别，传入 `TelegramPanelAiImageInput`，建议使用 JPEG 字节数组
+- 模块不要自己拼 `/chat/completions` 或自己做端点规范化，这些都交给宿主
+
+## 账号导出下载（Telethon / Tdata）
+
+如果模块需要“下载某个账号的数据包”，建议优先使用宿主服务直接生成 Zip（同进程内调用），避免绕 HTTP 鉴权与 Cookie。
+
+### 推荐方式：模块内直接调用导出服务
+
+可注入：
+
+- `TelegramPanel.Web.Services.AccountExportService`
+- `TelegramPanel.Core.Services.AccountManagementService`
+
+核心调用链：
+
+1. 先通过 `AccountManagementService` 获取目标账号（或账号列表）
+2. 调用 `AccountExportService.BuildAccountsZipAsync(accounts, ct, format)`
+3. 将 `byte[]` 按模块自己的场景返回/落盘/上传
+
+其中 `format`：
+
+- `AccountExportFormat.Telethon`：导出 `.json + .session (+2fa.txt)`
+- `AccountExportFormat.Tdata`：在以上基础上额外导出 `tdata/`
+
+### HTTP 方式（备选）
+
+宿主现有下载接口：
+
+- `GET /downloads/accounts.zip`
+- Query:
+  - `ids=1,2,3`（可选，不传则导出全部）
+  - `format=telethon|tdata`（不传默认 `telethon`）
+  - `ts=<timestamp>`（可选，建议带上，避免浏览器缓存旧包）
+
+注意：
+
+- 若开启后台登录，接口受登录态保护（需带管理端 Cookie）
+- 响应已设置 `no-store/no-cache`，但调用方仍建议加 `ts`
+
+### Tdata 导出的实现要点（后续扩展必须保持）
+
+1. `session -> telethon string` 时必须保留 Base64 padding（尾部 `=`）
+2. `telethon string -> tdata` 时必须注入 `session.self.userId`
+3. 生成 `telethon string` 时要优先选择“已授权 DCSession”（不是任意 DC）
+
+否则会出现“包结构看似正常，但 Telegram Desktop 仍要求重新登录”。
+
 ## UI 模块项目模板（Razor 组件）
 
 如果你的模块需要提供页面（`IModuleUiProvider.GetPages`），推荐把模块做成 `Microsoft.NET.Sdk.Razor` 项目（类似 Razor Class Library），例如：
@@ -418,6 +574,159 @@ public IEnumerable<ModuleTaskDefinition> GetTasks(ModuleHostContext context)
 - 在编辑器里做基础校验：未选择账号、未填写链接时 `CanSubmit=false` 并给出 `ValidationError`
 - `Total` 建议按“账号数 × 链接数”或“账号数 × 用户名数”等可预估的总步数计算，便于任务中心展示进度
 - 支持筛选：例如“账号分类筛选/搜索”，减少用户选择成本
+- 遵循宿主的账号排除规则：默认不展示 `Category.ExcludeFromOperations=true` 的账号（常用于“工作账号”）；如你的模块确实需要，也可以提供“包含工作账号”的开关
+
+### 4) 复用同一个编辑器做“创建 + 编辑”（推荐）
+
+最近宿主已经把“任务创建器组件”和“任务编辑弹窗”做了统一约定。推荐你的编辑器组件同时支持以下参数：
+
+- 必选：`Draft`
+- 必选：`DraftChanged`
+- 可选：`InitialConfigJson`（编辑场景下传入当前任务的原始 `Config`）
+- 可选：`TaskId`（编辑场景下传入当前任务 ID，便于你按需读取更多上下文）
+
+也就是说，一个组件既可以用于“新建任务”，也可以用于“编辑已存在任务”。最小参数示例：
+
+```razor
+@code {
+  [Parameter] public ModuleTaskDraft Draft { get; set; }
+  [Parameter] public EventCallback<ModuleTaskDraft> DraftChanged { get; set; }
+
+  [Parameter] public string? InitialConfigJson { get; set; }
+  [Parameter] public int TaskId { get; set; }
+}
+```
+
+补充说明：
+
+- 创建场景下：宿主只保证传 `Draft / DraftChanged`
+- 编辑场景下：宿主会额外尝试注入 `InitialConfigJson / TaskId`
+- 这两个可选参数如果组件未声明，宿主会自动跳过，不会报错
+
+### 5) 任务中心能力声明（建议按新约定填写）
+
+`ModuleTaskDefinition` 现在带有 `TaskCenter` 字段，可用于声明该任务在任务中心里希望暴露哪些操作能力：
+
+```csharp
+yield return new ModuleTaskDefinition
+{
+    Category = "user",
+    TaskType = "example.long-running",
+    DisplayName = "示例：持续任务",
+    Icon = MudBlazor.Icons.Material.Filled.Tune,
+    EditorComponentType = typeof(MyTaskEditor).AssemblyQualifiedName,
+    TaskCenter = new ModuleTaskCenterCapabilities
+    {
+        CanPause = true,
+        CanResume = true,
+        CanEdit = true,
+        CanRerun = true,
+        EditComponentType = typeof(MyTaskEditor).AssemblyQualifiedName,
+        AutoPauseBeforeEdit = true
+    }
+};
+```
+
+字段说明：
+
+- `CanPause`：任务支持暂停
+- `CanResume`：任务支持从暂停状态继续运行
+- `CanEdit`：任务支持在任务中心打开编辑器修改配置
+- `CanRerun`：任务支持基于历史配置重新创建一个新任务
+- `EditComponentType`：编辑时使用的组件；为空时回退到 `EditorComponentType`
+- `AutoPauseBeforeEdit`：如果任务仍在运行，宿主可先暂停再进入编辑
+
+当前建议：
+
+- 对“一次性批量任务”，通常只需要 `CanRerun = true`
+- 对“持续任务/常驻任务”，通常建议同时声明 `CanPause / CanResume / CanEdit / CanRerun`
+- 如果你把 `EditorComponentType` 或 `EditComponentType` 写成空字符串，宿主会在注册阶段自动规范为 `null`
+
+> 注意：这组字段已经进入抽象层，并且内置持续任务已按此方式声明；外部模块也建议遵循相同结构，便于后续宿主统一扩展任务中心行为。
+
+### 6) 宿主内置数据字典与模板变量（推荐优先复用）
+
+如果你的模块任务需要“随机文案 / 队列文案 / 图片变量 / 标题模板 / 用户名模板”等能力，建议优先复用宿主已经内置的数据字典体系，而不是在模块里重复造一套词库配置。
+
+当前宿主已经提供：
+
+- 数据字典管理页面：`/data-dictionaries`
+- 文本字典：返回 `string`
+- 图片字典：返回图片资产引用（适合头像、图片消息等）
+- 读取模式：`random` / `queue`
+- 队列游标持久化：`queue` 模式的 `NextIndex` 会写入数据库，重启后继续
+- 模板变量语法：固定为 `{name}`
+- 内置变量：`{time}`（格式 `yyyyMMddHHmmss`）
+
+相关宿主服务：
+
+- `TelegramPanel.Web.Services.DataDictionaryService`
+- `TelegramPanel.Web.Services.TemplateRenderingService`
+- `TelegramPanel.Web.Services.ImageAssetStorageService`
+
+推荐用法：
+
+```csharp
+var templateRendering = host.Services.GetRequiredService<TemplateRenderingService>();
+
+var title = await templateRendering.RenderTextTemplateAsync("临时频道{time}_{city}", cancellationToken);
+var avatar = await templateRendering.ResolveImageTemplateAsync("{avatar_dict}", cancellationToken);
+```
+
+约束说明：
+
+- 标题、描述、公开用户名这类文本字段，只能解析到**文本值**
+- 头像、图片消息这类图片字段，只能使用**固定图片**或**图片字典变量**
+- 文本字典和图片字典**严格分型**，不要混用
+- 未知变量、空字典、已停用字典、类型不匹配，宿主会直接抛出校验失败
+- 图片变量必须是**单个 token**，例如 `{avatar}`，不能写成 `头像_{avatar}`
+
+如果你的模块也提供任务编辑器，建议：
+
+- 在 UI 中直接提示“支持 `{time}` 与 `{字典名}`”
+- 文本输入框只展示文本字典变量
+- 图片输入框只展示图片字典变量
+- 让最终配置 JSON 只保存模板字符串 / 字典 token，不要把解析后的随机结果提前固化进配置
+
+这样做的好处是：
+
+- 宿主统一管理字典内容，模块间可以复用同一份变量源
+- 后续扩展新变量 provider 时，模块通常不需要改协议
+- 计划任务、一次性任务、模块页面都能复用同一套解析规则
+### 7) 为“重新运行”提供专用构建器（适合复杂任务）
+
+如果你的任务配置在运行过程中会写回运行态字段，或者重跑前需要清洗旧配置，建议额外实现 `IModuleTaskRerunBuilder`：
+
+```csharp
+public sealed class MyTaskRerunBuilder : IModuleTaskRerunBuilder
+{
+    public string TaskType => "example.long-running";
+
+    public ModuleTaskCreateRequest Build(ModuleTaskSnapshot task)
+    {
+        // 这里把历史任务快照重新整理为新的创建请求
+        return new ModuleTaskCreateRequest
+        {
+            TaskType = TaskType,
+            Total = Math.Max(0, task.Total),
+            Config = task.Config
+        };
+    }
+}
+
+public void ConfigureServices(IServiceCollection services, ModuleHostContext context)
+{
+    services.AddSingleton<IModuleTaskRerunBuilder, MyTaskRerunBuilder>();
+}
+```
+
+这种方式适合：
+
+- 运行中会把“最近失败/暂停标记/错误信息”等运行态字段写回 `Config`
+- 重跑前需要把旧配置从“运行态 JSON”还原为“创建态 JSON”
+- 需要在重跑时动态修正 `Total`
+
+> 说明：`IModuleTaskRerunBuilder` 已进入抽象层，适合新模块提前按该约定实现；这样后续宿主统一接入时不需要再回头改模块结构。
 
 ## 外部 API 扩展（API）
 
@@ -512,3 +821,9 @@ public IEnumerable<ModuleApiTypeDefinition> GetApis(ModuleHostContext context)
 - 建议在生产环境使用“灰度/备份”方式试装模块
 
 后续如需更强隔离，可以把模块改为“独立进程 Module Host”模式（主站通过 HTTP/gRPC 调用），进一步降低崩溃风险。
+
+
+
+
+
+

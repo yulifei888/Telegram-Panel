@@ -1,4 +1,4 @@
-using System.Text.Json.Serialization;
+﻿using System.Text.Json.Serialization;
 
 namespace TelegramPanel.Modules;
 
@@ -85,15 +85,106 @@ public sealed class ModuleTaskDefinition
     public string? CreateRoute { get; set; }
 
     /// <summary>
-    /// 任务创建编辑器组件类型 AssemblyQualifiedName（可选）。\n    /// 该组件需要支持参数：\n    /// - Draft (ModuleTaskDraft)\n    /// - DraftChanged (EventCallback&lt;ModuleTaskDraft&gt;)\n    /// </summary>
+    /// 任务创建编辑器组件类型 AssemblyQualifiedName（可选）。
+    /// 该组件需要支持参数：
+    /// - Draft (ModuleTaskDraft)
+    /// - DraftChanged (EventCallback&lt;ModuleTaskDraft&gt;)
+    /// 编辑场景下还应支持可选参数：
+    /// - InitialConfigJson (string?)
+    /// </summary>
     [JsonPropertyName("editorComponentType")]
     public string? EditorComponentType { get; set; }
+
+    /// <summary>
+    /// 任务中心行为能力声明（编辑/暂停/恢复/重跑等）。
+    /// </summary>
+    [JsonPropertyName("taskCenter")]
+    public ModuleTaskCenterCapabilities TaskCenter { get; set; } = new();
 
     [JsonPropertyName("order")]
     public int Order { get; set; } = 0;
 }
 
-public readonly record struct ModuleTaskDraft(int Total, string? Config, bool CanSubmit, string? ValidationError);
+public sealed class ModuleTaskCenterCapabilities
+{
+    [JsonPropertyName("canPause")]
+    public bool CanPause { get; set; }
+
+    [JsonPropertyName("canResume")]
+    public bool CanResume { get; set; }
+
+    [JsonPropertyName("canEdit")]
+    public bool CanEdit { get; set; }
+
+    [JsonPropertyName("canRerun")]
+    public bool CanRerun { get; set; }
+
+    /// <summary>
+    /// 编辑时使用的组件类型；为空时回退到 EditorComponentType。
+    /// </summary>
+    [JsonPropertyName("editComponentType")]
+    public string? EditComponentType { get; set; }
+
+    /// <summary>
+    /// 若任务仍在运行，打开编辑器前是否自动先暂停。
+    /// </summary>
+    [JsonPropertyName("autoPauseBeforeEdit")]
+    public bool AutoPauseBeforeEdit { get; set; }
+}
+
+public readonly record struct ModuleTaskDraft(int Total, string? Config, bool CanSubmit, string? ValidationError)
+{
+    [JsonPropertyName("submissionMode")]
+    public string? SubmissionMode { get; init; }
+
+    [JsonPropertyName("cronExpression")]
+    public string? CronExpression { get; init; }
+
+    [JsonPropertyName("scheduledStatus")]
+    public string? ScheduledStatus { get; init; }
+}
+
+public sealed class ModuleTaskSnapshot
+{
+    [JsonPropertyName("taskId")]
+    public int TaskId { get; set; }
+
+    [JsonPropertyName("taskType")]
+    public string TaskType { get; set; } = "";
+
+    [JsonPropertyName("status")]
+    public string Status { get; set; } = "";
+
+    [JsonPropertyName("total")]
+    public int Total { get; set; }
+
+    [JsonPropertyName("completed")]
+    public int Completed { get; set; }
+
+    [JsonPropertyName("failed")]
+    public int Failed { get; set; }
+
+    [JsonPropertyName("config")]
+    public string? Config { get; set; }
+}
+
+public sealed class ModuleTaskCreateRequest
+{
+    [JsonPropertyName("taskType")]
+    public string TaskType { get; set; } = "";
+
+    [JsonPropertyName("total")]
+    public int Total { get; set; }
+
+    [JsonPropertyName("config")]
+    public string? Config { get; set; }
+}
+
+public interface IModuleTaskRerunBuilder
+{
+    string TaskType { get; }
+    ModuleTaskCreateRequest Build(ModuleTaskSnapshot task);
+}
 
 public interface IModuleApiProvider
 {
@@ -136,4 +227,5 @@ public interface IModuleTaskExecutionHost
     Task<bool> IsStillRunningAsync(CancellationToken cancellationToken);
     Task UpdateProgressAsync(int completed, int failed, CancellationToken cancellationToken);
 }
+
 

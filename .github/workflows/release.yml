@@ -1,0 +1,116 @@
+name: Release (Auto Changelog)
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "要发布的 tag（例如 v1.2.3）"
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Resolve tag name
+        id: vars
+        shell: bash
+        run: |
+          if [[ "${GITHUB_EVENT_NAME}" == "workflow_dispatch" ]]; then
+            TAG="${{ inputs.tag }}"
+          else
+            TAG="${GITHUB_REF_NAME}"
+          fi
+          echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout source at tag
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ steps.vars.outputs.tag }}
+
+      - name: Set up .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.x
+
+      - name: Restore
+        run: dotnet restore TelegramPanel.sln
+
+      - name: Publish Linux update packages
+        shell: bash
+        run: |
+          set -euo pipefail
+          dotnet publish src/TelegramPanel.Web/TelegramPanel.Web.csproj \
+            -c Release \
+            -r linux-x64 \
+            --self-contained false \
+            -p:UseAppHost=false \
+            -o artifacts/linux-x64
+
+          dotnet publish src/TelegramPanel.Web/TelegramPanel.Web.csproj \
+            -c Release \
+            -r linux-arm64 \
+            --self-contained false \
+            -p:UseAppHost=false \
+            -o artifacts/linux-arm64
+
+      - name: Pack release assets
+        id: pack
+        shell: bash
+        run: |
+          set -euo pipefail
+          TAG="${{ steps.vars.outputs.tag }}"
+          mkdir -p dist
+
+          X64_ZIP="telegram-panel-${TAG}-linux-x64.zip"
+          ARM64_ZIP="telegram-panel-${TAG}-linux-arm64.zip"
+
+          (cd artifacts/linux-x64 && zip -rq "../../dist/${X64_ZIP}" .)
+          (cd artifacts/linux-arm64 && zip -rq "../../dist/${ARM64_ZIP}" .)
+
+          echo "x64=dist/${X64_ZIP}" >> "$GITHUB_OUTPUT"
+          echo "arm64=dist/${ARM64_ZIP}" >> "$GITHUB_OUTPUT"
+
+      - name: Create GitHub Release with auto changelog
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.vars.outputs.tag }}
+          generate_release_notes: true
+          append_body: true
+          prerelease: ${{ contains(steps.vars.outputs.tag, '-') }}
+          files: |
+            ${{ steps.pack.outputs.x64 }}
+            ${{ steps.pack.outputs.arm64 }}
+          body: |
+            ## 本次版本主要更新
+
+            > 下方会自动附加完整变更记录（Changelog），这里保留部署与更新入口说明。
+
+            ## 部署与更新
+
+            ### 1. Docker 镜像
+            拉取对应 tag 的镜像：
+
+            ```bash
+            docker pull ghcr.io/${{ github.repository }}:${{ steps.vars.outputs.tag }}
+            ```
+
+            ### 2. 面板内一键更新（Docker）
+            路径：`左上角版本号 -> 版本信息弹窗 -> 一键更新并重启`
+
+            ## 应用内更新资产
+
+            - `${{ steps.pack.outputs.x64 }}`
+            - `${{ steps.pack.outputs.arm64 }}`
+
+            > 程序会自动匹配容器架构下载更新包，并部署到 `/data/app-current`。

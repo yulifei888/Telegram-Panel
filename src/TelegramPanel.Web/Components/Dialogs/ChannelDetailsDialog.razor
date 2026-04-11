@@ -4,6 +4,7 @@
 @inject IChannelService ChannelService
 @inject ISnackbar Snackbar
 @inject IDialogService DialogService
+@using TelegramPanel.Core.Utils
 @using TelegramPanel.Data.Entities
 
 <MudDialog>
@@ -85,6 +86,52 @@
 
                 <MudDivider />
 
+                <MudStack Row="true" AlignItems="AlignItems.Center" Spacing="2">
+                    <MudText Typo="Typo.h6">本系统账号</MudText>
+                    <MudSpacer />
+                    <MudButton Variant="Variant.Text" Color="Color.Primary" Disabled="@systemAccountsLoading" OnClick="ShowSystemAccounts">
+                        查看完整列表
+                    </MudButton>
+                    <MudButton Variant="Variant.Outlined" Color="Color.Primary" StartIcon="@Icons.Material.Filled.Refresh"
+                               Disabled="@systemAccountsLoading" OnClick="LoadSystemAccounts">
+                        刷新
+                    </MudButton>
+                </MudStack>
+
+                @if (systemAccountsLoading)
+                {
+                    <MudProgressLinear Indeterminate="true" />
+                }
+                else if (systemAccounts.Count == 0)
+                {
+                    <MudText Typo="Typo.body2" Color="Color.Secondary">暂无本系统账号关联</MudText>
+                }
+                else
+                {
+                    <MudTable Items="@systemAccounts" Dense="true" Hover="true" Breakpoint="Breakpoint.Sm">
+                        <HeaderContent>
+                            <MudTh>手机号</MudTh>
+                            <MudTh>昵称</MudTh>
+                            <MudTh>用户名</MudTh>
+                            <MudTh>状态</MudTh>
+                            <MudTh>角色</MudTh>
+                        </HeaderContent>
+                        <RowTemplate>
+                            <MudTd DataLabel="手机号">@FormatPhone(context.Account?.Phone)</MudTd>
+                            <MudTd DataLabel="昵称">@(string.IsNullOrWhiteSpace(context.Account?.Nickname) ? "-" : context.Account!.Nickname)</MudTd>
+                            <MudTd DataLabel="用户名">@FormatUsername(context.Account?.Username)</MudTd>
+                            <MudTd DataLabel="状态">
+                                <MudChip T="string" Size="Size.Small" Color="@GetAccountStatusColor(context.Account)">@GetAccountStatusLabel(context.Account)</MudChip>
+                            </MudTd>
+                            <MudTd DataLabel="角色">
+                                <MudChip T="string" Size="Size.Small" Color="@GetMembershipColor(context)">@GetMembershipLabel(context)</MudChip>
+                            </MudTd>
+                        </RowTemplate>
+                    </MudTable>
+                }
+
+                <MudDivider />
+
                 <MudText Typo="Typo.h6">踢出成员</MudText>
                 <MudAlert Severity="Severity.Info" Variant="Variant.Outlined" Dense="true">
                     输入 @@用户名 执行踢出；“非永久”会使用短时间封禁达到踢出效果，随后自动解除，方便对方重新加入。
@@ -130,6 +177,8 @@
 
     private bool adminsLoading;
     private List<ChannelAdminInfo> admins = new();
+    private bool systemAccountsLoading;
+    private List<AccountChannel> systemAccounts = new();
 
     private string kickUsername = "";
     private bool kickPermanent;
@@ -139,6 +188,7 @@
     {
         await LoadChannel();
         await LoadAdmins();
+        await LoadSystemAccounts();
     }
 
     private async Task LoadChannel()
@@ -202,6 +252,37 @@
         }
     }
 
+    private async Task LoadSystemAccounts()
+    {
+        systemAccountsLoading = true;
+        try
+        {
+            systemAccounts = (await ChannelManagement.GetChannelAccountMembershipsAsync(ChannelDbId))
+                .Where(x => x.Account != null)
+                .OrderByDescending(x => x.IsCreator)
+                .ThenByDescending(x => x.IsAdmin)
+                .ThenBy(x => x.AccountId)
+                .ToList();
+        }
+        catch (Exception ex)
+        {
+            systemAccounts.Clear();
+            Snackbar.Add($"加载本系统账号失败：{ex.Message}", Severity.Error);
+        }
+        finally
+        {
+            systemAccountsLoading = false;
+        }
+    }
+
+    private Task ShowSystemAccounts()
+    {
+        var parameters = new DialogParameters { ["ChannelDbId"] = ChannelDbId };
+        var options = new DialogOptions { CloseOnEscapeKey = true, MaxWidth = MaxWidth.Medium, FullWidth = true };
+        DialogService.Show<ChannelSystemAccountsDialog>("本系统账号", parameters, options);
+        return Task.CompletedTask;
+    }
+
     private async Task KickUser()
     {
         if (channel == null)
@@ -243,7 +324,46 @@
         {
             await LoadChannel();
             await LoadAdmins();
+            await LoadSystemAccounts();
         }
+    }
+
+    private static string FormatPhone(string? phone)
+    {
+        return string.IsNullOrWhiteSpace(phone) ? "-" : PhoneNumberFormatter.FormatWithCountryCode(phone);
+    }
+
+    private static string FormatUsername(string? username)
+    {
+        return string.IsNullOrWhiteSpace(username) ? "-" : "@" + username.Trim();
+    }
+
+    private static string GetMembershipLabel(AccountChannel membership)
+    {
+        if (membership.IsCreator)
+            return "创建者";
+        if (membership.IsAdmin)
+            return "管理员";
+        return "成员";
+    }
+
+    private static Color GetMembershipColor(AccountChannel membership)
+    {
+        if (membership.IsCreator)
+            return Color.Success;
+        if (membership.IsAdmin)
+            return Color.Info;
+        return Color.Default;
+    }
+
+    private static string GetAccountStatusLabel(Account? account)
+    {
+        return account?.IsActive == false ? "停用" : "启用";
+    }
+
+    private static Color GetAccountStatusColor(Account? account)
+    {
+        return account?.IsActive == false ? Color.Default : Color.Success;
     }
 
     private void Close()
